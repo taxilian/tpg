@@ -93,6 +93,33 @@ func (db *DB) AppendDescription(id string, text string) error {
 	return nil
 }
 
+// SetParent sets an item's parent to an epic.
+func (db *DB) SetParent(itemID, parentID string) error {
+	// Verify parent exists and is an epic
+	var itemType string
+	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, parentID).Scan(&itemType)
+	if err != nil {
+		return fmt.Errorf("parent not found: %s (use 'tasks list' to see available items)", parentID)
+	}
+	if itemType != string(model.ItemTypeEpic) {
+		return fmt.Errorf("parent must be an epic, got %s", itemType)
+	}
+
+	// Update the item's parent
+	result, err := db.Exec(`
+		UPDATE items SET parent_id = ?, updated_at = ? WHERE id = ?`,
+		parentID, time.Now(), itemID)
+	if err != nil {
+		return fmt.Errorf("failed to set parent: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", itemID)
+	}
+	return nil
+}
+
 // DeleteItem removes an item and its associated logs and dependencies.
 func (db *DB) DeleteItem(id string) error {
 	// Check if item exists first

@@ -203,3 +203,110 @@ func TestAppendDescription(t *testing.T) {
 		t.Error("description was not appended")
 	}
 }
+
+func TestSetParent(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Test Epic",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.CreateItem(epic)
+
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Test Task",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.CreateItem(task)
+
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	got, _ := db.GetItem(task.ID)
+	if got.ParentID == nil {
+		t.Fatal("expected parent ID to be set")
+	}
+	if *got.ParentID != epic.ID {
+		t.Errorf("parent = %q, want %q", *got.ParentID, epic.ID)
+	}
+}
+
+func TestSetParent_NotEpic(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task 1",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.CreateItem(task1)
+
+	task2 := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task 2",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.CreateItem(task2)
+
+	err := db.SetParent(task2.ID, task1.ID)
+	if err == nil {
+		t.Error("expected error when parent is not an epic")
+	}
+}
+
+func TestSetParent_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Epic",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.CreateItem(epic)
+
+	// Nonexistent task
+	err := db.SetParent("nonexistent", epic.ID)
+	if err == nil {
+		t.Error("expected error for nonexistent task")
+	}
+
+	// Nonexistent parent
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	db.CreateItem(task)
+
+	err = db.SetParent(task.ID, "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent parent")
+	}
+}

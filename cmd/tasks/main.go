@@ -488,6 +488,60 @@ Example:
 	},
 }
 
+var parentCmd = &cobra.Command{
+	Use:   "parent <id> <epic-id>",
+	Short: "Set a task's parent epic",
+	Long: `Set the parent epic for a task.
+
+This establishes a hierarchical relationship where tasks belong to epics.
+The parent must be an epic (created with -e flag).
+
+Example:
+  tasks parent ts-a1b2c3 ep-d4e5f6
+  # ts-a1b2c3 is now a child of ep-d4e5f6`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer database.Close()
+
+		if err := database.SetParent(args[0], args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("%s is now under %s\n", args[0], args[1])
+		return nil
+	},
+}
+
+var blocksCmd = &cobra.Command{
+	Use:   "blocks <id> <other-id>",
+	Short: "Mark a task as blocking another",
+	Long: `Mark a task as blocking another task.
+
+The second task cannot be started until the first is done.
+
+Example:
+  tasks blocks ts-a1b2c3 ts-d4e5f6
+  # ts-d4e5f6 cannot start until ts-a1b2c3 is done`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer database.Close()
+
+		// blocks A B means B depends on A (A blocks B)
+		if err := database.AddDep(args[1], args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("%s now blocks %s\n", args[0], args[1])
+		return nil
+	},
+}
+
 var onboardCmd = &cobra.Command{
 	Use:   "onboard",
 	Short: "Add tasks integration to CLAUDE.md",
@@ -630,6 +684,8 @@ func init() {
 	rootCmd.AddCommand(graphCmd)
 	rootCmd.AddCommand(appendCmd)
 	rootCmd.AddCommand(depCmd)
+	rootCmd.AddCommand(parentCmd)
+	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(primeCmd)
 	rootCmd.AddCommand(onboardCmd)
 }
@@ -804,6 +860,9 @@ tasks show <id>           # Full details including logs
 tasks graph               # Show dependency tree
 tasks projects            # List all projects
 
+Resuming a session? If a task is already in_progress, use 'tasks show <id>'
+to read its logs and understand current state before continuing.
+
 # Working
 tasks start <id>          # Claim a task
 tasks log <id> "message"  # Log progress
@@ -813,7 +872,8 @@ tasks block <id> "why"    # Mark blocked
 # Creating & organizing
 tasks add "title" -p project    # New task
 tasks add "title" -e            # New epic
-tasks dep <id> --on <other>     # Add dependency (id blocked until other done)
+tasks parent <id> <epic-id>     # Set task's parent epic
+tasks blocks <id> <other>       # id blocks other (other can't start until id done)
 
 ## Current State`)
 
