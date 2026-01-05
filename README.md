@@ -5,7 +5,7 @@ Lightweight task management for AI agents. SQLite-backed, CLI-driven.
 ## Install
 
 ```bash
-go install github.com/byronguina/tasks-go/cmd/tasks@latest
+go install github.com/baiirun/dotworld-tasks/cmd/tasks@latest
 ```
 
 ## Usage

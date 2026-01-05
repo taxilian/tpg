@@ -1,4 +1,4 @@
-module github.com/byronguina/tasks-go
+module github.com/baiirun/dotworld-tasks
 
 go 1.25
 
