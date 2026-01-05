@@ -1312,13 +1312,17 @@ prog append <id> "text"        # Add to description
 prog desc <id> "text"          # Replace description
 prog edit <id>                 # Edit description in $PROG_EDITOR
 
-# Filtering (prog list)
+# Filtering (prog list, prog ready)
+prog list -p myproject         # Filter by project
+prog list --status open        # Filter by status (open, in_progress, blocked, done, canceled)
+prog list -p myproject --status open  # Combine filters
 prog list --parent <epic-id>   # Tasks under an epic
 prog list --type epic          # Only epics
 prog list --blocking <id>      # What blocks this task?
 prog list --blocked-by <id>    # What does this task block?
 prog list --has-blockers       # Tasks with unresolved deps
 prog list --no-blockers        # Tasks with no blockers
+prog ready -p myproject        # Ready tasks in a specific project
 
 ## Current State`)
 
