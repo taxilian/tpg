@@ -67,6 +67,8 @@ tasks done ts-a1b2c3
 
 | Command | Description |
 |---------|-------------|
+| `tasks parent <id> <epic-id>` | Set task's parent epic |
+| `tasks blocks <id> <other>` | Add blocking relationship (other blocked until id done) |
 | `tasks dep <id> --on <other>` | Add dependency (id blocked until other is done) |
 | `tasks graph` | Show dependency graph |
 | `tasks projects` | List all projects |
@@ -151,6 +153,8 @@ Use dependencies to enforce task ordering. A task with unmet dependencies won't 
 
 ```bash
 # ts-backend must complete before ts-frontend can start
+tasks blocks ts-backend ts-frontend
+# Or equivalently:
 tasks dep ts-frontend --on ts-backend
 
 # View all dependencies
@@ -162,6 +166,24 @@ tasks graph
 ```
 
 The `ready` command automatically filters out tasks with unmet dependencies, so agents only see work they can actually start.
+
+### Epics
+
+Group related tasks under an epic for organization:
+
+```bash
+# Create an epic
+tasks add "Authentication system" -p myproject -e
+# Output: ep-a1b2c3
+
+# Assign tasks to the epic
+tasks parent ts-d4e5f6 ep-a1b2c3
+tasks parent ts-g7h8i9 ep-a1b2c3
+
+# View task with parent
+tasks show ts-d4e5f6
+# Output includes: Parent: ep-a1b2c3
+```
 
 ## Claude Code Integration
 
