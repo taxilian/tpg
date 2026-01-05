@@ -92,3 +92,36 @@ func (db *DB) AppendDescription(id string, text string) error {
 	}
 	return nil
 }
+
+// DeleteItem removes an item and its associated logs and dependencies.
+func (db *DB) DeleteItem(id string) error {
+	// Check if item exists first
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE id = ?`, id).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check item: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
+	}
+
+	// Delete logs
+	_, err = db.Exec(`DELETE FROM logs WHERE item_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete logs: %w", err)
+	}
+
+	// Delete dependencies (both directions)
+	_, err = db.Exec(`DELETE FROM deps WHERE item_id = ? OR depends_on = ?`, id, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete dependencies: %w", err)
+	}
+
+	// Delete the item
+	_, err = db.Exec(`DELETE FROM items WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete item: %w", err)
+	}
+
+	return nil
+}

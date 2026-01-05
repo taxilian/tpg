@@ -284,6 +284,32 @@ Example:
 	},
 }
 
+var deleteCmd = &cobra.Command{
+	Use:   "delete <id>",
+	Short: "Delete a task or epic",
+	Long: `Permanently delete a task or epic and all associated data.
+
+This removes the item, its logs, and any dependencies.
+This action cannot be undone.
+
+Example:
+  tasks delete ts-a1b2c3`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer database.Close()
+
+		if err := database.DeleteItem(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted %s\n", args[0])
+		return nil
+	},
+}
+
 var logCmd = &cobra.Command{
 	Use:   "log <id> <message>",
 	Short: "Add a log entry to a task",
@@ -402,6 +428,91 @@ Example:
 	},
 }
 
+var onboardCmd = &cobra.Command{
+	Use:   "onboard",
+	Short: "Add tasks integration to CLAUDE.md",
+	Long: `Write tasks workflow snippet to CLAUDE.md in the current directory.
+
+Creates CLAUDE.md if it doesn't exist. Appends the tasks section if the file
+exists but doesn't have it. Skips if already onboarded.
+
+Example:
+  cd ~/code/myproject
+  tasks onboard`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runOnboard()
+	},
+}
+
+func findClaudeMD() string {
+	// Check for existing file with exact case match
+	// (os.Stat is case-insensitive on macOS, so we use ReadDir)
+	entries, err := os.ReadDir(".")
+	if err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if strings.EqualFold(name, "claude.md") {
+				return name // Return actual casing
+			}
+		}
+	}
+	// Default to uppercase if none exists
+	return "CLAUDE.md"
+}
+
+func runOnboard() error {
+	claudePath := findClaudeMD()
+	snippet := `## Task Tracking
+
+This project uses **tasks** for cross-session task management.
+Run ` + "`tasks prime`" + ` for workflow context, or configure hooks for auto-injection.
+
+**Quick reference:**
+` + "```" + `
+tasks ready              # Find unblocked work
+tasks add "Title" -p X   # Create task
+tasks start <id>         # Claim work
+tasks log <id> "msg"     # Log progress
+tasks done <id>          # Complete work
+` + "```" + `
+
+For full workflow: ` + "`tasks prime`" + `
+`
+
+	// Check if file exists
+	content, err := os.ReadFile(claudePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Create new file
+			if err := os.WriteFile(claudePath, []byte(snippet), 0644); err != nil {
+				return fmt.Errorf("failed to create CLAUDE.md: %w", err)
+			}
+			fmt.Println("Created CLAUDE.md with tasks integration")
+			return nil
+		}
+		return fmt.Errorf("failed to read CLAUDE.md: %w", err)
+	}
+
+	// Check if already onboarded
+	if strings.Contains(string(content), "## Task Tracking") {
+		fmt.Println("Already onboarded (found '## Task Tracking' section)")
+		return nil
+	}
+
+	// Append to existing file
+	newContent := string(content)
+	if !strings.HasSuffix(newContent, "\n") {
+		newContent += "\n"
+	}
+	newContent += "\n" + snippet
+
+	if err := os.WriteFile(claudePath, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to update %s: %w", claudePath, err)
+	}
+	fmt.Printf("Added tasks integration to %s\n", claudePath)
+	return nil
+}
+
 var primeCmd = &cobra.Command{
 	Use:   "prime",
 	Short: "Output context for Claude Code hooks",
@@ -452,11 +563,13 @@ func init() {
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(blockCmd)
+	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(appendCmd)
 	rootCmd.AddCommand(depCmd)
 	rootCmd.AddCommand(primeCmd)
+	rootCmd.AddCommand(onboardCmd)
 }
 
 func main() {
