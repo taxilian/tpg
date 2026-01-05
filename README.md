@@ -2,6 +2,15 @@
 
 Lightweight task management for AI agents. SQLite-backed, CLI-driven.
 
+## Requirements
+
+This tool assumes you're using [Claude Code](https://docs.anthropic.com/en/docs/claude-code). The `tasks onboard` command automatically configures Claude Code hooks to inject workflow context at session start and before context compaction.
+
+**Not using Claude Code?** You'll need to manually integrate the workflow context into your agent setup:
+1. Run `tasks prime` to see the context that should be injected
+2. Run `tasks onboard` to see what it would configure
+3. Add the `tasks prime` output to your `AGENTS.md`, system prompt, or equivalent session-start mechanism
+
 ## Install
 
 ```bash
