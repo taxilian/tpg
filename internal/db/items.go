@@ -42,7 +42,7 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 		&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("item not found: %s", id)
+		return nil, fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get item: %w", err)
@@ -69,7 +69,7 @@ func (db *DB) UpdateStatus(id string, status model.Status) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s", id)
+		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
 	}
 	return nil
 }
@@ -88,7 +88,7 @@ func (db *DB) AppendDescription(id string, text string) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s", id)
+		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
 	}
 	return nil
 }

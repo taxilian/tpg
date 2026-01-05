@@ -13,7 +13,7 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 		return fmt.Errorf("failed to verify items: %w", err)
 	}
 	if count != 2 {
-		return fmt.Errorf("one or both items not found: %s, %s", itemID, dependsOnID)
+		return fmt.Errorf("one or both items not found: %s, %s (use 'tasks list' to see available items)", itemID, dependsOnID)
 	}
 
 	_, err = db.Exec(`

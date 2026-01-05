@@ -24,18 +24,33 @@ func openDB() (*db.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return db.Open(path)
+	database, err := db.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w (try running 'tasks init' first)", err)
+	}
+	return database, nil
 }
 
 var rootCmd = &cobra.Command{
 	Use:   "tasks",
 	Short: "Lightweight task management for agents",
-	Long:  `A CLI for managing tasks, epics, and dependencies. Designed for AI agents to track work across sessions.`,
+	Long: `A CLI for managing tasks, epics, and dependencies.
+Designed for AI agents to track work across sessions.
+
+Database: ~/.world/tasks/tasks.db
+
+Quick start:
+  tasks init
+  tasks add "Build feature X" -p myproject
+  tasks ready -p myproject
+  tasks start <id>
+  tasks done <id>`,
 }
 
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize the tasks database",
+	Long:  "Creates the database at ~/.world/tasks/tasks.db if it doesn't exist.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -54,7 +69,15 @@ var initCmd = &cobra.Command{
 var addCmd = &cobra.Command{
 	Use:   "add <title>",
 	Short: "Create a new task or epic",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Create a new task (or epic with -e flag).
+
+Returns the generated ID (ts-XXXXXX for tasks, ep-XXXXXX for epics).
+
+Examples:
+  tasks add "Fix login bug" -p myproject
+  tasks add "Auth system" -p myproject -e
+  tasks add "Critical fix" --priority 1`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -89,6 +112,13 @@ var addCmd = &cobra.Command{
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List tasks",
+	Long: `List all tasks, optionally filtered by project and/or status.
+
+Examples:
+  tasks list
+  tasks list -p myproject
+  tasks list --status open
+  tasks list -p myproject --status blocked`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -118,6 +148,17 @@ var listCmd = &cobra.Command{
 var readyCmd = &cobra.Command{
 	Use:   "ready",
 	Short: "Show tasks ready for work (unblocked)",
+	Long: `Show tasks that are ready to work on.
+
+A task is "ready" when:
+  - Status is "open" (not in_progress, blocked, or done)
+  - All dependencies are "done"
+
+Results are sorted by priority (1=high first).
+
+Examples:
+  tasks ready
+  tasks ready -p myproject`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -142,7 +183,11 @@ var readyCmd = &cobra.Command{
 var showCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show task details",
-	Args:  cobra.ExactArgs(1),
+	Long: `Show full details for a task including description, logs, and dependencies.
+
+Example:
+  tasks show ts-a1b2c3`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -211,7 +256,13 @@ var doneCmd = &cobra.Command{
 var blockCmd = &cobra.Command{
 	Use:   "block <id> <reason>",
 	Short: "Mark a task as blocked",
-	Args:  cobra.MinimumNArgs(2),
+	Long: `Mark a task as blocked and log the reason.
+
+Use this when you can't proceed and need to hand off to another agent.
+
+Example:
+  tasks block ts-a1b2c3 "Need API spec from product team"`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -236,7 +287,13 @@ var blockCmd = &cobra.Command{
 var logCmd = &cobra.Command{
 	Use:   "log <id> <message>",
 	Short: "Add a log entry to a task",
-	Args:  cobra.MinimumNArgs(2),
+	Long: `Add a timestamped log entry to a task's audit trail.
+
+Use this to track progress while working.
+
+Example:
+  tasks log ts-a1b2c3 "Implemented token refresh logic"`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -258,6 +315,18 @@ var logCmd = &cobra.Command{
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show project status overview",
+	Long: `Show a summary of project status for agent spin-up.
+
+Includes:
+  - Count by status (open, in_progress, blocked, done)
+  - Recently completed tasks
+  - Currently in-progress tasks
+  - Blocked tasks with reasons
+  - Ready tasks by priority
+
+Examples:
+  tasks status
+  tasks status -p myproject`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -278,7 +347,13 @@ var statusCmd = &cobra.Command{
 var appendCmd = &cobra.Command{
 	Use:   "append <id> <text>",
 	Short: "Append text to a task's description",
-	Args:  cobra.MinimumNArgs(2),
+	Long: `Append text to a task's description.
+
+Use this to add context, decisions, or handoff notes.
+
+Example:
+  tasks append ts-a1b2c3 "Decided to use JWT instead of sessions"`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -300,7 +375,14 @@ var appendCmd = &cobra.Command{
 var depCmd = &cobra.Command{
 	Use:   "dep <id> --on <other>",
 	Short: "Add a dependency",
-	Args:  cobra.ExactArgs(1),
+	Long: `Add a dependency between tasks.
+
+The first task will be blocked until the dependency is done.
+
+Example:
+  tasks dep ts-a1b2c3 --on ts-d4e5f6
+  # ts-a1b2c3 is now blocked until ts-d4e5f6 is done`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if flagDependsOn == "" {
 			return fmt.Errorf("--on flag is required")

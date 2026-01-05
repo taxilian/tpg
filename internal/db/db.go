@@ -1,3 +1,7 @@
+// Package db provides SQLite database operations for the tasks system.
+//
+// The database is stored at ~/.world/tasks/tasks.db by default.
+// Use Open() to connect and Init() to create the schema.
 package db
 
 import (
@@ -42,6 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);
 CREATE INDEX IF NOT EXISTS idx_logs_item ON logs(item_id);
 `
 
+// DB wraps a SQL database connection with task-specific operations.
 type DB struct {
 	*sql.DB
 }

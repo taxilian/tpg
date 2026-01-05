@@ -1,3 +1,4 @@
+// Package model defines the core data types for the tasks system.
 package model
 
 import (
@@ -45,19 +46,21 @@ func (s Status) IsValid() bool {
 	return s == StatusOpen || s == StatusInProgress || s == StatusBlocked || s == StatusDone
 }
 
+// Item represents a task or epic in the system.
 type Item struct {
-	ID          string
-	Project     string
-	Type        ItemType
-	Title       string
-	Description string
-	Status      Status
-	Priority    int
-	ParentID    *string
+	ID          string    // Unique identifier (ts-XXXXXX or ep-XXXXXX)
+	Project     string    // Project scope (e.g., "gaia", "myapp")
+	Type        ItemType  // "task" or "epic"
+	Title       string    // Short description
+	Description string    // Full context, notes, handoff info
+	Status      Status    // Current state
+	Priority    int       // 1=high, 2=medium, 3=low
+	ParentID    *string   // Optional parent epic ID
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
 
+// Log is a timestamped audit trail entry for an item.
 type Log struct {
 	ID        int64
 	ItemID    string
@@ -65,6 +68,8 @@ type Log struct {
 	CreatedAt time.Time
 }
 
+// Dep represents a dependency relationship where ItemID depends on DependsOn.
+// ItemID is blocked until DependsOn has status "done".
 type Dep struct {
 	ItemID    string
 	DependsOn string
