@@ -33,13 +33,19 @@ type Hook struct {
 }
 
 var (
-	flagProject  string
-	flagStatus   string
-	flagEpic     bool
-	flagPriority int
-	flagForce    bool
-	flagParent   string
-	flagBlocks   string
+	flagProject     string
+	flagStatus      string
+	flagEpic        bool
+	flagPriority    int
+	flagForce       bool
+	flagParent      string
+	flagBlocks      string
+	flagListParent  string
+	flagListType    string
+	flagBlocking    string
+	flagBlockedBy   string
+	flagHasBlockers bool
+	flagNoBlockers  bool
 )
 
 func openDB() (*db.DB, error) {
@@ -160,13 +166,19 @@ Examples:
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List tasks",
-	Long: `List all tasks, optionally filtered by project and/or status.
+	Long: `List all tasks, optionally filtered by various criteria.
 
 Examples:
   tasks list
   tasks list -p myproject
   tasks list --status open
-  tasks list -p myproject --status blocked`,
+  tasks list -p myproject --status blocked
+  tasks list --parent ep-abc123
+  tasks list --type epic
+  tasks list --blocking ts-xyz789
+  tasks list --blocked-by ts-abc123
+  tasks list --has-blockers
+  tasks list --no-blockers`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -183,7 +195,18 @@ Examples:
 			status = &s
 		}
 
-		items, err := database.ListItems(flagProject, status)
+		filter := db.ListFilter{
+			Project:     flagProject,
+			Status:      status,
+			Parent:      flagListParent,
+			Type:        flagListType,
+			Blocking:    flagBlocking,
+			BlockedBy:   flagBlockedBy,
+			HasBlockers: flagHasBlockers,
+			NoBlockers:  flagNoBlockers,
+		}
+
+		items, err := database.ListItemsFiltered(filter)
 		if err != nil {
 			return err
 		}
@@ -1037,7 +1060,13 @@ func init() {
 	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block")
 
 	// list flags
-	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done)")
+	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done, canceled)")
+	listCmd.Flags().StringVar(&flagListParent, "parent", "", "Filter by parent epic ID")
+	listCmd.Flags().StringVar(&flagListType, "type", "", "Filter by item type (task, epic)")
+	listCmd.Flags().StringVar(&flagBlocking, "blocking", "", "Show items that block the given ID")
+	listCmd.Flags().StringVar(&flagBlockedBy, "blocked-by", "", "Show items blocked by the given ID")
+	listCmd.Flags().BoolVar(&flagHasBlockers, "has-blockers", false, "Show only items with unresolved blockers")
+	listCmd.Flags().BoolVar(&flagNoBlockers, "no-blockers", false, "Show only items with no blockers")
 
 	// onboard flags
 	onboardCmd.Flags().BoolVar(&flagForce, "force", false, "Replace existing Task Tracking section")
@@ -1259,6 +1288,19 @@ tasks add "title" --parent <epic-id>   # New task under epic
 tasks add "title" --blocks <id>        # New task that blocks id
 tasks parent <id> <epic-id>     # Set task's parent epic
 tasks blocks <id> <other>       # id blocks other (other can't start until id done)
+
+# Editing
+tasks append <id> "text"        # Add to description
+tasks desc <id> "text"          # Replace description
+tasks edit <id>                 # Edit description in $TASKS_EDITOR
+
+# Filtering (tasks list)
+tasks list --parent <epic-id>   # Tasks under an epic
+tasks list --type epic          # Only epics
+tasks list --blocking <id>      # What blocks this task?
+tasks list --blocked-by <id>    # What does this task block?
+tasks list --has-blockers       # Tasks with unresolved deps
+tasks list --no-blockers        # Tasks with no blockers
 
 ## Current State`)
 

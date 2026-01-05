@@ -7,21 +7,68 @@ import (
 	"github.com/baiirun/dotworld-tasks/internal/model"
 )
 
+// ListFilter contains optional filters for listing items.
+type ListFilter struct {
+	Project     string        // Filter by project
+	Status      *model.Status // Filter by status
+	Parent      string        // Filter by parent epic ID
+	Type        string        // Filter by item type (task, epic)
+	Blocking    string        // Show items that block this ID
+	BlockedBy   string        // Show items blocked by this ID
+	HasBlockers bool          // Show only items with unresolved blockers
+	NoBlockers  bool          // Show only items with no blockers
+}
+
 // ListItems returns items filtered by project and/or status.
 func (db *DB) ListItems(project string, status *model.Status) ([]model.Item, error) {
+	return db.ListItemsFiltered(ListFilter{Project: project, Status: status})
+}
+
+// ListItemsFiltered returns items matching the given filters.
+func (db *DB) ListItemsFiltered(filter ListFilter) ([]model.Item, error) {
 	query := `SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at FROM items WHERE 1=1`
 	args := []any{}
 
-	if project != "" {
+	if filter.Project != "" {
 		query += ` AND project = ?`
-		args = append(args, project)
+		args = append(args, filter.Project)
 	}
-	if status != nil {
-		if !status.IsValid() {
-			return nil, fmt.Errorf("invalid status: %s", *status)
+	if filter.Status != nil {
+		if !filter.Status.IsValid() {
+			return nil, fmt.Errorf("invalid status: %s", *filter.Status)
 		}
 		query += ` AND status = ?`
-		args = append(args, *status)
+		args = append(args, *filter.Status)
+	}
+	if filter.Parent != "" {
+		query += ` AND parent_id = ?`
+		args = append(args, filter.Parent)
+	}
+	if filter.Type != "" {
+		itemType := model.ItemType(filter.Type)
+		if !itemType.IsValid() {
+			return nil, fmt.Errorf("invalid type: %s (valid: task, epic)", filter.Type)
+		}
+		query += ` AND type = ?`
+		args = append(args, filter.Type)
+	}
+	if filter.Blocking != "" {
+		// Items that block the given ID (i.e., items the given ID depends on)
+		query += ` AND id IN (SELECT depends_on FROM deps WHERE item_id = ?)`
+		args = append(args, filter.Blocking)
+	}
+	if filter.BlockedBy != "" {
+		// Items blocked by the given ID (i.e., items that depend on the given ID)
+		query += ` AND id IN (SELECT item_id FROM deps WHERE depends_on = ?)`
+		args = append(args, filter.BlockedBy)
+	}
+	if filter.HasBlockers {
+		// Items with unresolved blockers (dependencies that aren't done)
+		query += ` AND id IN (SELECT d.item_id FROM deps d JOIN items i ON d.depends_on = i.id WHERE i.status != 'done')`
+	}
+	if filter.NoBlockers {
+		// Items with no blockers (either no deps, or all deps are done)
+		query += ` AND id NOT IN (SELECT d.item_id FROM deps d JOIN items i ON d.depends_on = i.id WHERE i.status != 'done')`
 	}
 	query += ` ORDER BY priority ASC, created_at ASC`
 

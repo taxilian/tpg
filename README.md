@@ -109,9 +109,14 @@ tasks done ts-a1b2c3
 | `-p, --project` | all | Filter/set project scope |
 | `-e, --epic` | add | Create epic instead of task |
 | `--priority` | add | Priority: 1=high, 2=medium (default), 3=low |
-| `--parent` | add | Set parent epic at creation |
+| `--parent` | add, list | Set parent epic at creation / filter by parent |
 | `--blocks` | add | Set task this will block at creation |
 | `--status` | list | Filter by status |
+| `--type` | list | Filter by item type (task, epic) |
+| `--blocking` | list | Show items that block the given ID |
+| `--blocked-by` | list | Show items blocked by the given ID |
+| `--has-blockers` | list | Show only items with unresolved blockers |
+| `--no-blockers` | list | Show only items with no blockers |
 
 ## ID Format
 

@@ -194,3 +194,271 @@ func TestProjectStatus_Empty(t *testing.T) {
 		t.Error("expected all counts to be 0 for empty project")
 	}
 }
+
+func createTestEpic(t *testing.T, db *DB, title, project string) *model.Item {
+	t.Helper()
+	item := &model.Item{
+		ID:       model.GenerateID(model.ItemTypeEpic),
+		Project:  project,
+		Type:     model.ItemTypeEpic,
+		Title:    title,
+		Status:   model.StatusOpen,
+		Priority: 2,
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+	return item
+}
+
+func TestListItemsFiltered_Parent(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := createTestEpic(t, db, "Epic 1", "test")
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+
+	// Set task1's parent to epic
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Filter by parent
+	items, err := db.ListItemsFiltered(ListFilter{Parent: epic.ID})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("expected 1 item under epic, got %d", len(items))
+	}
+	if len(items) > 0 && items[0].ID != task1.ID {
+		t.Errorf("expected task1 under epic, got %s", items[0].ID)
+	}
+
+	// task2 should not be included
+	for _, item := range items {
+		if item.ID == task2.ID {
+			t.Error("task2 should not be under epic")
+		}
+	}
+}
+
+func TestListItemsFiltered_Type(t *testing.T) {
+	db := setupTestDB(t)
+
+	createTestEpic(t, db, "Epic 1", "test")
+	createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+
+	// Filter by type=epic
+	items, err := db.ListItemsFiltered(ListFilter{Type: "epic"})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("expected 1 epic, got %d", len(items))
+	}
+
+	// Filter by type=task
+	items, err = db.ListItemsFiltered(ListFilter{Type: "task"})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 tasks, got %d", len(items))
+	}
+}
+
+func TestListItemsFiltered_InvalidType(t *testing.T) {
+	db := setupTestDB(t)
+
+	_, err := db.ListItemsFiltered(ListFilter{Type: "invalid"})
+	if err == nil {
+		t.Error("expected error for invalid type")
+	}
+}
+
+func TestListItemsFiltered_Blocking(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	task3 := createTestItemWithProject(t, db, "Task 3", "test", model.StatusOpen, 2)
+
+	// task2 depends on task1 (task1 blocks task2)
+	db.AddDep(task2.ID, task1.ID)
+	// task2 also depends on task3 (task3 blocks task2)
+	db.AddDep(task2.ID, task3.ID)
+
+	// Find items that block task2
+	items, err := db.ListItemsFiltered(ListFilter{Blocking: task2.ID})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 items blocking task2, got %d", len(items))
+	}
+
+	// Verify task1 and task3 are in the list
+	ids := map[string]bool{}
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	if !ids[task1.ID] || !ids[task3.ID] {
+		t.Errorf("expected task1 and task3, got %v", ids)
+	}
+}
+
+func TestListItemsFiltered_BlockedBy(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	task3 := createTestItemWithProject(t, db, "Task 3", "test", model.StatusOpen, 2)
+
+	// task2 depends on task1 (task2 is blocked by task1)
+	db.AddDep(task2.ID, task1.ID)
+	// task3 depends on task1 (task3 is blocked by task1)
+	db.AddDep(task3.ID, task1.ID)
+
+	// Find items blocked by task1
+	items, err := db.ListItemsFiltered(ListFilter{BlockedBy: task1.ID})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 items blocked by task1, got %d", len(items))
+	}
+
+	// Verify task2 and task3 are in the list
+	ids := map[string]bool{}
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	if !ids[task2.ID] || !ids[task3.ID] {
+		t.Errorf("expected task2 and task3, got %v", ids)
+	}
+}
+
+func TestListItemsFiltered_HasBlockers(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	task3 := createTestItemWithProject(t, db, "Task 3", "test", model.StatusOpen, 2)
+
+	// task2 depends on task1
+	db.AddDep(task2.ID, task1.ID)
+
+	// Find items with unresolved blockers
+	items, err := db.ListItemsFiltered(ListFilter{HasBlockers: true})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("expected 1 item with blockers, got %d", len(items))
+	}
+	if len(items) > 0 && items[0].ID != task2.ID {
+		t.Errorf("expected task2 to have blockers, got %s", items[0].ID)
+	}
+
+	// Complete task1, now task2 should have no unresolved blockers
+	db.UpdateStatus(task1.ID, model.StatusDone)
+
+	items, err = db.ListItemsFiltered(ListFilter{HasBlockers: true})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 items with blockers after completing dep, got %d", len(items))
+	}
+
+	// task3 was never returned because it has no deps
+	_ = task3
+}
+
+func TestListItemsFiltered_NoBlockers(t *testing.T) {
+	db := setupTestDB(t)
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	task3 := createTestItemWithProject(t, db, "Task 3", "test", model.StatusOpen, 2)
+
+	// task2 depends on task1
+	db.AddDep(task2.ID, task1.ID)
+
+	// Find items with no blockers (task1 and task3)
+	items, err := db.ListItemsFiltered(ListFilter{NoBlockers: true})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 items with no blockers, got %d", len(items))
+	}
+
+	// Verify task1 and task3 are in the list (not task2)
+	ids := map[string]bool{}
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	if !ids[task1.ID] || !ids[task3.ID] {
+		t.Errorf("expected task1 and task3, got %v", ids)
+	}
+	if ids[task2.ID] {
+		t.Error("task2 should not be in the no-blockers list")
+	}
+
+	// Complete task1, now task2 should also have no unresolved blockers
+	db.UpdateStatus(task1.ID, model.StatusDone)
+
+	items, err = db.ListItemsFiltered(ListFilter{NoBlockers: true})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 3 {
+		t.Errorf("expected 3 items with no blockers after completing dep, got %d", len(items))
+	}
+}
+
+func TestListItemsFiltered_CombinedFilters(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := createTestEpic(t, db, "Epic", "test")
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusDone, 2)
+	task3 := createTestItemWithProject(t, db, "Task 3", "other", model.StatusOpen, 2)
+
+	// Set parents
+	db.SetParent(task1.ID, epic.ID)
+	db.SetParent(task2.ID, epic.ID)
+
+	// Filter by parent and status
+	status := model.StatusOpen
+	items, err := db.ListItemsFiltered(ListFilter{
+		Parent: epic.ID,
+		Status: &status,
+	})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("expected 1 open item under epic, got %d", len(items))
+	}
+	if len(items) > 0 && items[0].ID != task1.ID {
+		t.Errorf("expected task1, got %s", items[0].ID)
+	}
+
+	// Filter by project and type
+	items, err = db.ListItemsFiltered(ListFilter{
+		Project: "test",
+		Type:    "task",
+	})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 tasks in test project, got %d", len(items))
+	}
+
+	_ = task3
+}
