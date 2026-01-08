@@ -11,6 +11,7 @@ import (
 
 	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -1068,6 +1069,46 @@ Example hook configuration in Claude Code settings:
 	},
 }
 
+var tuiCmd = &cobra.Command{
+	Use:   "tui",
+	Short: "Launch interactive terminal UI",
+	Long: `Launch an interactive terminal UI for managing tasks.
+
+Navigation:
+  j/k or arrows    Move cursor up/down
+  g/G or home/end  Jump to first/last item
+  enter or l       View task details
+  esc or h         Go back to list
+
+Actions:
+  s   Start task (open/blocked -> in_progress)
+  d   Mark done (in_progress -> done)
+  b   Block task (prompts for reason)
+  L   Log progress (prompts for message)
+  c   Cancel task (prompts for optional reason)
+  D   Delete task
+  a   Add dependency (prompts for blocker ID)
+  r   Refresh task list
+
+Filtering:
+  /       Search by title/ID/description
+  p       Filter by project
+  1-5     Toggle status: 1=open 2=in_progress 3=blocked 4=done 5=canceled
+  0       Show all statuses
+  esc     Clear search/project filter
+
+Press q to quit.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		return tui.Run(database)
+	},
+}
+
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "", "Project scope")
@@ -1117,6 +1158,7 @@ func init() {
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(primeCmd)
 	rootCmd.AddCommand(onboardCmd)
+	rootCmd.AddCommand(tuiCmd)
 }
 
 func main() {
