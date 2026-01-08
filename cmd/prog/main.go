@@ -1070,8 +1070,9 @@ Example hook configuration in Claude Code settings:
 }
 
 var tuiCmd = &cobra.Command{
-	Use:   "tui",
-	Short: "Launch interactive terminal UI",
+	Use:     "tui",
+	Aliases: []string{"ui"},
+	Short:   "Launch interactive terminal UI",
 	Long: `Launch an interactive terminal UI for managing tasks.
 
 Navigation:

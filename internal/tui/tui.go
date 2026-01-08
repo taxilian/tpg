@@ -23,13 +23,13 @@ const (
 type InputMode int
 
 const (
-	InputNone InputMode = iota
-	InputBlock      // Entering block reason
-	InputLog        // Entering log message
-	InputCancel     // Entering cancel reason
-	InputSearch     // Entering search text
-	InputProject    // Entering project filter
-	InputAddDep     // Entering dependency ID to add
+	InputNone    InputMode = iota
+	InputBlock             // Entering block reason
+	InputLog               // Entering log message
+	InputCancel            // Entering cancel reason
+	InputSearch            // Entering search text
+	InputProject           // Entering project filter
+	InputAddDep            // Entering dependency ID to add
 )
 
 // Status icons
@@ -43,8 +43,8 @@ const (
 
 // Model is the main Bubble Tea model for the TUI.
 type Model struct {
-	db    *db.DB
-	items []model.Item // all items from db
+	db       *db.DB
+	items    []model.Item // all items from db
 	filtered []model.Item // items after filtering
 	cursor   int
 	viewMode ViewMode
@@ -202,8 +202,8 @@ func (m *Model) applyFilters() {
 		if !m.filterStatuses[item.Status] {
 			continue
 		}
-		// Project filter
-		if m.filterProject != "" && item.Project != m.filterProject {
+		// Project filter (partial match)
+		if m.filterProject != "" && !strings.Contains(strings.ToLower(item.Project), strings.ToLower(m.filterProject)) {
 			continue
 		}
 		// Search filter
@@ -300,9 +300,13 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace":
 		if len(m.inputText) > 0 {
 			m.inputText = m.inputText[:len(m.inputText)-1]
-			// Live filter for search
-			if m.inputMode == InputSearch {
+			// Live filter for search and project
+			switch m.inputMode {
+			case InputSearch:
 				m.filterSearch = m.inputText
+				m.applyFilters()
+			case InputProject:
+				m.filterProject = m.inputText
 				m.applyFilters()
 			}
 		}
@@ -311,9 +315,13 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Add character if printable
 		if len(msg.String()) == 1 {
 			m.inputText += msg.String()
-			// Live filter for search
-			if m.inputMode == InputSearch {
+			// Live filter for search and project
+			switch m.inputMode {
+			case InputSearch:
 				m.filterSearch = m.inputText
+				m.applyFilters()
+			case InputProject:
+				m.filterProject = m.inputText
 				m.applyFilters()
 			}
 		}
