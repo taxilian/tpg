@@ -34,21 +34,23 @@ type Hook struct {
 }
 
 var (
-	flagProject     string
-	flagStatus      string
-	flagEpic        bool
-	flagPriority    int
-	flagForce       bool
-	flagParent      string
-	flagBlocks      string
-	flagListParent  string
-	flagListType    string
-	flagBlocking    string
-	flagBlockedBy   string
-	flagHasBlockers bool
-	flagNoBlockers  bool
-	flagEditTitle   string
-	flagStatusAll   bool
+	flagProject      string
+	flagStatus       string
+	flagEpic         bool
+	flagPriority     int
+	flagForce        bool
+	flagParent       string
+	flagBlocks       string
+	flagListParent   string
+	flagListType     string
+	flagBlocking     string
+	flagBlockedBy    string
+	flagHasBlockers  bool
+	flagNoBlockers   bool
+	flagEditTitle    string
+	flagStatusAll    bool
+	flagLearnConcept []string
+	flagLearnFile    []string
 )
 
 func openDB() (*db.DB, error) {
@@ -796,6 +798,67 @@ Example:
 	},
 }
 
+var learnCmd = &cobra.Command{
+	Use:   "learn <summary>",
+	Short: "Log a learning for future context retrieval",
+	Long: `Log a learning discovered during work.
+
+Learnings are tagged with concepts for organized retrieval.
+Concepts are created automatically if they don't exist.
+
+If a task is in progress for the project, the learning is linked to it.
+
+Examples:
+  prog learn "Token refresh has race condition" -p myproject -c auth -c concurrency
+  prog learn "Config loaded from env first" -p myproject -c config -f config.go`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validate required flags
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p)")
+		}
+		if len(flagLearnConcept) == 0 {
+			return fmt.Errorf("at least one concept is required (-c)")
+		}
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		project := flagProject
+
+		// Get current in-progress task for this project
+		taskID, _ := database.GetCurrentTaskID(project)
+
+		now := time.Now()
+		learning := &model.Learning{
+			ID:        model.GenerateLearningID(),
+			Project:   project,
+			CreatedAt: now,
+			UpdatedAt: now,
+			TaskID:    taskID,
+			Summary:   strings.Join(args, " "),
+			Status:    model.LearningStatusActive,
+			Concepts:  flagLearnConcept,
+			Files:     flagLearnFile,
+		}
+
+		if err := database.CreateLearning(learning); err != nil {
+			return err
+		}
+
+		// Build output
+		output := learning.ID
+		if taskID != nil {
+			output += fmt.Sprintf(" (linked to %s)", *taskID)
+		}
+		fmt.Println(output)
+		return nil
+	},
+}
+
 var onboardCmd = &cobra.Command{
 	Use:   "onboard",
 	Short: "Set up prog integration for AI agents",
@@ -1165,6 +1228,10 @@ func init() {
 	// status flags
 	statusCmd.Flags().BoolVar(&flagStatusAll, "all", false, "Show all ready tasks (default: limit to 10)")
 
+	// learn flags
+	learnCmd.Flags().StringArrayVarP(&flagLearnConcept, "concept", "c", nil, "Concept to tag this learning with (can be repeated)")
+	learnCmd.Flags().StringArrayVarP(&flagLearnFile, "file", "f", nil, "Related file (can be repeated)")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
@@ -1185,6 +1252,7 @@ func init() {
 	rootCmd.AddCommand(parentCmd)
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(blocksCmd)
+	rootCmd.AddCommand(learnCmd)
 	rootCmd.AddCommand(primeCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
