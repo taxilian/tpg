@@ -743,6 +743,32 @@ Example:
 	},
 }
 
+var projectCmd = &cobra.Command{
+	Use:   "project <id> <project>",
+	Short: "Set a task's project",
+	Long: `Set or change the project for a task.
+
+The project will be created if it doesn't exist.
+
+Example:
+  prog project ts-a1b2c3 myproject
+  # ts-a1b2c3 is now in myproject`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		if err := database.SetProject(args[0], args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("%s is now in project %s\n", args[0], args[1])
+		return nil
+	},
+}
+
 var blocksCmd = &cobra.Command{
 	Use:   "blocks <id> <other-id>",
 	Short: "Mark a task as blocking another",
@@ -1087,6 +1113,7 @@ Actions:
   b   Block task (prompts for reason)
   L   Log progress (prompts for message)
   c   Cancel task (prompts for optional reason)
+  n   Create new task (inherits project from selected item)
   D   Delete task
   a   Add dependency (prompts for blocker ID)
   r   Refresh task list
@@ -1096,7 +1123,7 @@ Filtering:
   p       Filter by project
   1-5     Toggle status: 1=open 2=in_progress 3=blocked 4=done 5=canceled
   0       Show all statuses
-  esc     Clear search/project filter
+  esc     Clear filters, or quit if none set
 
 Press q to quit.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1156,6 +1183,7 @@ func init() {
 	rootCmd.AddCommand(descCmd)
 	rootCmd.AddCommand(editCmd)
 	rootCmd.AddCommand(parentCmd)
+	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(primeCmd)
 	rootCmd.AddCommand(onboardCmd)
@@ -1365,6 +1393,7 @@ prog add "title" -e            # New epic
 prog add "title" --parent <epic-id>   # New task under epic
 prog add "title" --blocks <id>        # New task that blocks id
 prog parent <id> <epic-id>     # Set task's parent epic
+prog project <id> <project>    # Move task to a project
 prog blocks <id> <other>       # id blocks other (other can't start until id done)
 
 # Editing

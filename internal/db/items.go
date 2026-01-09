@@ -128,6 +128,29 @@ func (db *DB) SetParent(itemID, parentID string) error {
 	return nil
 }
 
+// SetProject changes an item's project.
+func (db *DB) SetProject(id string, project string) error {
+	// Auto-create project if specified
+	if project != "" {
+		if err := db.EnsureProject(project); err != nil {
+			return err
+		}
+	}
+
+	result, err := db.Exec(`
+		UPDATE items SET project = ?, updated_at = ? WHERE id = ?`,
+		project, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to set project: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+	}
+	return nil
+}
+
 // SetDescription replaces an item's description entirely.
 func (db *DB) SetDescription(id string, text string) error {
 	result, err := db.Exec(`
