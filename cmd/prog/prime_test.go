@@ -155,9 +155,9 @@ func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 		"prog start",
 		"prog log",
 		"prog done",
-		"prog cancel",
 		"prog block",
 		"prog add",
+		"prog append",
 	}
 
 	for _, cmd := range commands {

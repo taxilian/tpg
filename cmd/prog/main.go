@@ -1379,52 +1379,27 @@ Work is NOT complete until prog reflects reality.
 ## Essential Commands
 
 # Finding work
-prog status              # Overview of all projects
-prog ready               # Tasks ready to work on (deps satisfied)
-prog show <id>           # Full details including logs
-prog graph               # Show dependency tree
-prog projects            # List all projects
-
-Resuming a session? If a task is already in_progress, use 'prog show <id>'
-to read its logs and understand current state before continuing.
+prog status              # Overview
+prog ready               # Tasks ready to work on
+prog show <id>           # Full details
 
 # Working
 prog start <id>          # Claim a task
 prog log <id> "message"  # Log progress
 prog done <id>           # Mark complete
-prog cancel <id> "why"   # Cancel (close without completing)
 prog block <id> "why"    # Mark blocked
 
-# Creating & organizing
+# Creating
 prog add "title" -p project    # New task
 prog add "title" -e            # New epic
-prog add "title" --parent <epic-id>   # New task under epic
-prog add "title" --blocks <id>        # New task that blocks id
-prog parent <id> <epic-id>     # Set task's parent epic
-prog project <id> <project>    # Move task to a project
-prog blocks <id> <other>       # id blocks other (other can't start until id done)
 
 # Editing
 prog append <id> "text"        # Add to description
-prog desc <id> "text"          # Replace description
-prog edit <id>                 # Edit description in $PROG_EDITOR
 
-# Filtering (prog list, prog ready)
+# Filtering
 prog list -p myproject         # Filter by project
-prog list --status open        # Filter by status (open, in_progress, blocked, done, canceled)
-prog list -p myproject --status open  # Combine filters
-prog list --parent <epic-id>   # Tasks under an epic
-prog list --type epic          # Only epics
-prog list --blocking <id>      # What blocks this task?
-prog list --blocked-by <id>    # What does this task block?
-prog list --has-blockers       # Tasks with unresolved deps
-prog list --no-blockers        # Tasks with no blockers
-prog ready -p myproject        # Ready tasks in a specific project
-
-# Interactive TUI
-prog tui                       # Launch interactive UI (alias: prog ui)
-                               # j/k:nav  s:start d:done b:block L:log
-                               # /:search p:project 1-5:status filter
+prog list --status open        # Filter by status
+prog ready -p myproject        # Ready in project
 
 ## Current State`)
 
