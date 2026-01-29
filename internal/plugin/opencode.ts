@@ -5,9 +5,11 @@
  * - Injects `tpg prime` context into system prompt (fresh each time)
  * - Injects `tpg prime` context during context compaction
  * - Adds AGENT_ID and AGENT_TYPE env vars to all `tpg` bash commands
+ * - Provides tools to inspect subagent sessions (check task status without full context)
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { z } from "zod"
 
 export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
   // Cache agent type per session to avoid repeated API calls
@@ -103,6 +105,105 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
 
       output.args.command = `AGENT_ID="${sessionID}" AGENT_TYPE="${agentType}" ${cmd}`
     },
+
+    /**
+     * Provide tools for inspecting subagent sessions.
+     * Allows checking task status without pulling full context.
+     */
+    tool: {
+      // Check if subagent exists and get its metadata
+      inspect_subagent_metadata: {
+        description: "Check if a subagent session exists and get its metadata",
+        parameters: z.object({ subagentID: z.string() }),
+        execute: async ({ subagentID }) => {
+          try {
+            const result = await client.session.get({ path: { id: subagentID } })
+            const session = (result as any)?.data || result
+            
+            if (!session) {
+              return { accessible: false, reason: "not_found" }
+            }
+            
+            return {
+              accessible: true,
+              id: session.id,
+              parentID: session.parentID,
+              title: session.title,
+              description: session.description,
+              created: session.createdAt || session.time?.created,
+              lastUpdate: session.updatedAt || session.time?.updated,
+              directory: session.directory,
+              isSubagent: session.parentID != null
+            }
+          } catch {
+            return { accessible: false, reason: "error_accessing" }
+          }
+        }
+      },
+
+      // List messages with only metadata (no content) - lightweight index
+      list_subagent_messages: {
+        description: "Get a lightweight index of messages in a subagent without full content",
+        parameters: z.object({
+          subagentID: z.string(),
+          limit: z.number().optional().default(20)
+        }),
+        execute: async ({ subagentID, limit }) => {
+          try {
+            const messages = await client.session.messages({ sessionID: subagentID })
+            const recent = messages.slice(-limit)
+            
+            return {
+              totalMessages: messages.length,
+              returned: recent.length,
+              messages: recent.map(m => ({
+                id: m.id,
+                role: m.role,
+                created: m.createdAt,
+                toolCalls: m.toolCalls?.map((t: any) => t.tool) || [],
+                hasErrors: m.toolResults?.some((r: any) => r.error) || false
+              }))
+            }
+          } catch {
+            return { error: "Failed to retrieve messages" }
+          }
+        }
+      },
+
+      // Get specific message content only when needed
+      get_subagent_message: {
+        description: "Retrieve full content of a specific message from a subagent",
+        parameters: z.object({
+          subagentID: z.string(),
+          messageID: z.string()
+        }),
+        execute: async ({ subagentID, messageID }) => {
+          try {
+            const messages = await client.session.messages({ sessionID: subagentID })
+            const message = messages.find(m => m.id === messageID)
+            
+            if (!message) {
+              return { error: "Message not found" }
+            }
+            
+            return {
+              id: message.id,
+              role: message.role,
+              created: message.createdAt,
+              content: message.content?.substring(0, 2000), // Truncate long content
+              toolCalls: message.toolCalls,
+              toolResults: message.toolResults?.map((r: any) => ({
+                tool: r.tool,
+                status: r.error ? "error" : "success",
+                output: r.output?.substring(0, 1000) // Truncate
+              }))
+            }
+          } catch {
+            return { error: "Failed to retrieve message" }
+          }
+        }
+      }
+    }
   }
 }
 
