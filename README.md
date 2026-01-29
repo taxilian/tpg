@@ -11,7 +11,7 @@ SQLite-backed task and tacit knowledge management for AI agents. Agents lose con
 Requires Go 1.24+.
 
 ```bash
-go install github.com/taxilian/tpg/cmd/tpg@v0.4.0
+go install github.com/taxilian/tpg/cmd/tpg@v0.4.1
 ```
 
 ### Build from source
