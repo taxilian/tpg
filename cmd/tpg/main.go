@@ -718,6 +718,96 @@ Example:
 	},
 }
 
+var reopenCmd = &cobra.Command{
+	Use:   "reopen <id> [reason]",
+	Short: "Reopen a closed task, setting it back to open",
+	Long: `Reopen a task that was completed, canceled, or otherwise closed
+but needs to be revisited.
+
+This sets the task back to open (pending) status. Use this for
+edge cases where a task was closed prematurely.
+
+Example:
+  tpg reopen ts-a1b2c3
+  tpg reopen ts-a1b2c3 "Fix didn't actually resolve the issue"`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		id := args[0]
+
+		agentCtx := db.GetAgentContext()
+		if err := database.UpdateStatus(id, model.StatusOpen, agentCtx); err != nil {
+			return err
+		}
+
+		if len(args) > 1 {
+			reason := strings.Join(args[1:], " ")
+			if err := database.AddLog(id, "Reopened: "+reason); err != nil {
+				return err
+			}
+			fmt.Printf("Reopened %s: %s\n", id, reason)
+		} else {
+			fmt.Printf("Reopened %s\n", id)
+		}
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
+		return nil
+	},
+}
+
+var setStatusCmd = &cobra.Command{
+	Use:   "set-status <id> <status>",
+	Short: "Force-set a task's status (use with caution)",
+	Long: `WARNING: This is a low-level escape hatch for fixing broken state.
+Prefer the standard commands (start, done, block, cancel, reopen)
+for normal workflow. Only use this when things are busted and the
+normal commands won't get you where you need to be.
+
+Valid statuses: open, in_progress, blocked, done, canceled
+
+Example:
+  tpg set-status ts-a1b2c3 open
+  tpg set-status ts-a1b2c3 in_progress`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		id := args[0]
+		status := model.Status(args[1])
+
+		if !status.IsValid() {
+			return fmt.Errorf("invalid status %q (valid: open, in_progress, blocked, done, canceled)", args[1])
+		}
+
+		agentCtx := db.GetAgentContext()
+		if err := database.UpdateStatus(id, status, agentCtx); err != nil {
+			return err
+		}
+
+		if err := database.AddLog(id, fmt.Sprintf("Status force-set to %s", status)); err != nil {
+			return err
+		}
+
+		fmt.Printf("Set %s status to %s\n", id, status)
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
+		return nil
+	},
+}
+
 var staleCmd = &cobra.Command{
 	Use:   "stale",
 	Short: "List stale in-progress tasks",
@@ -2878,6 +2968,8 @@ func init() {
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(cancelCmd)
+	rootCmd.AddCommand(reopenCmd)
+	rootCmd.AddCommand(setStatusCmd)
 	rootCmd.AddCommand(blockCmd)
 	rootCmd.AddCommand(staleCmd)
 	rootCmd.AddCommand(deleteCmd)
