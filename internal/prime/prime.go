@@ -208,7 +208,13 @@ This builds cross-session context so progress is never lost.
 Available templates ({{.TemplateCount}}):
 {{range .Templates}}  {{.ID}} ({{len .Variables}} vars): {{.Description}}
 {{end}}
-Use: 'tpg add "Title" --template <id> --var key=\"value\"'
+Use: 'tpg add "Title" --template <id> --vars-yaml <<EOF'
+  problem: "What we're solving"
+  requirements: |
+    - Specific requirement 1
+    - Specific requirement 2
+  context: "Any helpful background or constraints"
+  EOF
 {{else -}}
 No templates found. Create templates in .tpg/templates/ to standardize workflows.
 {{end -}}
