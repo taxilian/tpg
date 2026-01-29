@@ -60,6 +60,39 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
     }
   }
 
+  /**
+   * Verify a session is a legitimate subagent accessible from current context.
+   * Security checks: must have parentID, must be in same directory tree.
+   */
+  async function verifySubagent(subagentID: string): Promise<{ ok: boolean; session?: any; reason?: string }> {
+    try {
+      const result = await client.session.get({ path: { id: subagentID } })
+      const session = (result as any)?.data || result
+      
+      if (!session) {
+        return { ok: false, reason: "not_found" }
+      }
+      
+      // Check 1: Must be an actual subagent (has parent)
+      if (!session.parentID) {
+        return { ok: false, reason: "not_a_subagent" }
+      }
+      
+      // Check 2: Must be in same project directory tree
+      if (session.directory && directory) {
+        const isInSameTree = session.directory.startsWith(directory) || 
+                            directory.startsWith(session.directory)
+        if (!isInSameTree) {
+          return { ok: false, reason: "different_project" }
+        }
+      }
+      
+      return { ok: true, session }
+    } catch {
+      return { ok: false, reason: "access_error" }
+    }
+  }
+
   return {
     /**
      * Inject fresh tpg prime context into system prompt.
@@ -116,41 +149,37 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
         description: "Check if a subagent session exists and get its metadata (including message count estimate)",
         parameters: z.object({ subagentID: z.string() }),
         execute: async ({ subagentID }) => {
+          const verify = await verifySubagent(subagentID)
+          if (!verify.ok) {
+            return { accessible: false, reason: verify.reason }
+          }
+          
+          const session = verify.session
+          
+          // Get message count for size estimate
+          let messageCount = 0
+          let sizeEstimate = "small"
           try {
-            const result = await client.session.get({ path: { id: subagentID } })
-            const session = (result as any)?.data || result
-            
-            if (!session) {
-              return { accessible: false, reason: "not_found" }
-            }
-            
-            // Get message count for size estimate
-            let messageCount = 0
-            let sizeEstimate = "small"
-            try {
-              const messages = await client.session.messages({ sessionID: subagentID })
-              messageCount = messages.length
-              if (messageCount > 100) sizeEstimate = "large"
-              else if (messageCount > 30) sizeEstimate = "medium"
-            } catch {
-              // Can't get message count, ignore
-            }
-            
-            return {
-              accessible: true,
-              id: session.id,
-              parentID: session.parentID,
-              title: session.title,
-              description: session.description,
-              created: session.createdAt || session.time?.created,
-              lastUpdate: session.updatedAt || session.time?.updated,
-              directory: session.directory,
-              isSubagent: session.parentID != null,
-              messageCount,
-              sizeEstimate
-            }
+            const messages = await client.session.messages({ sessionID: subagentID })
+            messageCount = messages.length
+            if (messageCount > 100) sizeEstimate = "large"
+            else if (messageCount > 30) sizeEstimate = "medium"
           } catch {
-            return { accessible: false, reason: "error_accessing" }
+            // Can't get message count, ignore
+          }
+          
+          return {
+            accessible: true,
+            id: session.id,
+            parentID: session.parentID,
+            title: session.title,
+            description: session.description,
+            created: session.createdAt || session.time?.created,
+            lastUpdate: session.updatedAt || session.time?.updated,
+            directory: session.directory,
+            isSubagent: true,
+            messageCount,
+            sizeEstimate
           }
         }
       },
@@ -163,6 +192,11 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
           limit: z.number().optional().default(20)
         }),
         execute: async ({ subagentID, limit }) => {
+          const verify = await verifySubagent(subagentID)
+          if (!verify.ok) {
+            return { error: `Cannot access: ${verify.reason}` }
+          }
+          
           try {
             const messages = await client.session.messages({ sessionID: subagentID })
             const recent = messages.slice(-limit)
@@ -192,6 +226,11 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
           messageID: z.string()
         }),
         execute: async ({ subagentID, messageID }) => {
+          const verify = await verifySubagent(subagentID)
+          if (!verify.ok) {
+            return { error: `Cannot access: ${verify.reason}` }
+          }
+          
           try {
             const messages = await client.session.messages({ sessionID: subagentID })
             const message = messages.find(m => m.id === messageID)
@@ -226,6 +265,11 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
           count: z.number().optional().default(10)
         }),
         execute: async ({ subagentID, count }) => {
+          const verify = await verifySubagent(subagentID)
+          if (!verify.ok) {
+            return { error: `Cannot access: ${verify.reason}` }
+          }
+          
           try {
             const messages = await client.session.messages({ sessionID: subagentID })
             const recent = messages.slice(-count)
@@ -269,6 +313,11 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
           limit: z.number().optional().default(5)
         }),
         execute: async ({ subagentID, limit }) => {
+          const verify = await verifySubagent(subagentID)
+          if (!verify.ok) {
+            return { error: `Cannot access: ${verify.reason}` }
+          }
+          
           try {
             const messages = await client.session.messages({ sessionID: subagentID })
             
@@ -308,6 +357,11 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
           subagentID: z.string()
         }),
         execute: async ({ subagentID }) => {
+          const verify = await verifySubagent(subagentID)
+          if (!verify.ok) {
+            return { error: `Cannot access: ${verify.reason}` }
+          }
+          
           try {
             const messages = await client.session.messages({ sessionID: subagentID })
             
