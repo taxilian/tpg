@@ -34,6 +34,24 @@ go install ./cmd/tpg
 tpg --help
 ```
 
+### Development mode
+
+For development, install so changes are reflected immediately:
+
+```bash
+git clone https://github.com/taxilian/tpg.git
+cd tpg
+go install ./cmd/tpg
+```
+
+After making code changes, reinstall:
+
+```bash
+go install ./cmd/tpg
+```
+
+This builds and installs to `$GOBIN` (or `$GOPATH/bin`). Make sure it's in your `$PATH`.
+
 ## Quick Start
 
 ```bash
