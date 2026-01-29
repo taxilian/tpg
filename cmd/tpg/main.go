@@ -86,6 +86,7 @@ var (
 	flagPrimeCustomize   bool
 	flagPrimeRender      string
 	flagVerbose          bool
+	flagMergeConfirm     bool
 )
 
 func openDB() (*db.DB, error) {
@@ -2954,6 +2955,61 @@ Press q to quit.`,
 	},
 }
 
+var mergeCmd = &cobra.Command{
+	Use:   "merge <source-id> <target-id>",
+	Short: "Merge duplicate tasks (source into target)",
+	Long: `Merge source task into target, combining all metadata.
+
+This is a destructive operation — the source item is deleted after merging.
+Requires --yes-i-am-sure to confirm.
+
+What gets merged:
+  - Dependencies (both directions) are transferred to target
+  - Logs are moved to target with a merge note
+  - Labels are copied to target
+  - Source description is appended to target
+
+Fails if merging would create a circular dependency.
+
+Examples:
+  tpg merge ts-abc ts-xyz --yes-i-am-sure   # merge ts-abc into ts-xyz`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !flagMergeConfirm {
+			return fmt.Errorf("this permanently deletes the source item — pass --yes-i-am-sure to confirm")
+		}
+
+		sourceID := args[0]
+		targetID := args[1]
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		// Show what will happen before merging
+		src, err := database.GetItem(sourceID)
+		if err != nil {
+			return fmt.Errorf("source: %w", err)
+		}
+		tgt, err := database.GetItem(targetID)
+		if err != nil {
+			return fmt.Errorf("target: %w", err)
+		}
+
+		fmt.Printf("Merging %s (%s) → %s (%s)\n", sourceID, src.Title, targetID, tgt.Title)
+
+		if err := database.MergeItems(sourceID, targetID); err != nil {
+			return err
+		}
+
+		fmt.Printf("Merged. %s has been deleted.\n", sourceID)
+		database.BackupQuiet()
+		return nil
+	},
+}
+
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&flagProject, "project", "", "Project scope")
@@ -2996,6 +3052,9 @@ func init() {
 	listCmd.Flags().BoolVar(&flagHasBlockers, "has-blockers", false, "Show only items with unresolved blockers")
 	listCmd.Flags().BoolVar(&flagNoBlockers, "no-blockers", false, "Show only items with no blockers")
 	listCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
+
+	// merge flags
+	mergeCmd.Flags().BoolVar(&flagMergeConfirm, "yes-i-am-sure", false, "Confirm destructive merge operation")
 
 	// stale flags
 	staleCmd.Flags().StringVar(&flagStaleThreshold, "threshold", "5m", "Threshold for stale in-progress tasks")
@@ -3093,6 +3152,7 @@ func init() {
 	rootCmd.AddCommand(compactCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
+	rootCmd.AddCommand(mergeCmd)
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(backupsCmd)
 	rootCmd.AddCommand(restoreCmd)
