@@ -73,8 +73,14 @@ type Model struct {
 	message string // temporary status message
 
 	// Detail view state
-	detailLogs []model.Log
-	detailDeps []string
+	detailLogs   []model.Log
+	detailDeps   []db.DepStatus // "depends on" (blockers)
+	detailBlocks []db.DepStatus // "blocks" (what this item blocks)
+	logsVisible  bool
+	logScroll    int // scroll offset for logs
+	depCursor    int // cursor within deps for navigation
+	depSection   int // 0 = "blocked by", 1 = "blocks"
+	depNavActive bool
 
 	// Stale tracking
 	staleItems map[string]bool // item IDs that are stale (no updates > 5 min)
@@ -154,6 +160,16 @@ func max(a, b int) int {
 	return b
 }
 
+// depStatusIcon returns a colored icon for a dependency's status string.
+func depStatusIcon(status string) string {
+	s := model.Status(status)
+	icon := statusIcon(s)
+	if c, ok := statusColors[s]; ok {
+		return lipgloss.NewStyle().Foreground(c).Render(icon)
+	}
+	return icon
+}
+
 func statusIcon(s model.Status) string {
 	switch s {
 	case model.StatusOpen:
@@ -196,9 +212,10 @@ type itemsMsg struct {
 }
 
 type detailMsg struct {
-	logs []model.Log
-	deps []string
-	err  error
+	logs   []model.Log
+	deps   []db.DepStatus // "depends on" (what blocks this)
+	blocks []db.DepStatus // "blocks" (what this blocks)
+	err    error
 }
 
 type actionMsg struct {
@@ -264,11 +281,15 @@ func (m Model) loadDetail() tea.Cmd {
 		if err != nil {
 			return detailMsg{err: err}
 		}
-		deps, err := m.db.GetDeps(id)
+		deps, err := m.db.GetDepStatuses(id)
 		if err != nil {
 			return detailMsg{err: err}
 		}
-		return detailMsg{logs: logs, deps: deps}
+		blocks, err := m.db.GetBlockedBy(id)
+		if err != nil {
+			return detailMsg{err: err}
+		}
+		return detailMsg{logs: logs, deps: deps, blocks: blocks}
 	}
 }
 
@@ -350,6 +371,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.detailLogs = msg.logs
 		m.detailDeps = msg.deps
+		m.detailBlocks = msg.blocks
+		m.logScroll = 0
+		m.depCursor = 0
+		m.depSection = 0
+		m.depNavActive = false
 		return m, nil
 
 	case actionMsg:
@@ -681,7 +707,66 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc", "h", "backspace":
+		if m.depNavActive {
+			m.depNavActive = false
+			return m, nil
+		}
 		m.viewMode = ViewList
+		m.logsVisible = false
+
+	// Log toggle and scroll
+	case "v":
+		m.logsVisible = !m.logsVisible
+		m.logScroll = 0
+	case "j", "down":
+		if m.depNavActive {
+			m.depCursor++
+			section := m.currentDepSection()
+			if m.depCursor >= len(section) {
+				m.depCursor = len(section) - 1
+			}
+			if m.depCursor < 0 {
+				m.depCursor = 0
+			}
+		} else if m.logsVisible && m.logScroll < len(m.detailLogs)-1 {
+			m.logScroll++
+		}
+	case "k", "up":
+		if m.depNavActive {
+			if m.depCursor > 0 {
+				m.depCursor--
+			}
+		} else if m.logsVisible && m.logScroll > 0 {
+			m.logScroll--
+		}
+
+	// Dependency navigation
+	case "tab":
+		if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
+			m.depNavActive = true
+			m.depSection = (m.depSection + 1) % 2
+			m.depCursor = 0
+			// If switching to empty section, switch back
+			if len(m.currentDepSection()) == 0 {
+				m.depSection = (m.depSection + 1) % 2
+			}
+		}
+	case "enter":
+		if m.depNavActive {
+			section := m.currentDepSection()
+			if m.depCursor < len(section) {
+				targetID := section[m.depCursor].ID
+				// Find the target in filtered items
+				for i, item := range m.filtered {
+					if item.ID == targetID {
+						m.cursor = i
+						m.depNavActive = false
+						return m, m.loadDetail()
+					}
+				}
+				m.message = fmt.Sprintf("Item %s not in current filter", targetID)
+			}
+		}
 
 	// Actions work in detail view too
 	case "s":
@@ -702,6 +787,14 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// currentDepSection returns the deps for the active section.
+func (m Model) currentDepSection() []db.DepStatus {
+	if m.depSection == 0 {
+		return m.detailDeps
+	}
+	return m.detailBlocks
 }
 
 func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -922,6 +1015,14 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 		staleWidth = 2 // ⚠ + space
 	}
 
+	// Agent indicator
+	agent := ""
+	agentWidth := 0
+	if item.AgentID != nil && *item.AgentID != "" {
+		agent = "◈"
+		agentWidth = 2
+	}
+
 	// Format: icon id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
@@ -939,8 +1040,8 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	// stale(2) + icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~16 + labels + project
-	titleWidth := width - 16 - labelsWidth - projectWidth - staleWidth
+	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth
+	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -950,6 +1051,9 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
+	if agent != "" {
+		return fmt.Sprintf("%s%s %s %s %-*s%s %s", stale, icon, item.ID, agent, titleWidth, title, labels, project)
+	}
 	return fmt.Sprintf("%s%s %s  %-*s%s %s", stale, icon, item.ID, titleWidth, title, labels, project)
 }
 
@@ -965,6 +1069,14 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	if m.staleItems[item.ID] {
 		stale = staleStyle.Render("⚠ ")
 		staleWidth = 2 // ⚠ + space
+	}
+
+	// Agent indicator
+	agent := ""
+	agentWidth := 0
+	if item.AgentID != nil && *item.AgentID != "" {
+		agent = dimStyle.Render("◈")
+		agentWidth = 2
 	}
 
 	id := dimStyle.Render(item.ID)
@@ -986,8 +1098,8 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	// stale(2) + icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~16 + labels + project
-	titleWidth := width - 16 - labelsWidth - projectWidth - staleWidth
+	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth
+	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -997,6 +1109,9 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
+	if agent != "" {
+		return fmt.Sprintf("%s%s %s %s %-*s%s %s", stale, iconStyled, id, agent, titleWidth, title, labels, project)
+	}
 	return fmt.Sprintf("%s%s %s  %-*s%s %s", stale, iconStyled, id, titleWidth, title, labels, project)
 }
 
@@ -1069,6 +1184,11 @@ func (m Model) detailView() string {
 		b.WriteString(detailLabelStyle.Render("Parent:   ") + *item.ParentID + "\n")
 	}
 
+	// Agent assignment
+	if item.AgentID != nil && *item.AgentID != "" {
+		b.WriteString(detailLabelStyle.Render("Agent:    ") + dimStyle.Render(*item.AgentID) + "\n")
+	}
+
 	// Labels
 	if len(item.Labels) > 0 {
 		labelsStr := ""
@@ -1081,11 +1201,41 @@ func (m Model) detailView() string {
 		b.WriteString(detailLabelStyle.Render("Labels:   ") + labelsStr + "\n")
 	}
 
-	// Dependencies
+	// Dependencies — "Blocked by" (what this depends on)
 	if len(m.detailDeps) > 0 {
-		b.WriteString("\n" + detailLabelStyle.Render("Blocked by:") + "\n")
-		for _, dep := range m.detailDeps {
-			b.WriteString("  " + dimStyle.Render("→") + " " + dep + "\n")
+		header := "Blocked by:"
+		if m.depNavActive && m.depSection == 0 {
+			header = "▸ Blocked by:"
+		}
+		b.WriteString("\n" + detailLabelStyle.Render(header) + "\n")
+		for i, dep := range m.detailDeps {
+			icon := depStatusIcon(dep.Status)
+			selected := m.depNavActive && m.depSection == 0 && i == m.depCursor
+			line := fmt.Sprintf("  %s %s %s", icon, dep.ID, dep.Title)
+			if selected {
+				b.WriteString(selectedRowStyle.Render(line) + "\n")
+			} else {
+				b.WriteString(line + "\n")
+			}
+		}
+	}
+
+	// Dependencies — "Blocks" (what this item blocks)
+	if len(m.detailBlocks) > 0 {
+		header := "Blocks:"
+		if m.depNavActive && m.depSection == 1 {
+			header = "▸ Blocks:"
+		}
+		b.WriteString("\n" + detailLabelStyle.Render(header) + "\n")
+		for i, dep := range m.detailBlocks {
+			icon := depStatusIcon(dep.Status)
+			selected := m.depNavActive && m.depSection == 1 && i == m.depCursor
+			line := fmt.Sprintf("  %s %s %s", icon, dep.ID, dep.Title)
+			if selected {
+				b.WriteString(selectedRowStyle.Render(line) + "\n")
+			} else {
+				b.WriteString(line + "\n")
+			}
 		}
 	}
 
@@ -1095,17 +1245,32 @@ func (m Model) detailView() string {
 		b.WriteString(item.Description + "\n")
 	}
 
-	// Logs
-	if len(m.detailLogs) > 0 {
-		b.WriteString("\n" + detailLabelStyle.Render("Logs:") + "\n")
-		for _, log := range m.detailLogs {
-			ts := dimStyle.Render(log.CreatedAt.Format("2006-01-02 15:04"))
-			b.WriteString("  " + ts + " " + log.Message + "\n")
+	// Logs (toggle with v, scrollable)
+	logCount := len(m.detailLogs)
+	if logCount > 0 {
+		if m.logsVisible {
+			maxVisible := 20
+			b.WriteString("\n" + detailLabelStyle.Render(fmt.Sprintf("Logs (%d):", logCount)) + " " + dimStyle.Render("v:hide j/k:scroll") + "\n")
+			end := min(m.logScroll+maxVisible, logCount)
+			for i := m.logScroll; i < end; i++ {
+				log := m.detailLogs[i]
+				ts := dimStyle.Render(log.CreatedAt.Format("2006-01-02 15:04"))
+				b.WriteString("  " + ts + " " + log.Message + "\n")
+			}
+			if end < logCount {
+				b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more (scroll with j/k)", logCount-end)) + "\n")
+			}
+		} else {
+			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("Logs: %d entries (v to show)", logCount)) + "\n")
 		}
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("esc:back  s:start d:done b:block L:log c:cancel a:add-dep  q:quit"))
+	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep  v:logs  q:quit"
+	if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
+		help += "  tab:deps enter:jump"
+	}
+	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
 }
