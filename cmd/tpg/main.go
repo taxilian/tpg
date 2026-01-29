@@ -20,7 +20,7 @@ import (
 )
 
 // version is set by goreleaser via ldflags; update before each release
-var version = "0.12.4-dev"
+var version = "0.1.0"
 
 // ClaudeSettings represents ~/.claude/settings.json structure
 type ClaudeSettings struct {
