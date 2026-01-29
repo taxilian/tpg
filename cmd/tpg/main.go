@@ -50,6 +50,7 @@ var (
 	flagForce            bool
 	flagParent           string
 	flagBlocks           string
+	flagAfter            string
 	flagTemplateID       string
 	flagTemplateVars     []string
 	flagListParent       string
@@ -163,55 +164,41 @@ var addCmd = &cobra.Command{
 	Short: "Create a new task or epic",
 	Long: `Create a new task (or epic with -e flag).
 
-Returns the generated ID (ts-XXXXXX for tasks, ep-XXXXXX for epics).
-
-With --template, instantiates a template creating a parent epic and child tasks
-with dependencies. Use 'tpg template list' to see available templates.
-
-For complex tasks, provide detailed requirements via stdin for better context:
+Returns the generated ID (ts-XXXXXX for tasks, ep-XXXXXX for epics). It is likely that current context
+will be unknown when the task is executed, so provide full explanation of the task.
 
 Examples:
   # Simple task
-  tpg add "Fix login bug" -p myproject
+  tpg add "Fix login bug"
 
-  # Task with detailed requirements via stdin (recommended for complex work)
-  tpg add "Implement user authentication" --desc - <<EOF
-  ## Requirements
-  - Email/password login
-  - JWT token generation
-  - Refresh token support
-  
-  ## Constraints
-  - Must use bcrypt for password hashing
-  - Tokens expire after 1 hour
-  
-  ## Context
-  Existing auth code in auth/legacy.go needs replacement
+  # Task depending on another (common pattern)
+  tpg add "Add tests for auth" --after ts-abc123
+
+  # Task that blocks another
+  tpg add "Design API schema" --blocks ts-xyz789
+
+  # With detailed description via stdin
+  tpg add "Implement auth" --desc - <<EOF
+  Requirements: JWT tokens, refresh support
+  Context: Replace auth/legacy.go
+  Constraints: Use bcrypt, 1hr expiry
+	(other detailed instructions defining the task and providing needed context)
   EOF
 
   # Epic grouping related tasks
-  tpg add "Auth system" -p myproject -e
-  
-  # Task with metadata
-  tpg add "Critical fix" --priority 1 --parent ep-abc123 -l bug -l urgent
+  tpg add "Auth system" -e
 
-  # Template with YAML variables (best for standardized workflows)
-  tpg add "User Auth Implementation" --template tdd --vars-yaml <<EOF
+  # Task with metadata
+  tpg add "Critical fix" --priority 1 --parent ep-abc123 -l bug
+
+  # From template (see 'tpg template list')
+  tpg add "Feature X" --template tdd --vars-yaml <<EOF
   feature_name: user authentication
-  problem: Users need secure login mechanism
-  scope: API endpoint with JWT generation
+  problem: Users need secure login
   requirements: |
     - Validate email format
-    - Hash passwords with bcrypt rounds=12
-    - Generate JWT with 1hr expiry
-    - Support refresh tokens
-  constraints: Must maintain backward compatibility with existing sessions
-  EOF
-
-  # Template with individual --var flags (for simple templates)
-  tpg add "User Auth" --template tdd \
-    --var 'feature_name="user authentication"' \
-    --var 'requirements="validate email, hash passwords"'`,
+    - Hash passwords with bcrypt
+  EOF`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -227,8 +214,8 @@ Examples:
 
 		// Handle template instantiation
 		if flagTemplateID != "" {
-			if flagParent != "" || flagBlocks != "" || flagEpic {
-				return fmt.Errorf("--template cannot be combined with --parent, --blocks, or --epic")
+			if flagParent != "" || flagBlocks != "" || flagAfter != "" || flagEpic {
+				return fmt.Errorf("--template cannot be combined with --parent, --blocks, --after, or --epic")
 			}
 
 			// Handle template vars from stdin (YAML)
@@ -309,6 +296,15 @@ Examples:
 			// This new item blocks the specified item
 			// (the blocked item depends on this new one)
 			if err := database.AddDep(flagBlocks, item.ID); err != nil {
+				return err
+			}
+		}
+
+		// Add dependency relationship if specified
+		if flagAfter != "" {
+			// This new item depends on the specified item
+			// (this new item is blocked by the specified one)
+			if err := database.AddDep(item.ID, flagAfter); err != nil {
 				return err
 			}
 		}
@@ -2774,7 +2770,8 @@ func init() {
 	addCmd.Flags().BoolVarP(&flagEpic, "epic", "e", false, "Create an epic instead of a task")
 	addCmd.Flags().IntVar(&flagPriority, "priority", 2, "Priority (1=high, 2=medium, 3=low)")
 	addCmd.Flags().StringVar(&flagParent, "parent", "", "Parent epic ID")
-	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block")
+	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block (it depends on this)")
+	addCmd.Flags().StringVar(&flagAfter, "after", "", "ID of task this depends on (must complete first)")
 	addCmd.Flags().StringArrayVarP(&flagAddLabels, "label", "l", nil, "Label to attach (can be repeated)")
 	addCmd.Flags().StringVar(&flagTemplateID, "template", "", "Template ID to instantiate")
 	addCmd.Flags().StringArrayVar(&flagTemplateVars, "var", nil, "Template variable value (name=json-string)")
