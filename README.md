@@ -2,7 +2,7 @@
 
 SQLite-backed task and tacit knowledge management for AI agents. Agents lose context between sessions. tpg persists tasks, progress logs, and learnings so agents can pick up where others left off.
 
-**Opencode-first** — tpg is designed primarily for Opencode, but supports Claude Code with the `--claude` flag.
+**Opencode-first** — tpg is designed primarily for Opencode.
 
 ## Install
 
@@ -58,11 +58,8 @@ This builds and installs to `$GOBIN` (or `$GOPATH/bin`). Make sure it's in your 
 # Initialize database (creates .tpg/tpg.db in current directory)
 tpg init
 
-# Set up Opencode hooks (recommended)
+# Set up Opencode integration (recommended)
 tpg onboard
-
-# For Claude Code users:
-tpg onboard --claude
 
 # Create a task
 tpg add "Implement user authentication"
@@ -88,7 +85,7 @@ tpg done ts-a1b2c3 "Implemented JWT auth with refresh tokens"
 | Command | Description |
 |---------|-------------|
 | `tpg init` | Initialize the database (supports `--prefix`, `--epic-prefix`) |
-| `tpg onboard` | Set up tpg integration for AI agents (use `--claude` for Claude Code) |
+| `tpg onboard` | Set up tpg integration for Opencode |
 | `tpg add <title>` | Create a task (returns ID) |
 | `tpg list` | List all tasks |
 | `tpg show <id>` | Show task details, logs, deps, suggested concepts |
@@ -588,32 +585,21 @@ The context engine design draws from several projects and papers:
 
 ## Opencode Integration
 
-The `tpg onboard` command configures Opencode hooks to inject workflow context at session start and before context compaction. This ensures agents maintain context about the tpg workflow across sessions.
+The `tpg onboard` command sets up Opencode integration:
 
-**Using Claude Code?** Run `tpg onboard --claude` to configure Claude Code hooks instead.
+1. Adds a Task Tracking section to `AGENTS.md`
+2. Installs an Opencode plugin (`.opencode/plugins/tpg.ts`) that:
+   - Injects `tpg prime` context into the system prompt for each session
+   - Re-injects context during compaction so task state survives
+   - Adds `AGENT_ID` and `AGENT_TYPE` environment variables to tpg commands
 
-**Using a different agent?** (Cursor, Droid, Codex, Gemini, etc.)
+This ensures agents maintain context about tasks across sessions and compaction boundaries.
 
-1. Copy the Task Tracking snippet from `AGENTS.md` to your agent's instruction file (`.cursorrules`, `CLAUDE.md`, etc.)
+**Using a different agent?** (Cursor, Claude Code, Codex, Gemini, etc.)
+
+1. Copy the Task Tracking snippet from `AGENTS.md` to your agent's instruction file
 2. If your tool supports hooks, add `tpg prime` to session start
 3. If no hooks, run `tpg prime` and paste output into agent context
-
-### Hook Configuration
-
-Running `tpg onboard` adds hooks to your Opencode settings. For Claude Code users (`tpg onboard --claude`), it configures `.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      { "command": "tpg prime" }
-    ],
-    "PreCompact": [
-      { "command": "tpg prime" }
-    ]
-  }
-}
-```
 
 ### What `tpg prime` outputs
 
