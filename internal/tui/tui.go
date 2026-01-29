@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
+	"github.com/taxilian/tpg/internal/templates"
 )
 
 // ViewMode represents the current view state.
@@ -18,6 +19,8 @@ type ViewMode int
 const (
 	ViewList ViewMode = iota
 	ViewDetail
+	ViewTemplateList
+	ViewTemplateDetail
 )
 
 // InputMode represents what kind of text input is active.
@@ -72,6 +75,14 @@ type Model struct {
 	// Detail view state
 	detailLogs []model.Log
 	detailDeps []string
+
+	// Stale tracking
+	staleItems map[string]bool // item IDs that are stale (no updates > 5 min)
+
+	// Template browser state
+	templates        []*templates.Template
+	templateCursor   int
+	selectedTemplate *templates.Template
 }
 
 // Styles
@@ -119,9 +130,29 @@ var (
 	labelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("147"))
 
+	staleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("208")).
+			Bold(true)
+
 	// Content area padding
 	contentPadding = 2
 )
+
+// min returns the minimum of two integers.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// max returns the maximum of two integers.
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 func statusIcon(s model.Status) string {
 	switch s {
@@ -154,6 +185,7 @@ func New(database *db.DB) Model {
 		db:             database,
 		viewMode:       ViewList,
 		filterStatuses: statuses,
+		staleItems:     make(map[string]bool),
 	}
 }
 
@@ -174,6 +206,18 @@ type actionMsg struct {
 	err     error
 }
 
+// templatesMsg carries template list data.
+type templatesMsg struct {
+	templates []*templates.Template
+	err       error
+}
+
+// staleMsg carries stale items data.
+type staleMsg struct {
+	stale []model.Item
+	err   error
+}
+
 // loadItems loads items from the database.
 func (m Model) loadItems() tea.Cmd {
 	return func() tea.Msg {
@@ -186,6 +230,26 @@ func (m Model) loadItems() tea.Cmd {
 			return itemsMsg{items: items, err: err}
 		}
 		return itemsMsg{items: items, err: nil}
+	}
+}
+
+// loadStaleItems loads stale items and returns a command.
+func (m Model) loadStaleItems() tea.Cmd {
+	return func() tea.Msg {
+		cutoff := time.Now().Add(-5 * time.Minute)
+		stale, err := m.db.StaleItems("", cutoff)
+		if err != nil {
+			return staleMsg{err: err}
+		}
+		return staleMsg{stale: stale}
+	}
+}
+
+// loadTemplates loads available templates.
+func (m Model) loadTemplates() tea.Cmd {
+	return func() tea.Msg {
+		tmpls, err := templates.ListTemplates()
+		return templatesMsg{templates: tmpls, err: err}
 	}
 }
 
@@ -253,7 +317,7 @@ func (m *Model) applyFilters() {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return m.loadItems()
+	return tea.Batch(m.loadItems(), m.loadStaleItems())
 }
 
 // Update implements tea.Model.
@@ -294,7 +358,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.message = msg.message
 		}
-		return m, m.loadItems()
+		return m, tea.Batch(m.loadItems(), m.loadStaleItems())
+
+	case templatesMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.templates = msg.templates
+		m.templateCursor = 0
+		return m, nil
+
+	case staleMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		// Rebuild stale items map
+		m.staleItems = make(map[string]bool)
+		for _, item := range msg.stale {
+			m.staleItems[item.ID] = true
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -311,6 +396,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleListKey(msg)
 	case ViewDetail:
 		return m.handleDetailKey(msg)
+	case ViewTemplateList:
+		return m.handleTemplateListKey(msg)
+	case ViewTemplateDetail:
+		return m.handleTemplateDetailKey(msg)
 	}
 	return m, nil
 }
@@ -576,6 +665,11 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.startInput(InputCreate, label)
+
+	// Templates
+	case "T":
+		m.viewMode = ViewTemplateList
+		return m, m.loadTemplates()
 	}
 
 	return m, nil
@@ -605,6 +699,57 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		return m, m.loadDetail()
+	}
+
+	return m, nil
+}
+
+func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+
+	case "up", "k":
+		if m.templateCursor > 0 {
+			m.templateCursor--
+		}
+
+	case "down", "j":
+		if m.templateCursor < len(m.templates)-1 {
+			m.templateCursor++
+		}
+
+	case "g", "home":
+		m.templateCursor = 0
+
+	case "G", "end":
+		m.templateCursor = max(0, len(m.templates)-1)
+
+	case "enter", "l":
+		if len(m.templates) > 0 && m.templateCursor < len(m.templates) {
+			m.selectedTemplate = m.templates[m.templateCursor]
+			m.viewMode = ViewTemplateDetail
+		}
+
+	case "esc", "h", "backspace":
+		m.viewMode = ViewList
+		m.templateCursor = 0
+
+	case "r":
+		return m, m.loadTemplates()
+	}
+
+	return m, nil
+}
+
+func (m Model) handleTemplateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+
+	case "esc", "h", "backspace":
+		m.viewMode = ViewTemplateList
+		m.selectedTemplate = nil
 	}
 
 	return m, nil
@@ -673,6 +818,10 @@ func (m Model) View() string {
 		b.WriteString(m.listView())
 	case ViewDetail:
 		b.WriteString(m.detailView())
+	case ViewTemplateList:
+		b.WriteString(m.templateListView())
+	case ViewTemplateDetail:
+		b.WriteString(m.templateDetailView())
 	}
 
 	// Input line
@@ -753,7 +902,7 @@ func (m Model) listView() string {
 
 	// Footer
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel n:new"))
+	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel n:new T:templates"))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  a:add-dep  r:refresh q:quit"))
 
@@ -764,6 +913,14 @@ func (m Model) listView() string {
 // Used for selected rows where we apply a single highlight style.
 func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	icon := statusIcon(item.Status)
+
+	// Stale indicator
+	stale := ""
+	staleWidth := 0
+	if m.staleItems[item.ID] {
+		stale = "⚠"
+		staleWidth = 2 // ⚠ + space
+	}
 
 	// Format: icon id title [label1] [label2] [project]
 	project := ""
@@ -782,8 +939,8 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	// icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~14 + labels + project
-	titleWidth := width - 14 - labelsWidth - projectWidth
+	// stale(2) + icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~16 + labels + project
+	titleWidth := width - 16 - labelsWidth - projectWidth - staleWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -793,7 +950,7 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
-	return fmt.Sprintf("%s %s  %-*s%s %s", icon, item.ID, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s %s  %-*s%s %s", stale, icon, item.ID, titleWidth, title, labels, project)
 }
 
 // formatItemLineStyled returns a styled line with colors for non-selected rows.
@@ -801,6 +958,14 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	icon := statusIcon(item.Status)
 	color := statusColors[item.Status]
 	iconStyled := lipgloss.NewStyle().Foreground(color).Render(icon)
+
+	// Stale indicator
+	stale := ""
+	staleWidth := 0
+	if m.staleItems[item.ID] {
+		stale = staleStyle.Render("⚠ ")
+		staleWidth = 2 // ⚠ + space
+	}
 
 	id := dimStyle.Render(item.ID)
 
@@ -821,8 +986,8 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	// icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~14 + labels + project
-	titleWidth := width - 14 - labelsWidth - projectWidth
+	// stale(2) + icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~16 + labels + project
+	titleWidth := width - 16 - labelsWidth - projectWidth - staleWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -832,7 +997,7 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
-	return fmt.Sprintf("%s %s  %-*s%s %s", iconStyled, id, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s %s  %-*s%s %s", stale, iconStyled, id, titleWidth, title, labels, project)
 }
 
 func (m Model) activeFiltersString() string {
@@ -876,14 +1041,28 @@ func (m Model) detailView() string {
 	icon := statusIcon(item.Status)
 	color := statusColors[item.Status]
 	iconStyled := lipgloss.NewStyle().Foreground(color).Render(icon)
-	b.WriteString(iconStyled + " " + titleStyle.Render(item.Title) + "\n\n")
+
+	// Add stale indicator to title if stale
+	title := item.Title
+	if m.staleItems[item.ID] {
+		title = staleStyle.Render("⚠ ") + title
+	}
+
+	b.WriteString(iconStyled + " " + titleStyle.Render(title) + "\n\n")
 
 	b.WriteString(detailLabelStyle.Render("ID:       ") + item.ID + "\n")
 	b.WriteString(detailLabelStyle.Render("Type:     ") + string(item.Type) + "\n")
 	b.WriteString(detailLabelStyle.Render("Project:  ") + item.Project + "\n")
 
 	statusStyled := lipgloss.NewStyle().Foreground(color).Render(string(item.Status))
-	b.WriteString(detailLabelStyle.Render("Status:   ") + statusStyled + "\n")
+	b.WriteString(detailLabelStyle.Render("Status:   ") + statusStyled)
+
+	// Add stale badge in detail view
+	if m.staleItems[item.ID] {
+		b.WriteString(" " + staleStyle.Render("[STALE]"))
+	}
+	b.WriteString("\n")
+
 	b.WriteString(detailLabelStyle.Render("Priority: ") + fmt.Sprintf("%d", item.Priority) + "\n")
 
 	if item.ParentID != nil {
@@ -927,6 +1106,128 @@ func (m Model) detailView() string {
 
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("esc:back  s:start d:done b:block L:log c:cancel a:add-dep  q:quit"))
+
+	return b.String()
+}
+
+func (m Model) templateListView() string {
+	var b strings.Builder
+
+	// Header
+	b.WriteString(titleStyle.Render("Templates"))
+	b.WriteString(fmt.Sprintf("  %d templates\n\n", len(m.templates)))
+
+	// Templates
+	if len(m.templates) == 0 {
+		b.WriteString("No templates found\n")
+		b.WriteString(dimStyle.Render("Templates are loaded from .tpg/templates/\n"))
+	} else {
+		visibleHeight := m.height - 8
+		if visibleHeight < 5 {
+			visibleHeight = 15
+		}
+		start := 0
+		if m.templateCursor >= visibleHeight {
+			start = m.templateCursor - visibleHeight + 1
+		}
+		end := min(start+visibleHeight, len(m.templates))
+
+		rowWidth := m.width - (contentPadding * 2)
+		if rowWidth < 60 {
+			rowWidth = 80
+		}
+
+		for i := start; i < end; i++ {
+			tmpl := m.templates[i]
+			selected := i == m.templateCursor
+
+			// Format: id - title (description preview)
+			line := fmt.Sprintf("%s  %s", tmpl.ID, tmpl.Title)
+			if len(tmpl.Description) > 0 {
+				desc := tmpl.Description
+				if len(desc) > 50 {
+					desc = desc[:47] + "..."
+				}
+				line += " - " + desc
+			}
+
+			// Truncate to fit width
+			if len(line) > rowWidth {
+				line = line[:rowWidth-3] + "..."
+			}
+
+			if selected {
+				b.WriteString(selectedRowStyle.Width(rowWidth).Render(line))
+			} else {
+				b.WriteString(line)
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// Footer
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  r:refresh  esc:back  q:quit"))
+
+	return b.String()
+}
+
+func (m Model) templateDetailView() string {
+	if m.selectedTemplate == nil {
+		return "No template selected"
+	}
+
+	tmpl := m.selectedTemplate
+	var b strings.Builder
+
+	// Title
+	b.WriteString(titleStyle.Render(tmpl.Title) + "\n\n")
+
+	// Basic info
+	b.WriteString(detailLabelStyle.Render("ID:          ") + tmpl.ID + "\n")
+	if tmpl.Source != "" {
+		b.WriteString(detailLabelStyle.Render("Source:      ") + tmpl.Source + "\n")
+	}
+	b.WriteString("\n")
+
+	// Description
+	if tmpl.Description != "" {
+		b.WriteString(detailLabelStyle.Render("Description:") + "\n")
+		b.WriteString(tmpl.Description + "\n\n")
+	}
+
+	// Variables
+	if len(tmpl.Variables) > 0 {
+		b.WriteString(detailLabelStyle.Render("Variables:") + "\n")
+		for name, v := range tmpl.Variables {
+			optional := ""
+			if v.Optional {
+				optional = dimStyle.Render(" (optional)")
+			}
+			b.WriteString("  " + labelStyle.Render(name) + optional + "\n")
+			if v.Description != "" {
+				b.WriteString("    " + dimStyle.Render(v.Description) + "\n")
+			}
+			if v.Default != "" {
+				b.WriteString("    " + dimStyle.Render("Default: "+v.Default) + "\n")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Steps
+	if len(tmpl.Steps) > 0 {
+		b.WriteString(detailLabelStyle.Render("Steps:") + "\n")
+		for i, step := range tmpl.Steps {
+			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, step.Title))
+			if len(step.Depends) > 0 {
+				b.WriteString("     " + dimStyle.Render("Depends: "+strings.Join(step.Depends, ", ")) + "\n")
+			}
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("esc:back  q:quit"))
 
 	return b.String()
 }
