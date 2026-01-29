@@ -25,7 +25,7 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
     
     try {
       // Use client.session.get() API
-      const result = await client.session.get({ sessionID })
+      const result = await client.session.get({ path: { id: sessionID } })
       const session = (result as any)?.data || result
       
       // Check for parentID - if present, this is a subagent
