@@ -3,36 +3,52 @@ package model
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+	"math/big"
 	"strings"
 	"time"
 )
 
-// GenerateID returns a new ID with a type-specific prefix and 6 hex chars.
-//
-// Prefixes by item type:
-//   - task: "ts-" (e.g., ts-a1b2c3)
-//   - epic: "ep-" (e.g., ep-a1b2c3)
+const idAlphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+// DefaultIDLength is the default number of characters in the random portion of an ID.
+const DefaultIDLength = 3
+
+// GenerateID returns a new ID with a type-specific prefix.
 func GenerateID(itemType ItemType) string {
-	prefix := "ts"
-	if itemType == ItemTypeEpic {
-		prefix = "ep"
-	}
-	return GenerateIDWithPrefix(prefix)
+	return GenerateIDWithPrefixN("", itemType, DefaultIDLength)
 }
 
-// GenerateIDWithPrefix returns a new ID with the provided prefix and 6 hex chars.
-func GenerateIDWithPrefix(prefix string) string {
+// GenerateIDWithPrefixN returns a new ID with the provided prefix and n random chars from [0-9a-z].
+func GenerateIDWithPrefixN(prefix string, itemType ItemType, n int) string {
 	p := strings.TrimSpace(prefix)
 	p = strings.TrimSuffix(p, "-")
 	if p == "" {
-		p = "ts"
+		if itemType == ItemTypeEpic {
+			p = "ep"
+		} else {
+			p = "ts"
+		}
 	}
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
+	return p + "-" + randomAlpha(n)
+}
+
+// GenerateIDWithPrefix returns a new ID with the provided prefix and default length.
+// Kept for backward compatibility.
+func GenerateIDWithPrefix(prefix string) string {
+	return GenerateIDWithPrefixN(prefix, ItemTypeTask, DefaultIDLength)
+}
+
+func randomAlpha(n int) string {
+	alphabetLen := big.NewInt(int64(len(idAlphabet)))
+	b := make([]byte, n)
+	for i := range b {
+		idx, err := rand.Int(rand.Reader, alphabetLen)
+		if err != nil {
+			panic("crypto/rand failed: " + err.Error())
+		}
+		b[i] = idAlphabet[idx.Int64()]
 	}
-	return p + "-" + hex.EncodeToString(b)
+	return string(b)
 }
 
 type ItemType string
@@ -142,22 +158,14 @@ type Learning struct {
 	Concepts  []string // Associated concept names
 }
 
-// GenerateLearningID returns a new learning ID with lrn- prefix and 6 hex chars.
+// GenerateLearningID returns a new learning ID with lrn- prefix.
 func GenerateLearningID() string {
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
-	}
-	return "lrn-" + hex.EncodeToString(b)
+	return "lrn-" + randomAlpha(DefaultIDLength)
 }
 
-// GenerateConceptID returns a new concept ID with con- prefix and 6 hex chars.
+// GenerateConceptID returns a new concept ID with con- prefix.
 func GenerateConceptID() string {
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
-	}
-	return "con-" + hex.EncodeToString(b)
+	return "con-" + randomAlpha(DefaultIDLength)
 }
 
 // Label represents a tag that can be attached to items for categorization.
@@ -171,11 +179,7 @@ type Label struct {
 	UpdatedAt time.Time
 }
 
-// GenerateLabelID returns a new label ID with lbl- prefix and 6 hex chars.
+// GenerateLabelID returns a new label ID with lbl- prefix.
 func GenerateLabelID() string {
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
-	}
-	return "lbl-" + hex.EncodeToString(b)
+	return "lbl-" + randomAlpha(DefaultIDLength)
 }

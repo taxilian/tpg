@@ -396,7 +396,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			project = m.filtered[m.cursor].Project
 		}
 		return m, func() tea.Msg {
-			itemID, err := db.GenerateItemID(model.ItemTypeTask)
+			itemID, err := m.db.GenerateItemID(model.ItemTypeTask)
 			if err != nil {
 				return actionMsg{err: err}
 			}

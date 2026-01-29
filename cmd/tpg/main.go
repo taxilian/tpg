@@ -251,7 +251,7 @@ Examples:
 			itemType = model.ItemTypeEpic
 		}
 
-		itemID, err := db.GenerateItemID(itemType)
+		itemID, err := database.GenerateItemID(itemType)
 		if err != nil {
 			return err
 		}

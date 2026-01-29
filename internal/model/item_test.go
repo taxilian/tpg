@@ -22,17 +22,18 @@ func TestGenerateID(t *testing.T) {
 				t.Errorf("expected prefix %q, got %q", tt.prefix, id)
 			}
 
-			// Should be prefix (3 chars) + 6 hex chars = 9 total
-			if len(id) != 9 {
-				t.Errorf("expected length 9, got %d (%q)", len(id), id)
+			// Should be prefix (3 chars) + DefaultIDLength alphanumeric chars
+			expectedLen := len(tt.prefix) + DefaultIDLength
+			if len(id) != expectedLen {
+				t.Errorf("expected length %d, got %d (%q)", expectedLen, len(id), id)
 			}
 		})
 	}
 }
 
 func TestGenerateID_Uniqueness(t *testing.T) {
-	// With 3 random bytes (16^6 = 16M possible values) and 100 iterations,
-	// collision probability is ~0.03% (birthday paradox: n²/2N).
+	// With 36^3 = 46656 possible values and 100 iterations,
+	// collision probability is low enough for a smoke test.
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {
 		id := GenerateID(ItemTypeTask)

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/taxilian/tpg/internal/model"
 )
 
 const (
@@ -17,6 +19,7 @@ const (
 type Config struct {
 	Prefixes       PrefixConfig `json:"prefixes"`
 	DefaultProject string       `json:"default_project"`
+	IDLength       int          `json:"id_length,omitempty"`
 }
 
 // PrefixConfig holds ID prefixes for items.
@@ -49,6 +52,9 @@ func applyDefaults(config *Config, dataDir string) {
 	}
 	if config.DefaultProject == "" {
 		config.DefaultProject = defaultProjectName(dataDir)
+	}
+	if config.IDLength == 0 {
+		config.IDLength = model.DefaultIDLength
 	}
 }
 

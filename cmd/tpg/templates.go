@@ -186,7 +186,7 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 		}
 	}
 
-	parentID, err := db.GenerateItemID(model.ItemTypeEpic)
+	parentID, err := database.GenerateItemID(model.ItemTypeEpic)
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +219,7 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 	childIDs := make([]string, len(tmpl.Steps))
 	stepIDToChildID := map[string]string{}
 	for i := range tmpl.Steps {
-		childID, err := db.GenerateItemID(model.ItemTypeTask)
+		childID, err := database.GenerateItemID(model.ItemTypeTask)
 		if err != nil {
 			cleanup()
 			return "", err
