@@ -1,0 +1,123 @@
+# Discovery Task Template
+#
+# Find solution to a problem within constraints.
+#
+# Usage:
+#   tpg add "Evaluate test strategies" --template discovery-task \
+#     --var 'problem="Need to test DB operations without Docker"' \
+#     --var 'constraints="MUST NOT use Docker, MUST work in CI"' \
+#     --var 'success_criteria="Tests run <5s, no external deps"'
+
+title: "Discovery Task"
+description: "Find solution to a problem within constraints"
+
+variables:
+  problem:
+    description: "Detailed problem with context (e.g., 'Need to test DB operations without Docker. Current approach is slow and unreliable in CI.')"
+  constraints:
+    description: "Technical requirements - MUST satisfy all (e.g., 'MUST NOT use Docker', 'MUST work in CI without external deps')"
+  success_criteria:
+    description: "Technical criteria (e.g., 'Tests run <5s', 'No external deps', 'Compatible with driver')"
+  open_questions:
+    description: "Technical questions to answer (e.g., 'How handle test isolation?', 'Performance vs Docker?')"
+    optional: true
+    default: "none"
+  options_considered:
+    description: "Technical approaches on table (e.g., 'A: In-memory server', 'B: Embedded binary', 'C: Mock driver')"
+    optional: true
+    default: "none"
+  explore_alternatives:
+    description: "Research beyond listed options? yes/no"
+    optional: true
+    default: "yes"
+
+steps:
+  - id: discovery
+    title: "Solve: {{.problem}}"
+    description: |
+      ## Problem
+
+      {{.problem}}
+
+      ## Constraints (All Required)
+
+      {{.constraints}}
+
+      ## Success Criteria
+
+      {{.success_criteria}}
+      {{- if hasValue .open_questions}}
+
+      ## Questions to Address
+
+      {{.open_questions}}
+      {{- end}}
+      {{- if hasValue .options_considered}}
+
+      ## Options Under Consideration
+
+      {{.options_considered}}
+      {{- end}}
+
+      **Explore alternatives:** {{default "yes" .explore_alternatives}}
+
+      ---
+
+      ## Approach
+
+      **Understand:**
+      - Review code/docs/systems
+      - Understand current inadequacy
+      - Clarify technical constraints
+      - Research ecosystem (packages, docs, examples)
+
+      **Explore:**
+      - Evaluate listed options: technical approach, constraint satisfaction, complexity, tradeoffs, risks, code examples
+      - Research alternatives: search packages, read docs, review examples
+
+      **Decide:**
+      - Compare options on: effectiveness, complexity, maintainability, risk
+      - Recommend best with technical rationale
+      - Answer each question with technical reasoning
+      - Provide implementation approach with code examples
+
+      ---
+
+      ## Done Results Must Include
+
+      **Problem Summary:**
+      - Problem statement
+      - Constraints applied
+      - Success criteria targeted
+
+      **Options Evaluated:**
+      For each option: technical approach, constraint satisfaction, pros/cons, complexity, risks, example code
+
+      **Recommendation:**
+      - Why this solution
+      - How it solves the problem
+      - All constraints satisfied (with evidence)
+      - Implementation approach with code examples
+      - Risks and mitigations
+      - Why better than alternatives
+
+      **Questions Answered:**
+      For each question: answer, reasoning, implications
+
+      **Success Criteria Verification:**
+      For each criterion: how met, evidence, result
+
+      ---
+
+      ## Acceptance
+
+      - [ ] Problem clearly understood
+      - [ ] All constraints satisfied by solution
+      - [ ] All listed options evaluated with research
+      - [ ] Alternative solutions researched
+      - [ ] Best solution recommended with technical rationale
+      - [ ] {{.success_criteria}} met with evidence
+      - [ ] All questions answered with technical reasoning
+      - [ ] Implementation approach with code examples in done results
+      - [ ] Follow-up tasks created
+      - [ ] Done results comprehensive

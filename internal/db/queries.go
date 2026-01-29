@@ -8,7 +8,7 @@ import (
 	"github.com/taxilian/tpg/internal/model"
 )
 
-const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, template_id, step_index, variables, template_hash, results, created_at, updated_at"
+const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, agent_id, agent_last_active, template_id, step_index, variables, template_hash, results, created_at, updated_at"
 
 // ListFilter contains optional filters for listing items.
 type ListFilter struct {
@@ -163,27 +163,30 @@ func (db *DB) StaleItems(project string, cutoff time.Time) ([]model.Item, error)
 
 // StatusReport contains aggregated project status.
 type StatusReport struct {
-	Project      string
-	Open         int
-	InProgress   int
-	Blocked      int
-	Done         int
-	Canceled     int
-	Ready        int
-	RecentDone   []model.Item // last 3 completed
-	InProgItems  []model.Item // current in-progress
-	BlockedItems []model.Item // blocked with reasons
-	ReadyItems   []model.Item // ready for work
+	Project          string
+	Open             int
+	InProgress       int
+	Blocked          int
+	Done             int
+	Canceled         int
+	Ready            int
+	RecentDone       []model.Item // last 3 completed
+	InProgItems      []model.Item // current in-progress (all)
+	BlockedItems     []model.Item // blocked with reasons
+	ReadyItems       []model.Item // ready for work
+	AgentID          string
+	MyInProgItems    []model.Item // this agent's in-progress tasks
+	OtherInProgCount int          // count of other agents' tasks
 }
 
 // ProjectStatus returns an aggregated status report for a project.
 func (db *DB) ProjectStatus(project string) (*StatusReport, error) {
-	return db.ProjectStatusFiltered(project, nil)
+	return db.ProjectStatusFiltered(project, nil, "")
 }
 
-// ProjectStatusFiltered returns an aggregated status report with optional label filtering.
-func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusReport, error) {
-	report := &StatusReport{Project: project}
+// ProjectStatusFiltered returns an aggregated status report with optional label filtering and agent awareness.
+func (db *DB) ProjectStatusFiltered(project string, labels []string, agentID string) (*StatusReport, error) {
+	report := &StatusReport{Project: project, AgentID: agentID}
 
 	// Build label subquery for reuse
 	labelSubquery := ""
@@ -263,6 +266,23 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 		return nil, err
 	}
 
+	// If agent is active, separate agent's tasks from others
+	if agentID != "" {
+		myItems := []model.Item{}
+		otherCount := 0
+
+		for _, item := range report.InProgItems {
+			if item.AgentID != nil && *item.AgentID == agentID {
+				myItems = append(myItems, item)
+			} else {
+				otherCount++
+			}
+		}
+
+		report.MyInProgItems = myItems
+		report.OtherInProgCount = otherCount
+	}
+
 	// Get blocked items
 	blockedStatus := model.StatusBlocked
 	report.BlockedItems, err = db.ListItemsFiltered(ListFilter{Project: project, Status: &blockedStatus, Labels: labels})
@@ -323,6 +343,8 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 	for rows.Next() {
 		var item model.Item
 		var parentID sql.NullString
+		var agentID sql.NullString
+		var agentLastActive sql.NullTime
 		var templateID sql.NullString
 		var stepIndex sql.NullInt64
 		var variables sql.NullString
@@ -331,6 +353,7 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		if err := rows.Scan(
 			&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
 			&item.Status, &item.Priority, &parentID,
+			&agentID, &agentLastActive,
 			&templateID, &stepIndex, &variables, &templateHash, &results,
 			&item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
@@ -338,6 +361,12 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		}
 		if parentID.Valid {
 			item.ParentID = &parentID.String
+		}
+		if agentID.Valid {
+			item.AgentID = &agentID.String
+		}
+		if agentLastActive.Valid {
+			item.AgentLastActive = &agentLastActive.Time
 		}
 		if templateID.Valid {
 			item.TemplateID = templateID.String

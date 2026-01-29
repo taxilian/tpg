@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS items (
 	status TEXT NOT NULL DEFAULT 'open',
 	priority INTEGER DEFAULT 2,
 	parent_id TEXT REFERENCES items(id),
+	agent_id TEXT,
+	agent_last_active DATETIME,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -107,11 +109,19 @@ END;
 CREATE INDEX IF NOT EXISTS idx_items_project ON items(project);
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);
+CREATE INDEX IF NOT EXISTS idx_items_agent_id ON items(agent_id) WHERE agent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_logs_item ON logs(item_id);
 CREATE INDEX IF NOT EXISTS idx_learnings_project ON learnings(project);
 CREATE INDEX IF NOT EXISTS idx_learnings_task ON learnings(task_id);
 CREATE INDEX IF NOT EXISTS idx_learnings_status ON learnings(status);
 CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(concept_id);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+	agent_id TEXT NOT NULL,
+	project TEXT NOT NULL,
+	last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (agent_id, project)
+);
 `
 
 // migrations defines incremental schema changes.

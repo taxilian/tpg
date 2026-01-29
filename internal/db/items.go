@@ -52,12 +52,15 @@ func (db *DB) CreateItem(item *model.Item) error {
 func (db *DB) GetItem(id string) (*model.Item, error) {
 	row := db.QueryRow(`
 		SELECT id, project, type, title, description, status, priority, parent_id,
+			agent_id, agent_last_active,
 			template_id, step_index, variables, template_hash, results,
 			created_at, updated_at
 		FROM items WHERE id = ?`, id)
 
 	item := &model.Item{}
 	var parentID sql.NullString
+	var agentID sql.NullString
+	var agentLastActive sql.NullTime
 	var templateID sql.NullString
 	var stepIndex sql.NullInt64
 	var variables sql.NullString
@@ -66,6 +69,7 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	err := row.Scan(
 		&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
 		&item.Status, &item.Priority, &parentID,
+		&agentID, &agentLastActive,
 		&templateID, &stepIndex, &variables, &templateHash, &results,
 		&item.CreatedAt, &item.UpdatedAt,
 	)
@@ -78,6 +82,12 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 
 	if parentID.Valid {
 		item.ParentID = &parentID.String
+	}
+	if agentID.Valid {
+		item.AgentID = &agentID.String
+	}
+	if agentLastActive.Valid {
+		item.AgentLastActive = &agentLastActive.Time
 	}
 	if templateID.Valid {
 		item.TemplateID = templateID.String
@@ -103,11 +113,13 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 }
 
 // UpdateStatus changes an item's status.
-func (db *DB) UpdateStatus(id string, status model.Status) error {
+// UpdateStatus changes an item's status and optionally assigns it to an agent.
+func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext) error {
 	if !status.IsValid() {
 		return fmt.Errorf("invalid status: %s", status)
 	}
 
+	// Update status and timestamp
 	result, err := db.Exec(`
 		UPDATE items SET status = ?, updated_at = ? WHERE id = ?`,
 		status, time.Now(), id)
@@ -119,11 +131,32 @@ func (db *DB) UpdateStatus(id string, status model.Status) error {
 	if rows == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
+
+	// If status is in_progress and agent is active, claim it
+	if status == model.StatusInProgress && agentCtx.IsActive() {
+		_, err = db.Exec(`UPDATE items 
+			SET agent_id = ?, agent_last_active = CURRENT_TIMESTAMP
+			WHERE id = ?`, agentCtx.ID, id)
+		if err != nil {
+			return fmt.Errorf("failed to set agent: %w", err)
+		}
+	}
+
+	// If status is done/blocked/canceled, release it
+	if status == model.StatusDone || status == model.StatusBlocked || status == model.StatusCanceled {
+		_, err = db.Exec(`UPDATE items 
+			SET agent_id = NULL, agent_last_active = NULL
+			WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("failed to clear agent: %w", err)
+		}
+	}
+
 	return nil
 }
 
-// CompleteItem marks an item as done and records a results message.
-func (db *DB) CompleteItem(id, results string) error {
+// CompleteItem marks an item as done, records a results message, and releases agent assignment.
+func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
 	result, err := db.Exec(`
 		UPDATE items SET status = ?, results = ?, updated_at = ? WHERE id = ?`,
 		model.StatusDone, results, time.Now(), id)
@@ -135,6 +168,15 @@ func (db *DB) CompleteItem(id, results string) error {
 	if rows == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
+
+	// Release agent assignment when done
+	_, err = db.Exec(`UPDATE items 
+		SET agent_id = NULL, agent_last_active = NULL
+		WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to clear agent: %w", err)
+	}
+
 	return nil
 }
 

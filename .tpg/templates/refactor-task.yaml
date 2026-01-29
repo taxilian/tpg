@@ -1,0 +1,110 @@
+# Refactor Task Template
+#
+# Behavior-preserving code changes.
+#
+# Usage:
+#   tpg add "Extract auth middleware" --template refactor-task \
+#     --var 'refactor_name="Extract auth middleware"' \
+#     --var 'objective="Extract auth logic into reusable middleware"' \
+#     --var 'scope="src/api/routes/*.ts auth checks"' \
+#     --var 'files_to_touch="src/middleware/auth.ts, src/api/routes/"' \
+#     --var 'refactor_plan="1. Create middleware 2. Extract checks 3. Wire up"' \
+#     --var 'validation="Run test suite, verify all endpoints still work"' \
+#     --var 'acceptance_criteria="All auth checks go through middleware, tests pass"'
+
+title: "Refactor Task"
+description: "Behavior-preserving code changes"
+
+variables:
+  refactor_name:
+    description: "Refactor name"
+  objective:
+    description: "Behavior-preserving goal"
+  scope:
+    description: "In-scope functions/components/paths"
+  files_to_touch:
+    description: "Exact files or directories"
+  refactor_plan:
+    description: "Ordered refactor steps"
+  validation:
+    description: "Tests or verification steps"
+  acceptance_criteria:
+    description: "Specific, testable outcomes"
+  context:
+    description: "Why this refactor is needed"
+    optional: true
+    default: ""
+  constraints:
+    description: "Hard constraints (include no behavior change if required)"
+    optional: true
+    default: ""
+  risk_areas:
+    description: "Risks or regressions to watch"
+    optional: true
+    default: ""
+  dependencies:
+    description: "Blocking or related issues"
+    optional: true
+    default: ""
+  unknowns:
+    description: "Open questions or decisions"
+    optional: true
+    default: ""
+
+steps:
+  - id: refactor
+    title: "Refactor: {{.refactor_name}}"
+    description: |
+      ## Objective
+
+      {{.objective}}
+      {{- if hasValue .context}}
+
+      ## Context
+
+      {{.context}}
+      {{- end}}
+
+      ## Scope
+
+      {{.scope}}
+      {{- if hasValue .constraints}}
+
+      ## Constraints
+
+      {{.constraints}}
+      {{- end}}
+
+      ## Files / Locations
+
+      {{.files_to_touch}}
+
+      ## Refactor Plan
+
+      {{.refactor_plan}}
+      {{- if hasValue .risk_areas}}
+
+      ## Risks
+
+      {{.risk_areas}}
+      {{- end}}
+
+      ## Validation
+
+      {{.validation}}
+
+      ## Acceptance Criteria
+
+      {{.acceptance_criteria}}
+      {{- if hasValue .dependencies}}
+
+      ## Dependencies
+
+      {{.dependencies}}
+      {{- end}}
+      {{- if hasValue .unknowns}}
+
+      ## Unknowns / Decisions
+
+      {{.unknowns}}
+      {{- end}}

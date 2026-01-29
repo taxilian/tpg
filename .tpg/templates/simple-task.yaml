@@ -1,0 +1,100 @@
+# Simple Task Template
+#
+# Lightweight template for non-TDD work.
+#
+# Usage:
+#   tpg add "Add config validation" --template simple-task \
+#     --var 'task_name="Add config validation"' \
+#     --var 'objective="Validate config on startup, fail fast on invalid values"' \
+#     --var 'scope="Config loading and validation"' \
+#     --var 'files_to_touch="src/config.ts"' \
+#     --var 'implementation_notes="Check required fields, validate types"' \
+#     --var 'validation="Unit tests for valid/invalid configs"' \
+#     --var 'acceptance_criteria="Invalid config fails at startup with clear error"'
+
+title: "Simple Task"
+description: "Lightweight template for non-TDD work"
+
+variables:
+  task_name:
+    description: "Short task title"
+  objective:
+    description: "One-sentence, verifiable goal"
+  scope:
+    description: "In-scope behavior or change"
+  files_to_touch:
+    description: "Exact files or directories"
+  implementation_notes:
+    description: "How to implement or references"
+  validation:
+    description: "Tests or verification steps (or why not needed)"
+  acceptance_criteria:
+    description: "Specific, testable outcomes"
+  context:
+    description: "Why this work is needed"
+    optional: true
+    default: ""
+  constraints:
+    description: "Hard constraints"
+    optional: true
+    default: ""
+  dependencies:
+    description: "Blocking or related issues"
+    optional: true
+    default: ""
+  unknowns:
+    description: "Open questions or decisions"
+    optional: true
+    default: ""
+
+steps:
+  - id: task
+    title: "{{.task_name}}"
+    description: |
+      ## Objective
+
+      {{.objective}}
+      {{- if hasValue .context}}
+
+      ## Context
+
+      {{.context}}
+      {{- end}}
+
+      ## Scope
+
+      {{.scope}}
+      {{- if hasValue .constraints}}
+
+      ## Constraints
+
+      {{.constraints}}
+      {{- end}}
+
+      ## Files / Locations
+
+      {{.files_to_touch}}
+
+      ## Implementation Notes
+
+      {{.implementation_notes}}
+
+      ## Validation
+
+      {{.validation}}
+
+      ## Acceptance Criteria
+
+      {{.acceptance_criteria}}
+      {{- if hasValue .dependencies}}
+
+      ## Dependencies
+
+      {{.dependencies}}
+      {{- end}}
+      {{- if hasValue .unknowns}}
+
+      ## Unknowns / Decisions
+
+      {{.unknowns}}
+      {{- end}}

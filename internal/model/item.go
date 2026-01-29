@@ -62,22 +62,24 @@ func (s Status) IsValid() bool {
 
 // Item represents a task or epic in the system.
 type Item struct {
-	ID           string            // Unique identifier
-	Project      string            // Project scope (e.g., "gaia", "myapp")
-	Type         ItemType          // "task" or "epic"
-	Title        string            // Short description
-	Description  string            // Full context, notes, handoff info
-	Status       Status            // Current state
-	Priority     int               // 1=high, 2=medium, 3=low
-	ParentID     *string           // Optional parent epic ID
-	TemplateID   string            // Template identifier (if templated)
-	StepIndex    *int              // Step index within template (nil if none)
-	TemplateVars map[string]string // Template variables (if templated)
-	TemplateHash string            // Hash of template at instantiation
-	Results      string            // Results message when done
-	Labels       []string          // Attached label names (populated separately)
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID              string            // Unique identifier
+	Project         string            // Project scope (e.g., "gaia", "myapp")
+	Type            ItemType          // "task" or "epic"
+	Title           string            // Short description
+	Description     string            // Full context, notes, handoff info
+	Status          Status            // Current state
+	Priority        int               // 1=high, 2=medium, 3=low
+	ParentID        *string           // Optional parent epic ID
+	AgentID         *string           // Agent currently working on this (if in_progress)
+	AgentLastActive *time.Time        // Last time agent was active on this
+	TemplateID      string            // Template identifier (if templated)
+	StepIndex       *int              // Step index within template (nil if none)
+	TemplateVars    map[string]string // Template variables (if templated)
+	TemplateHash    string            // Hash of template at instantiation
+	Results         string            // Results message when done
+	Labels          []string          // Attached label names (populated separately)
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // Log is a timestamped audit trail entry for an item.

@@ -104,7 +104,7 @@ func TestHasUnmetDeps(t *testing.T) {
 	}
 
 	// Mark task1 as done
-	if err := db.UpdateStatus(task1.ID, model.StatusDone); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 

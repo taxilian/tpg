@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
+	"github.com/taxilian/tpg/internal/plugin"
+	"github.com/taxilian/tpg/internal/prime"
 	"github.com/taxilian/tpg/internal/templates"
 	"github.com/taxilian/tpg/internal/tui"
 )
@@ -83,6 +85,8 @@ var (
 	flagClaude           bool
 	flagDescription      string
 	flagTemplateVarsYAML bool
+	flagPrimeCustomize   bool
+	flagPrimeRender      string
 )
 
 func openDB() (*db.DB, error) {
@@ -420,6 +424,12 @@ Examples:
 			return err
 		}
 
+		// Record agent project access
+		agentCtx := db.GetAgentContext()
+		if agentCtx.IsActive() {
+			_ = database.RecordAgentProjectAccess(agentCtx.ID, project)
+		}
+
 		items, err := database.ReadyItemsFiltered(project, flagFilterLabels)
 		if err != nil {
 			return err
@@ -472,6 +482,12 @@ Example:
 		item, err := database.GetItem(args[0])
 		if err != nil {
 			return err
+		}
+
+		// Record agent project access
+		agentCtx := db.GetAgentContext()
+		if agentCtx.IsActive() {
+			_ = database.RecordAgentProjectAccess(agentCtx.ID, item.Project)
 		}
 
 		// Get labels for display
@@ -550,7 +566,20 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		if err := database.UpdateStatus(args[0], model.StatusInProgress); err != nil {
+		// Get item to record project access
+		item, err := database.GetItem(args[0])
+		if err != nil {
+			return err
+		}
+
+		agentCtx := db.GetAgentContext()
+
+		// Record agent project access
+		if agentCtx.IsActive() {
+			_ = database.RecordAgentProjectAccess(agentCtx.ID, item.Project)
+		}
+
+		if err := database.UpdateStatus(args[0], model.StatusInProgress, agentCtx); err != nil {
 			return err
 		}
 		fmt.Printf("Started %s\n", args[0])
@@ -634,7 +663,8 @@ Examples:
 			}
 		}
 
-		if err := database.CompleteItem(id, results); err != nil {
+		agentCtx := db.GetAgentContext()
+		if err := database.CompleteItem(id, results, agentCtx); err != nil {
 			return err
 		}
 		fmt.Printf("Completed %s\n", id)
@@ -672,7 +702,8 @@ Example:
 
 		id := args[0]
 
-		if err := database.UpdateStatus(id, model.StatusCanceled); err != nil {
+		agentCtx := db.GetAgentContext()
+		if err := database.UpdateStatus(id, model.StatusCanceled, agentCtx); err != nil {
 			return err
 		}
 
@@ -757,7 +788,8 @@ Example:
 		id := args[0]
 		reason := strings.Join(args[1:], " ")
 
-		if err := database.UpdateStatus(id, model.StatusBlocked); err != nil {
+		agentCtx := db.GetAgentContext()
+		if err := database.UpdateStatus(id, model.StatusBlocked, agentCtx); err != nil {
 			return err
 		}
 		if err := database.AddLog(id, "Blocked: "+reason); err != nil {
@@ -955,7 +987,14 @@ Examples:
 			return err
 		}
 
-		report, err := database.ProjectStatusFiltered(project, flagFilterLabels)
+		agentCtx := db.GetAgentContext()
+
+		// Record agent project access
+		if agentCtx.IsActive() {
+			_ = database.RecordAgentProjectAccess(agentCtx.ID, project)
+		}
+
+		report, err := database.ProjectStatusFiltered(project, flagFilterLabels, agentCtx.ID)
 		if err != nil {
 			return err
 		}
@@ -1961,17 +2000,16 @@ For full workflow: ` + "`tpg prime`" + `
 	} else {
 		// Check if already onboarded
 		if strings.Contains(string(content), "## Task Tracking") {
-			if !force {
+			if force {
+				// Replace existing section
+				newContent := replaceTaskTrackingSection(string(content), snippet)
+				if err := os.WriteFile(agentsPath, []byte(newContent), 0644); err != nil {
+					return fmt.Errorf("failed to update %s: %w", agentsPath, err)
+				}
+				fmt.Printf("Updated Task Tracking section in %s\n", agentsPath)
+			} else {
 				fmt.Printf("%s already has Task Tracking section\n", agentsPath)
-				fmt.Println("Use --force to update existing configuration")
-				return nil
 			}
-			// Replace existing section
-			newContent := replaceTaskTrackingSection(string(content), snippet)
-			if err := os.WriteFile(agentsPath, []byte(newContent), 0644); err != nil {
-				return fmt.Errorf("failed to update %s: %w", agentsPath, err)
-			}
-			fmt.Printf("Updated Task Tracking section in %s\n", agentsPath)
 		} else {
 			// Append to existing file
 			newContent := string(content)
@@ -1987,11 +2025,78 @@ For full workflow: ` + "`tpg prime`" + `
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("For hooks, add 'tpg prime' to your agent's session start hook if available.")
-	fmt.Println("Otherwise, run 'tpg prime' and paste output into agent context.")
+	// Install OpenCode plugin if opencode or shuvcode is available
+	if installed, symlink, err := installOpencodePlugin(force); err != nil {
+		fmt.Printf("\nWarning: failed to install OpenCode plugin: %v\n", err)
+	} else if installed {
+		fmt.Println("\nInstalled OpenCode plugin to .opencode/plugins/tpg.ts")
+		fmt.Println("  Plugin injects tpg prime on new sessions and compaction,")
+		fmt.Println("  and sets AGENT_ID/AGENT_TYPE on tpg commands.")
+	} else if symlink {
+		fmt.Println("\nOpenCode plugin is symlinked (.opencode/plugins/tpg.ts)")
+	} else if detectOpencode() != "" {
+		fmt.Println("\nOpenCode plugin already installed (.opencode/plugins/tpg.ts)")
+		fmt.Println("Use --force to update")
+	} else {
+		fmt.Println()
+		fmt.Println("For hooks, add 'tpg prime' to your agent's session start hook if available.")
+		fmt.Println("Otherwise, run 'tpg prime' and paste output into agent context.")
+	}
 
 	return nil
+}
+
+// detectOpencode returns the name of the installed opencode binary ("opencode" or "shuvcode"),
+// or empty string if neither is found.
+func detectOpencode() string {
+	if _, err := exec.LookPath("opencode"); err == nil {
+		return "opencode"
+	}
+	if _, err := exec.LookPath("shuvcode"); err == nil {
+		return "shuvcode"
+	}
+	return ""
+}
+
+// installOpencodePlugin installs the tpg plugin into .opencode/plugins/tpg.ts.
+// It first checks ~/.config/tpg/opencode-plugin.ts for a user-customized version;
+// if not found, uses the embedded default and writes it there for future editing.
+// Returns (installed, isSymlink, error).
+func installOpencodePlugin(force bool) (bool, bool, error) {
+	if detectOpencode() == "" {
+		return false, false, nil
+	}
+
+	pluginDir := filepath.Join(".opencode", "plugins")
+	pluginPath := filepath.Join(pluginDir, "tpg.ts")
+
+	// Check if it's a symlink - never overwrite symlinks (user intentionally linked it)
+	if info, err := os.Lstat(pluginPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, true, nil // Symlink exists, leave it alone
+		}
+		// Regular file exists
+		if !force {
+			return false, false, nil
+		}
+	}
+
+	// Use embedded source (--force always uses latest embedded version)
+	source := plugin.OpencodeSource
+
+	// Write plugin to project
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		return false, false, fmt.Errorf("failed to create %s: %w", pluginDir, err)
+	}
+
+	// Remove existing file (we already checked it's not a symlink)
+	_ = os.Remove(pluginPath)
+
+	if err := os.WriteFile(pluginPath, []byte(source), 0644); err != nil {
+		return false, false, fmt.Errorf("failed to write plugin: %w", err)
+	}
+
+	return true, false, nil
 }
 
 // runOnboardClaude sets up tpg integration for Claude Code (writes to CLAUDE.md + hooks)
@@ -2223,6 +2328,9 @@ var primeCmd = &cobra.Command{
 Designed to run on session start hooks to ensure agents maintain
 context about the tpg workflow.
 
+Customize the output template with --customize. Use --render to test
+a specific template file.
+
 For Opencode: Add 'tpg prime' to your hooks if supported.
 For Claude Code: Configure in ~/.claude/settings.json:
   "hooks": {
@@ -2230,18 +2338,44 @@ For Claude Code: Configure in ~/.claude/settings.json:
   }`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
+		config, _ := db.LoadConfig()
+		agentCtx := db.GetAgentContext()
+
+		// Handle --customize flag
+		if flagPrimeCustomize {
+			return handlePrimeCustomize()
+		}
+
+		// Handle --render flag
+		if flagPrimeRender != "" {
+			return handlePrimeRender(flagPrimeRender, database, config, agentCtx)
+		}
+
+		// Normal prime operation
 		if err != nil {
 			// Still output prime content even if DB fails
-			printPrimeContent(nil)
+			renderPrime(nil, config, agentCtx, nil)
 			return nil
 		}
 		defer func() { _ = database.Close() }()
 
-		report, _ := database.ProjectStatus("")
+		project, _ := resolveProject()
 
-		printPrimeContent(report)
+		// Record agent project access
+		if agentCtx.IsActive() {
+			_ = database.RecordAgentProjectAccess(agentCtx.ID, project)
+		}
+
+		report, _ := database.ProjectStatusFiltered(project, nil, agentCtx.ID)
+
+		renderPrime(report, config, agentCtx, database)
 		return nil
 	},
+}
+
+func init() {
+	primeCmd.Flags().BoolVar(&flagPrimeCustomize, "customize", false, "Create/edit custom prime template")
+	primeCmd.Flags().StringVar(&flagPrimeRender, "render", "", "Render specific template file (for testing)")
 }
 
 var compactCmd = &cobra.Command{
@@ -2978,12 +3112,27 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 		fmt.Println()
 	}
 
-	if len(report.InProgItems) > 0 {
-		fmt.Println("In progress:")
-		for _, item := range report.InProgItems {
-			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
+	// Show agent-aware in-progress sections if agent context is active
+	if report.AgentID != "" {
+		if len(report.MyInProgItems) > 0 {
+			fmt.Println("My work in progress:")
+			for _, item := range report.MyInProgItems {
+				fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
+			}
+			fmt.Println()
 		}
-		fmt.Println()
+		if report.OtherInProgCount > 0 {
+			fmt.Printf("Other agents: %d task(s) in progress\n\n", report.OtherInProgCount)
+		}
+	} else {
+		// No agent context - show all in-progress items together
+		if len(report.InProgItems) > 0 {
+			fmt.Println("In progress:")
+			for _, item := range report.InProgItems {
+				fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
+			}
+			fmt.Println()
+		}
 	}
 
 	if len(report.BlockedItems) > 0 {
@@ -3388,6 +3537,140 @@ tpg ready -p myproject        # Ready in project`)
 	} else {
 		fmt.Println("\n(No database connection - run 'tpg init' if needed)")
 	}
+}
+
+// renderPrime renders the prime output using template system with fallback
+func renderPrime(report *db.StatusReport, config *db.Config, agentCtx db.AgentContext, database *db.DB) {
+	// Try to load custom template
+	templateText, source, err := prime.LoadPrimeTemplate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading prime template: %v\n", err)
+		printPrimeContent(report) // Fallback to old implementation
+		return
+	}
+
+	// Use default if no custom template found
+	if templateText == "" {
+		templateText = prime.DefaultPrimeTemplate()
+		source = "(default)"
+	}
+
+	// Build template data
+	data := prime.BuildPrimeData(report, config, agentCtx, database)
+
+	// Render
+	output, err := prime.RenderPrime(templateText, data)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error rendering prime template from %s: %v\n", source, err)
+		fmt.Fprintf(os.Stderr, "Falling back to default output.\n\n")
+		printPrimeContent(report)
+		return
+	}
+
+	fmt.Print(output)
+}
+
+// handlePrimeCustomize creates or edits the custom prime template
+func handlePrimeCustomize() error {
+	// Search upward for existing .tpg directory
+	var tpgDir string
+	startDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("could not determine current directory: %w", err)
+	}
+
+	dir := startDir
+	for {
+		candidate := filepath.Join(dir, ".tpg")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			tpgDir = candidate
+			break
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached root, create in current directory
+			tpgDir = filepath.Join(startDir, ".tpg")
+			if err := os.MkdirAll(tpgDir, 0755); err != nil {
+				return fmt.Errorf("could not create .tpg directory: %w", err)
+			}
+			break
+		}
+		dir = parent
+	}
+
+	primePath := filepath.Join(tpgDir, prime.PrimeFileName)
+
+	// Create template with default content if it doesn't exist
+	if _, err := os.Stat(primePath); os.IsNotExist(err) {
+		defaultContent := prime.DefaultPrimeTemplate()
+		if err := os.WriteFile(primePath, []byte(defaultContent), 0644); err != nil {
+			return fmt.Errorf("could not create template: %w", err)
+		}
+		fmt.Printf("Created template at: %s\n", primePath)
+	}
+
+	// Open in editor
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+
+	fmt.Printf("Opening %s in %s...\n", primePath, editor)
+	cmd := exec.Command(editor, primePath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("editor failed: %w", err)
+	}
+
+	// Validate template syntax
+	content, err := os.ReadFile(primePath)
+	if err != nil {
+		return fmt.Errorf("could not read template: %w", err)
+	}
+
+	// Try to render with empty data to check syntax
+	emptyData := prime.PrimeData{}
+	if _, err := prime.RenderPrime(string(content), emptyData); err != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: Template has syntax errors: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Fix errors and run 'tpg prime' to test.\n")
+		return nil
+	}
+
+	fmt.Println("\nTemplate saved and validated successfully!")
+	fmt.Println("Run 'tpg prime' to test the output.")
+	return nil
+}
+
+// handlePrimeRender renders a specific template file (for testing)
+func handlePrimeRender(templatePath string, database *db.DB, config *db.Config, agentCtx db.AgentContext) error {
+	// Read the template file
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		return fmt.Errorf("could not read template file: %w", err)
+	}
+
+	// Get project status if database available
+	var report *db.StatusReport
+	if database != nil {
+		project, _ := resolveProject()
+		report, _ = database.ProjectStatusFiltered(project, nil, agentCtx.ID)
+	}
+
+	// Build template data
+	data := prime.BuildPrimeData(report, config, agentCtx, database)
+
+	// Render
+	output, err := prime.RenderPrime(string(content), data)
+	if err != nil {
+		return fmt.Errorf("template rendering failed: %w", err)
+	}
+
+	fmt.Print(output)
+	return nil
 }
 
 func printCompactContent(stats []db.ConceptStats) {

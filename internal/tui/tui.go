@@ -430,7 +430,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, func() tea.Msg {
-			if err := m.db.UpdateStatus(item.ID, model.StatusBlocked); err != nil {
+			if err := m.db.UpdateStatus(item.ID, model.StatusBlocked, db.AgentContext{}); err != nil {
 				return actionMsg{err: err}
 			}
 			if err := m.db.AddLog(item.ID, "Blocked: "+text); err != nil {
@@ -452,7 +452,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case InputCancel:
 		return m, func() tea.Msg {
-			if err := m.db.UpdateStatus(item.ID, model.StatusCanceled); err != nil {
+			if err := m.db.UpdateStatus(item.ID, model.StatusCanceled, db.AgentContext{}); err != nil {
 				return actionMsg{err: err}
 			}
 			if text != "" {
@@ -627,7 +627,7 @@ func (m Model) doStart() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, func() tea.Msg {
-		if err := m.db.UpdateStatus(item.ID, model.StatusInProgress); err != nil {
+		if err := m.db.UpdateStatus(item.ID, model.StatusInProgress, db.AgentContext{}); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Started %s", item.ID)}
@@ -644,7 +644,7 @@ func (m Model) doDone() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, func() tea.Msg {
-		if err := m.db.UpdateStatus(item.ID, model.StatusDone); err != nil {
+		if err := m.db.UpdateStatus(item.ID, model.StatusDone, db.AgentContext{}); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Completed %s", item.ID)}

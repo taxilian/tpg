@@ -115,7 +115,7 @@ func TestReadyItems(t *testing.T) {
 	}
 
 	// Complete task1, now task2 should be ready
-	if err := db.UpdateStatus(task1.ID, model.StatusDone); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -377,7 +377,7 @@ func TestListItemsFiltered_HasBlockers(t *testing.T) {
 	}
 
 	// Complete task1, now task2 should have no unresolved blockers
-	if err := db.UpdateStatus(task1.ID, model.StatusDone); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -427,7 +427,7 @@ func TestListItemsFiltered_NoBlockers(t *testing.T) {
 	}
 
 	// Complete task1, now task2 should also have no unresolved blockers
-	if err := db.UpdateStatus(task1.ID, model.StatusDone); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -628,7 +628,7 @@ func TestCompleteItem_SetsStatusToDone(t *testing.T) {
 
 	item := createTestItemWithProject(t, db, "Task to complete", "test", model.StatusInProgress, 2)
 
-	if err := db.CompleteItem(item.ID, "Completed successfully"); err != nil {
+	if err := db.CompleteItem(item.ID, "Completed successfully", AgentContext{}); err != nil {
 		t.Fatalf("failed to complete item: %v", err)
 	}
 
@@ -648,7 +648,7 @@ func TestCompleteItem_StoresResultsMessage(t *testing.T) {
 	item := createTestItemWithProject(t, db, "Task to complete", "test", model.StatusInProgress, 2)
 	resultsMsg := "Task completed with following outcomes: feature implemented, tests passing"
 
-	if err := db.CompleteItem(item.ID, resultsMsg); err != nil {
+	if err := db.CompleteItem(item.ID, resultsMsg, AgentContext{}); err != nil {
 		t.Fatalf("failed to complete item: %v", err)
 	}
 
@@ -669,7 +669,7 @@ func TestCompleteItem_UpdatesTimestamp(t *testing.T) {
 	item := createTestItemWithTimestamp(t, db, "Task to complete", "test", model.StatusInProgress, oldTime)
 
 	beforeComplete := time.Now()
-	if err := db.CompleteItem(item.ID, "Done"); err != nil {
+	if err := db.CompleteItem(item.ID, "Done", AgentContext{}); err != nil {
 		t.Fatalf("failed to complete item: %v", err)
 	}
 
@@ -686,7 +686,7 @@ func TestCompleteItem_UpdatesTimestamp(t *testing.T) {
 func TestCompleteItem_ReturnsErrorForNonExistentItem(t *testing.T) {
 	db := setupTestDB(t)
 
-	err := db.CompleteItem("nonexistent-id", "Some results")
+	err := db.CompleteItem("nonexistent-id", "Some results", AgentContext{})
 	if err == nil {
 		t.Error("expected error for non-existent item")
 	}
@@ -698,7 +698,7 @@ func TestCompleteItem_ResultsCanBeRetrievedViaGetItem(t *testing.T) {
 	item := createTestItemWithProject(t, db, "Task with results", "test", model.StatusOpen, 2)
 	resultsMsg := "Implementation complete:\n- Added feature X\n- Fixed bug Y\n- Updated docs"
 
-	if err := db.CompleteItem(item.ID, resultsMsg); err != nil {
+	if err := db.CompleteItem(item.ID, resultsMsg, AgentContext{}); err != nil {
 		t.Fatalf("failed to complete item: %v", err)
 	}
 

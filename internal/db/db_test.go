@@ -201,7 +201,7 @@ func TestUpdateStatus(t *testing.T) {
 		t.Fatalf("failed to create item: %v", err)
 	}
 
-	if err := db.UpdateStatus(item.ID, model.StatusInProgress); err != nil {
+	if err := db.UpdateStatus(item.ID, model.StatusInProgress, AgentContext{}); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestUpdateStatus(t *testing.T) {
 func TestUpdateStatus_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
-	err := db.UpdateStatus("nonexistent", model.StatusDone)
+	err := db.UpdateStatus("nonexistent", model.StatusDone, AgentContext{})
 	if err == nil {
 		t.Error("expected error for nonexistent item")
 	}
@@ -223,7 +223,7 @@ func TestUpdateStatus_NotFound(t *testing.T) {
 func TestUpdateStatus_InvalidStatus(t *testing.T) {
 	db := setupTestDB(t)
 
-	err := db.UpdateStatus("ts-123456", model.Status("invalid"))
+	err := db.UpdateStatus("ts-123456", model.Status("invalid"), AgentContext{})
 	if err == nil {
 		t.Error("expected error for invalid status")
 	}

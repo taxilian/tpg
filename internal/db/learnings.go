@@ -594,3 +594,33 @@ func (db *DB) GetRelatedConcepts(taskID string) ([]model.Concept, error) {
 
 	return related, nil
 }
+
+// GetConceptCount returns the number of concepts in a project
+func (db *DB) GetConceptCount(project string) (int, error) {
+	query := `SELECT COUNT(*) FROM concepts WHERE 1=1`
+	args := []any{}
+
+	if project != "" {
+		query += ` AND project = ?`
+		args = append(args, project)
+	}
+
+	var count int
+	err := db.QueryRow(query, args...).Scan(&count)
+	return count, err
+}
+
+// GetLearningCount returns the number of active learnings in a project
+func (db *DB) GetLearningCount(project string) (int, error) {
+	query := `SELECT COUNT(*) FROM learnings WHERE status = 'active'`
+	args := []any{}
+
+	if project != "" {
+		query += ` AND project = ?`
+		args = append(args, project)
+	}
+
+	var count int
+	err := db.QueryRow(query, args...).Scan(&count)
+	return count, err
+}

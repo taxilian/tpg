@@ -1,0 +1,132 @@
+# Audit Task Template
+#
+# Code audit with findings reported in task close reason.
+#
+# Usage:
+#   tpg add "Audit user validation" --template audit-task \
+#     --var 'audit_target="User model validation logic"' \
+#     --var 'audit_goal="Document every validation rule with regex and examples"' \
+#     --var 'scope_items="User, Session, Team"' \
+#     --var 'source_location="src/models/"' \
+#     --var 'success_criteria="Every validation has regex + 2 examples"'
+
+title: "Audit Task"
+description: "Code audit with findings reported in task close reason"
+
+variables:
+  audit_target:
+    description: "What to audit (e.g., 'User model validation logic', 'GridFS metadata handling')"
+  audit_goal:
+    description: "Specific purpose with details (e.g., 'Document every validation rule with regex and 2+ examples')"
+  scope_items:
+    description: "Explicit list - 'User, Session, Team' NOT 'all models'. If unknown, say 'discover and list all X in Y'"
+  source_location:
+    description: "Where to start looking (e.g., 'src/models/', 'src/auth/middleware.ts')"
+  success_criteria:
+    description: "Specific, measurable criteria (e.g., 'Every validation has regex + 2 examples')"
+  comparison_target:
+    description: "What to compare against - 'main branch', 'reference impl', or 'none'"
+    optional: true
+    default: "none"
+  focus_areas:
+    description: "Specific concerns to investigate (e.g., 'edge cases: empty strings, null', 'race conditions')"
+    optional: true
+    default: "none"
+
+steps:
+  - id: audit
+    title: "Audit: {{.audit_target}}"
+    description: |
+      ## Objective
+
+      Audit {{.audit_target}} from {{.source_location}}.
+
+      **Goal:** {{.audit_goal}}
+
+      **Scope:** {{.scope_items}}
+
+      **Success Criteria:** {{.success_criteria}}
+      {{- if hasValue .comparison_target}}
+
+      **Compare Against:** {{.comparison_target}}
+      {{- end}}
+      {{- if hasValue .focus_areas}}
+
+      **Focus Areas:** {{.focus_areas}}
+      {{- end}}
+
+      ---
+
+      ## Approach
+
+      **Find code by following usage:**
+      - Start from entry points (server init, routes, public APIs)
+      - Use language server for references and definitions
+      - Follow imports to discover what's actually used
+      - If scope needs enumeration, list items explicitly first
+
+      **Document each component:**
+      - Location (file:line), purpose, interface, behavior
+      - Edge cases, side effects, dependencies
+      {{- if hasValue .comparison_target}}
+      - Differences vs {{.comparison_target}} with impact
+      {{- end}}
+      - Be specific and thorough
+
+      **Analyze findings:**
+      - Patterns (common approaches)
+      - Inconsistencies (different solutions to same problem)
+      - Issues (bugs, security, performance) with severity
+      - Create tpg tasks for Critical/High issues
+      {{- if hasValue .focus_areas}}
+
+      **Address focus areas:**
+      Investigate {{.focus_areas}} explicitly with findings and recommendations.
+      {{- end}}
+
+      **Verify success:**
+      For each criterion in success criteria, document: verification method, evidence, result.
+
+      ---
+
+      ## Deliverable
+
+      Report findings in task done results with:
+
+      - **Summary:** Goal, scope, stats, key findings
+      - **Patterns:** What you observed with locations
+      - **Issues:** Critical/High detailed, Medium/Low summarized
+      {{- if hasValue .focus_areas}}
+      - **Focus areas:** Findings for {{.focus_areas}}
+      {{- end}}
+      - **Components:** Each item in scope fully documented
+      - **Success verification:** How {{.success_criteria}} was met
+      - **Implementation guidance:** What implementers need
+      - **Follow-up:** Tasks created and recommended
+      - **Open questions:** Unresolved items
+
+      ---
+
+      ## Acceptance Criteria
+
+      - [ ] All {{.scope_items}} documented with file:line refs
+      - [ ] {{.audit_goal}} achieved
+      - [ ] {{.success_criteria}} verified with evidence
+      {{- if hasValue .focus_areas}}
+      - [ ] {{.focus_areas}} addressed
+      {{- end}}
+      {{- if hasValue .comparison_target}}
+      - [ ] Compared with {{.comparison_target}}
+      {{- end}}
+      - [ ] Critical/High issues have tpg tasks
+      - [ ] Done results are comprehensive
+
+      ---
+
+      ## Reminders
+
+      - Be specific: "`/^[a-z]+$/` at line 42" not "validated"
+      - Document edge cases explicitly
+      - Include file:line for all code references
+      - Mark unknowns in "Open Questions" - don't guess
+      - One component = one section (don't group)

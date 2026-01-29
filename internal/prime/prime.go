@@ -1,0 +1,224 @@
+package prime
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"text/template"
+
+	"github.com/taxilian/tpg/internal/db"
+)
+
+const PrimeFileName = "PRIME.md"
+
+// PrimeData contains all data available to prime templates
+type PrimeData struct {
+	// Status counts
+	Open       int
+	InProgress int
+	Blocked    int
+	Done       int
+	Canceled   int
+	Ready      int
+
+	// Current work samples (limited to avoid overwhelming output)
+	MyInProgItems    []PrimeItem
+	OtherInProgCount int
+	BlockedCount     int
+
+	// Config
+	Project        string
+	TaskPrefix     string
+	EpicPrefix     string
+	DefaultProject string
+	HasDB          bool
+
+	// Agent context
+	AgentID    string
+	AgentType  string
+	IsSubagent bool
+
+	// Knowledge base stats
+	ConceptCount  int
+	LearningCount int
+}
+
+// PrimeItem is a simplified view of model.Item for templates
+type PrimeItem struct {
+	ID       string
+	Title    string
+	Priority int
+}
+
+// GetPrimeLocations returns paths to check for PRIME.md (most local first)
+func GetPrimeLocations() []string {
+	var locations []string
+
+	// 1. Project: .tpg/PRIME.md (search upward)
+	if projectPath := findProjectPrime(); projectPath != "" {
+		locations = append(locations, projectPath)
+	}
+
+	// 2. User: ~/.config/tpg/PRIME.md
+	if home, err := os.UserHomeDir(); err == nil {
+		locations = append(locations, filepath.Join(home, ".config", "tpg", PrimeFileName))
+	}
+
+	// 3. Global: ~/.config/opencode/tpg-prime.md
+	if home, err := os.UserHomeDir(); err == nil {
+		locations = append(locations, filepath.Join(home, ".config", "opencode", "tpg-prime.md"))
+	}
+
+	return locations
+}
+
+func findProjectPrime() string {
+	dir, _ := os.Getwd()
+	for {
+		candidate := filepath.Join(dir, ".tpg", PrimeFileName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// LoadPrimeTemplate loads custom template from search locations
+// Returns template text, source path, and error
+// Returns empty string for template if no custom template found (not an error)
+func LoadPrimeTemplate() (string, string, error) {
+	for _, path := range GetPrimeLocations() {
+		if data, err := os.ReadFile(path); err == nil {
+			return string(data), path, nil
+		}
+	}
+	return "", "", nil // No custom template found
+}
+
+// RenderPrime renders the prime template with given data
+func RenderPrime(templateText string, data PrimeData) (string, error) {
+	funcMap := template.FuncMap{
+		"add": func(a, b int) int { return a + b },
+		"sub": func(a, b int) int { return a - b },
+		"plural": func(count int, singular, plural string) string {
+			if count == 1 {
+				return singular
+			}
+			return plural
+		},
+	}
+
+	tmpl, err := template.New("prime").Funcs(funcMap).Parse(templateText)
+	if err != nil {
+		return "", fmt.Errorf("template parse error: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("template execution error: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+// DefaultPrimeTemplate returns the condensed default template
+func DefaultPrimeTemplate() string {
+	return `# Tpg Context
+
+This project uses 'tpg' for cross-session task management.
+{{if .Project}}Project: {{.Project}}{{else if .DefaultProject}}Default: {{.DefaultProject}}{{end}}
+
+## Status
+{{if not .HasDB -}}
+No database - run 'tpg init'
+{{else -}}
+{{if gt (len .MyInProgItems) 0 -}}
+**Your work:**
+{{range .MyInProgItems}}  • [{{.ID}}] {{.Title}}{{if eq .Priority 1}} ⚡{{end}}
+{{end}}
+{{end -}}
+- {{.Ready}} ready (use 'tpg ready')
+{{if gt .OtherInProgCount 0}}- {{.OtherInProgCount}} in progress (other agents){{end}}
+{{if gt .Blocked 0}}- {{.Blocked}} blocked{{end}}
+- {{.Done}} done, {{.Open}} open
+{{if gt .ConceptCount 0}}- {{.LearningCount}} learnings in {{.ConceptCount}} concepts{{end}}
+{{end}}
+
+## Workflow
+
+**Start:** 'tpg ready' → 'tpg show <id>' → 'tpg start <id>'
+**During:** 'tpg log <id> "progress"' — log significant discoveries and milestones as you work
+**Finish:** 'tpg done <id>' or 'tpg block <id> "reason"'
+**Context:** 'tpg concepts' → 'tpg context -c <name>'
+
+**Logging:** While working on a task, use 'tpg log' to record:
+- Significant discoveries (unexpected behavior, key insights, design decisions)
+- Implementation milestones (tests passing, component complete, integration done)
+This builds cross-session context so progress is never lost.
+
+## Key Commands
+
+  tpg ready         # Available work
+  tpg show <id>     # Task details
+  tpg start <id>    # Claim task
+  tpg log <id> "msg"  # Log progress
+  tpg done <id>     # Complete
+  tpg status        # Overview
+  tpg context -c X  # Load learnings
+`
+}
+
+// BuildPrimeData constructs PrimeData from database queries and config
+func BuildPrimeData(report *db.StatusReport, config *db.Config, agentCtx db.AgentContext, database *db.DB) PrimeData {
+	data := PrimeData{
+		HasDB:      report != nil,
+		AgentID:    agentCtx.ID,
+		AgentType:  agentCtx.Type,
+		IsSubagent: agentCtx.IsSubagent(),
+	}
+
+	if config != nil {
+		data.TaskPrefix = config.Prefixes.Task
+		data.EpicPrefix = config.Prefixes.Epic
+		data.DefaultProject = config.DefaultProject
+	}
+
+	if report != nil {
+		data.Open = report.Open
+		data.InProgress = report.InProgress
+		data.Blocked = report.Blocked
+		data.Done = report.Done
+		data.Canceled = report.Canceled
+		data.Ready = report.Ready
+		data.Project = report.Project
+		data.OtherInProgCount = report.OtherInProgCount
+		data.BlockedCount = len(report.BlockedItems)
+
+		// Convert agent's items to PrimeItem
+		for _, item := range report.MyInProgItems {
+			data.MyInProgItems = append(data.MyInProgItems, PrimeItem{
+				ID:       item.ID,
+				Title:    item.Title,
+				Priority: item.Priority,
+			})
+		}
+	}
+
+	// Get knowledge base stats
+	if database != nil && report != nil {
+		if count, err := database.GetConceptCount(report.Project); err == nil {
+			data.ConceptCount = count
+		}
+		if count, err := database.GetLearningCount(report.Project); err == nil {
+			data.LearningCount = count
+		}
+	}
+
+	return data
+}

@@ -1,0 +1,154 @@
+# Test Review Template
+#
+# Review and improve unit tests.
+# Creates 3 tasks: analyze -> implement improvements -> verify
+#
+# Usage:
+#   tpg add "Review auth tests" --template test-review \
+#     --var 'test_target="auth service"' \
+#     --var 'test_location="internal/auth/"'
+
+title: "Test Review"
+description: "Review and improve unit tests"
+
+variables:
+  test_target:
+    description: "What tests to review (e.g., 'auth service', 'user repository')"
+  test_location:
+    description: "Where tests are located (e.g., 'internal/auth/', 'src/repositories/user_test.go')"
+  context:
+    description: "Additional context (e.g., 'Recent refactoring may have introduced issues')"
+    optional: true
+    default: ""
+
+steps:
+  - id: analyze-tests
+    title: "Analyze tests: {{.test_target}}"
+    description: |
+      ## Objective
+
+      Review unit tests in {{.test_target}} and identify improvements needed.
+
+      **Test location:** {{.test_location}}
+      {{- if hasValue .context}}
+
+      **Context:** {{.context}}
+      {{- end}}
+
+      ---
+
+      ## The Golden Question
+
+      For every test: "What would a user notice if this test failed?"
+
+      If the answer is "nothing" or "they wouldn't care", the test should be removed.
+
+      ---
+
+      ## Analysis Process (Iterate up to 5 times)
+
+      ### 1. Are any tests BAD tests that should be REMOVED?
+      - Tests of hardcoded constants
+      - Tests that setters set and getters get
+      - Tests of private implementation details
+      - Tests that only verify the language/framework works
+
+      ### 2. Are any tests POORLY WRITTEN that should be IMPROVED?
+      - Method names in test names, multiple behaviors per test
+      - Unclear structure, over-mocking, brittle time deps, vague assertions
+
+      ### 3. Are there MISSING tests?
+      - Public APIs, edge cases, error conditions, business logic, integration
+
+      ### 4. Are there OTHER improvements needed?
+      - Organization, fixtures, assertion clarity, performance, isolation
+
+      ---
+
+      ## Deliverable
+
+      Document findings in done results grouped by: REMOVE, IMPROVE, MISSING, OTHER.
+
+      For each finding: test name, location (file:line), what's wrong/missing, Golden Question answer, recommendation.
+
+      End with summary: counts per category, estimated effort, priority findings.
+
+      ---
+
+      ## Acceptance Criteria
+
+      - [ ] Analyzed all tests in {{.test_location}}
+      - [ ] Applied Golden Question to each test
+      - [ ] Identified bad/poorly-written/missing tests
+      - [ ] Iterated 5 times on the 4 questions
+      - [ ] Documented findings with file:line references
+      - [ ] Done results are comprehensive and actionable
+
+  - id: implement-improvements
+    title: "Implement test improvements: {{.test_target}}"
+    depends:
+      - analyze-tests
+    description: |
+      ## Objective
+
+      Implement the test improvements identified in the analysis.
+
+      **Test location:** {{.test_location}}
+
+      ---
+
+      ## Process
+
+      1. Read done results from the analyze-tests step
+      2. Before removing any test, re-ask: "What would a user notice if this test failed?"
+      3. Remove truly bad tests
+      4. Improve poorly written tests
+      5. Add missing tests
+      6. Apply other improvements
+
+      **Follow testing principles:**
+      - Test behavior, not implementation
+      - Arrange-Act-Assert structure
+      - Descriptive names: `test_user_can_X` or `test_rejects_Y_when_Z`
+
+      ---
+
+      ## Acceptance Criteria
+
+      - [ ] All changes from analysis implemented
+      - [ ] Tests follow testing best practices
+      - [ ] Code compiles (tests may not pass yet)
+
+  - id: verify-and-iterate
+    title: "Verify tests pass: {{.test_target}}"
+    depends:
+      - implement-improvements
+    description: |
+      ## Objective
+
+      Run tests and iterate until all pass.
+
+      **Test location:** {{.test_location}}
+
+      ---
+
+      ## Process
+
+      1. Run tests for {{.test_target}}
+      2. For each failure: implementation bug? Test bug? Unclear requirement?
+      3. Fix and iterate (max 10 iterations)
+
+      ## Rules
+
+      **NEVER:** Weaken assertions, change tests to verify implementation instead of behavior, remove important behavior checks.
+
+      **ALWAYS:** Fix bugs to match expected behavior, maintain test quality.
+
+      ---
+
+      ## Acceptance Criteria
+
+      - [ ] All tests pass
+      - [ ] No linter warnings
+      - [ ] Code formatted
+      - [ ] Test quality maintained (no weakened tests)

@@ -17,3 +17,22 @@ tpg done <id>          # Complete work
 ```
 
 For full workflow: `tpg prime`
+
+## Templates
+
+Check `.tpg/templates/` for reusable task templates before creating tasks manually:
+```
+tpg template list                                    # List available templates
+tpg template show <id>                               # View template details
+tpg add "Title" --template <id> --var 'key="value"'  # Create from template
+```
+
+## Agents
+
+Agent definitions are in `agents/`:
+- **tpg-agent** - Single task executor (subagent)
+- **tpg-orchestrator** - Parallel work coordinator (primary)
+- **tpg-planner** - Spec-to-task decomposition (all modes)
+- **tpg-implementation-planner** - Architecture and component design (primary)
+- **spec-designer** - Requirements and product specification (primary)
+- **explore-code** - Code exploration via connections (subagent)
