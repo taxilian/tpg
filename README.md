@@ -47,11 +47,11 @@ tpg onboard
 tpg onboard --claude
 
 # Create a task
-tpg add "Implement user authentication" -p myproject --priority 1
+tpg add "Implement user authentication"
 # Output: ts-a1b2c3
 
 # See what's ready to work on
-tpg ready -p myproject
+tpg ready
 
 # Start working
 tpg start ts-a1b2c3
@@ -144,11 +144,9 @@ IDs are auto-generated with type prefixes:
 
 ```bash
 # Get project overview
-tpg status -p myproject
+tpg status
 
 # Output:
-# Project: myproject
-#
 # Summary: 3 open, 1 in progress, 0 blocked, 2 done (2 ready)
 #
 # In progress:
@@ -157,13 +155,16 @@ tpg status -p myproject
 # Ready for work:
 #   [ts-d4e5f6] Add login endpoint (pri 1)
 #   [ts-g7h8i9] Write auth tests (pri 2)
+
+# Or filter by project if you use them:
+# tpg status -p myproject
 ```
 
 ### Pick up work
 
 ```bash
 # See what's unblocked
-tpg ready -p myproject
+tpg ready
 
 # Read full context
 tpg show ts-d4e5f6
@@ -211,7 +212,7 @@ Use dependencies to enforce task ordering. A task with unmet dependencies won't 
 
 ```bash
 # Create a task that blocks another (at creation time)
-tpg add "Build API" -p myproject --blocks ts-frontend
+tpg add "Build API" --blocks ts-frontend
 # New task blocks ts-frontend, so ts-frontend can't start until the new task is done
 
 # Or add blocking relationship to existing tasks
