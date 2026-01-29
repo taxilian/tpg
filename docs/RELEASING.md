@@ -22,7 +22,22 @@ tpg uses [Semantic Versioning](https://semver.org/):
 git log --oneline $(git describe --tags --abbrev=0)..HEAD
 ```
 
-### 2. Create annotated tag
+### 2. Update README with new version
+
+Update the `go install` command in README.md to show the new version:
+
+```bash
+# Edit README.md line 14
+go install github.com/taxilian/tpg/cmd/tpg@vX.Y.Z
+```
+
+Commit this change:
+```bash
+git add README.md
+git commit -m "docs: update README install command for vX.Y.Z"
+```
+
+### 3. Create annotated tag
 
 Annotated tags are required for GitHub releases. Include release notes in the tag message:
 
@@ -41,13 +56,13 @@ git tag -a v0.2.1 -m "v0.2.1
 "
 ```
 
-### 3. Push the tag
+### 4. Push the tag
 
 ```bash
 git push origin v0.2.1
 ```
 
-### 4. Create GitHub release
+### 5. Create GitHub release
 
 ```bash
 gh release create v0.2.1 --title "v0.2.1" --notes-from-tag

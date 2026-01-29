@@ -6,9 +6,10 @@ description: Create a new release with version bump and GitHub release
 
 Create a new release for tpg. This will:
 1. Determine the next version number based on changes
-2. Create an annotated git tag
-3. Push the tag to GitHub
-4. Create a GitHub release with release notes
+2. Update README.md with the new version in the install command
+3. Create an annotated git tag
+4. Push the tag to GitHub
+5. Create a GitHub release with release notes
 
 ## Steps
 
@@ -27,7 +28,15 @@ Create a new release for tpg. This will:
    git describe --tags --abbrev=0
    ```
 
-4. Create an annotated tag with release notes summarizing the changes:
+4. Update README.md with the new version:
+   ```bash
+   # Update the go install command on line 14
+   sed -i '' "s|go install github.com/taxilian/tpg/cmd/tpg@latest|go install github.com/taxilian/tpg/cmd/tpg@vX.Y.Z|" README.md
+   git add README.md
+   git commit -m "docs: update README install command for vX.Y.Z"
+   ```
+
+5. Create an annotated tag with release notes summarizing the changes:
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z
 
@@ -38,12 +47,12 @@ Create a new release for tpg. This will:
    "
    ```
 
-5. Push the tag:
+6. Push the tag:
    ```bash
    git push origin vX.Y.Z
    ```
 
-6. Create the GitHub release:
+7. Create the GitHub release:
    ```bash
    gh release create vX.Y.Z --title "vX.Y.Z" --notes-from-tag
    ```
