@@ -1,0 +1,7 @@
+{
+  "prefixes": {
+    "task": "ts",
+    "epic": "ep"
+  },
+  "default_project": "tpg"
+}
