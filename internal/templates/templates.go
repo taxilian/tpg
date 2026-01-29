@@ -120,6 +120,7 @@ func FindTemplatesDir() (string, error) {
 
 // ListTemplates returns all available templates from all locations.
 // Templates from more local locations override those from more global locations.
+// Searches recursively through subdirectories within each template location.
 func ListTemplates() ([]*Template, error) {
 	locations := GetTemplateLocations()
 	if len(locations) == 0 {
@@ -130,34 +131,34 @@ func ListTemplates() ([]*Template, error) {
 	seen := make(map[string]*Template)
 
 	for _, loc := range locations {
-		entries, err := os.ReadDir(loc.Path)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
+		// Walk the directory tree recursively
+		_ = filepath.Walk(loc.Path, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil // Skip errors, continue walking
+			}
+			if info.IsDir() {
+				return nil // Continue into directories
 			}
 
-			ext := strings.ToLower(filepath.Ext(entry.Name()))
+			ext := strings.ToLower(filepath.Ext(info.Name()))
 			if ext != ".yaml" && ext != ".yml" && ext != ".toml" {
-				continue
+				return nil
 			}
 
-			id := strings.TrimSuffix(entry.Name(), ext)
+			id := strings.TrimSuffix(info.Name(), ext)
 			if _, exists := seen[id]; exists {
 				// Already have this template from a higher-priority location
-				continue
+				return nil
 			}
 
-			tmpl, err := loadTemplateFromPath(filepath.Join(loc.Path, entry.Name()), id, loc.Source)
+			tmpl, err := loadTemplateFromPath(path, id, loc.Source)
 			if err != nil {
 				// Skip invalid templates in listing
-				continue
+				return nil
 			}
 			seen[id] = tmpl
-		}
+			return nil
+		})
 	}
 
 	// Convert to sorted slice
@@ -197,6 +198,7 @@ func LoadTemplate(id string) (*Template, error) {
 }
 
 func findTemplatePathInDir(dir, id string) (string, error) {
+	// First check the root directory (fast path)
 	candidates := []string{
 		filepath.Join(dir, id+".yaml"),
 		filepath.Join(dir, id+".yml"),
@@ -206,6 +208,30 @@ func findTemplatePathInDir(dir, id string) (string, error) {
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		}
+	}
+
+	// Search recursively through subdirectories
+	var foundPath string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(info.Name()))
+		if ext != ".yaml" && ext != ".yml" && ext != ".toml" {
+			return nil
+		}
+
+		fileID := strings.TrimSuffix(info.Name(), ext)
+		if fileID == id {
+			foundPath = path
+			return filepath.SkipAll // Stop walking, we found it
+		}
+		return nil
+	})
+
+	if foundPath != "" {
+		return foundPath, nil
 	}
 	return "", fmt.Errorf("template not found: %s", id)
 }
