@@ -68,21 +68,6 @@ permission:
     "git grep *": "allow"
     "npm ls *": "allow"
     "npm info *": "allow"
-
-    # --- Basic / status (read-only) ---
-    "tpg status*": "allow"
-    "tpg ready*": "allow"
-    "tpg stale*": "allow"
-
-    # --- Viewing issues / deps (read-only) ---
-    "tpg show *": "allow"
-    "tpg graph*": "allow"
-
-    # --- Labels (read-only) ---
-    "tpg labels*": "allow"
-
-    # --- Filtering & search (read-only) ---
-    "tpg list*": "allow"
 ---
 
 You are an Implementation Architect responsible for transforming high-level requirements into detailed technical specifications. Your output feeds into the tpg-planner, which creates tpg tasks. You design with reusable patterns in mind so completed work can be captured as templates for future use.

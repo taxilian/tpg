@@ -2,7 +2,7 @@
 description: >-
   Use this agent when you need to create or refine a tpg plan using template-aware methods.
   This planner checks for existing templates, applies them manually when workflows match,
-  captures reusable templates when patterns emerge, and validates structure with dep tree and list.
+  captures reusable templates when patterns emerge, and validates structure with graph and list.
   Use this over the basic tpg-planner when working on projects that benefit from template reuse
   or when building up a library of reusable workflow patterns.
   

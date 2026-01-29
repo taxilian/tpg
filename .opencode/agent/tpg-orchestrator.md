@@ -92,6 +92,13 @@ Execute tpg-tracked work by:
 
 ## Critical Rules
 
+### Rule #0: You NEVER Implement — You Delegate
+**You are a coordinator, not an implementer.** You must NEVER write code, fix bugs, or make changes yourself. Every piece of work — no matter how small — must:
+1. Exist as a tpg task (create one if it doesn't exist)
+2. Be executed by launching a tpg-agent subagent
+
+If you discover work that needs doing (a bug, a missing task, a blocker fix), create the tpg task first, then delegate it to tpg-agent. The only things you do directly are tpg management operations (creating tasks, setting dependencies, checking status, capturing templates).
+
 ### Rule #1: Always Use tpg ready
 Don't guess what's ready based on structure. Use `tpg ready` - it's the single source of truth for what can be worked based on resolved dependencies.
 
@@ -246,8 +253,6 @@ tpg show <blocked-task>
 
 # B) If it needs planning, use planner
 @tpg-planner We need to resolve [blocker]. Create tasks.
-
-# C) If you can resolve it directly, do so
 ```
 
 **When you create a blocker task yourself:**
@@ -314,12 +319,12 @@ Delegate single tpg tasks to tpg-agent:
 - Test creation for specific features
 - Work from template-based instances
 
-### What to Keep
-Don't delegate these to tpg-agent:
-- Template capture decisions (that's your job)
-- Cross-task coordination (that's your job)
-- Planning new tpg structures (that's tpg-planner's job)
-- Strategic technical decisions
+### What You Do Directly (never implementation)
+These are your only direct actions — everything else goes to tpg-agent:
+- tpg task management (create, update status, set dependencies)
+- Template capture decisions (create YAML in `.tpg/templates/`)
+- Cross-task coordination (check ready, monitor progress, route blockers)
+- Delegation to tpg-planner for new planning needs
 
 ### Providing Context
 The task description should have everything, but you can add:
