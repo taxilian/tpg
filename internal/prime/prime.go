@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"github.com/taxilian/tpg/internal/db"
+	"github.com/taxilian/tpg/internal/templates"
 )
 
 const PrimeFileName = "PRIME.md"
@@ -50,6 +51,10 @@ type PrimeData struct {
 	// Knowledge base stats
 	ConceptCount  int
 	LearningCount int
+
+	// Available templates
+	Templates     []*templates.Template
+	TemplateCount int
 }
 
 // PrimeItem is a simplified view of model.Item for templates
@@ -197,6 +202,17 @@ You have {{.SubagentTaskCount}} tasks assigned to this session:
 - Implementation milestones (tests passing, component complete, integration done)
 This builds cross-session context so progress is never lost.
 
+## Templates
+
+{{if gt .TemplateCount 0 -}}
+Available templates ({{.TemplateCount}}):
+{{range .Templates}}  {{.ID}} ({{len .Variables}} vars): {{.Description}}
+{{end}}
+Use: 'tpg add "Title" --template <id> --var key=\"value\"'
+{{else -}}
+No templates found. Create templates in .tpg/templates/ to standardize workflows.
+{{end -}}
+
 ## Key Commands
 
   tpg ready         # Available work
@@ -280,6 +296,12 @@ func BuildPrimeData(report *db.StatusReport, config *db.Config, agentCtx db.Agen
 		if count, err := database.GetLearningCount(report.Project); err == nil {
 			data.LearningCount = count
 		}
+	}
+
+	// Get available templates
+	if tmplList, err := templates.ListTemplates(); err == nil {
+		data.Templates = tmplList
+		data.TemplateCount = len(tmplList)
 	}
 
 	return data
