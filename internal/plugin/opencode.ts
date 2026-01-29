@@ -15,19 +15,38 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
 
   /**
    * Determine if a session is a subagent (has a parent session) or primary.
+   * Attempts multiple detection methods. Defaults to "primary" if uncertain.
    */
   async function getAgentType(sessionID: string): Promise<"primary" | "subagent"> {
     const cached = agentTypeCache.get(sessionID)
     if (cached) return cached
 
     let agentType: "primary" | "subagent" = "primary"
+    
     try {
       const result = await client.session.get({ sessionID })
-      if ((result as any)?.data?.parentID || (result as any)?.parentID) {
+      const sessionData = (result as any)?.data || result
+      
+      // Method 1: Check for parentID (most reliable)
+      if (sessionData?.parentID || sessionData?.parent_id) {
         agentType = "subagent"
       }
+      // Method 2: Check session title/description for subagent indicators
+      else {
+        const title = (sessionData?.title || "").toLowerCase()
+        const description = (sessionData?.description || "").toLowerCase()
+        
+        if (title.includes("child session") || 
+            title.includes("subagent") ||
+            title.includes("task:") ||
+            description.includes("child session") ||
+            sessionData?.isSubagent ||
+            sessionData?.type === "subagent") {
+          agentType = "subagent"
+        }
+      }
     } catch {
-      // Can't determine; default to primary
+      // If API fails, default to primary
     }
 
     agentTypeCache.set(sessionID, agentType)
