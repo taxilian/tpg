@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 // CreateItem inserts a new item into the database.
@@ -25,11 +25,22 @@ func (db *DB) CreateItem(item *model.Item) error {
 		}
 	}
 
-	_, err := db.Exec(`
-		INSERT INTO items (id, project, type, title, description, status, priority, parent_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	varsJSON, err := marshalTemplateVars(item.TemplateVars)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO items (
+			id, project, type, title, description, status, priority, parent_id,
+			template_id, step_index, variables, template_hash, results,
+			created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Project, item.Type, item.Title, item.Description,
-		item.Status, item.Priority, item.ParentID, item.CreatedAt, item.UpdatedAt,
+		item.Status, item.Priority, item.ParentID,
+		item.TemplateID, item.StepIndex, varsJSON, item.TemplateHash, item.Results,
+		item.CreatedAt, item.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create item: %w", err)
@@ -40,17 +51,26 @@ func (db *DB) CreateItem(item *model.Item) error {
 // GetItem retrieves an item by ID.
 func (db *DB) GetItem(id string) (*model.Item, error) {
 	row := db.QueryRow(`
-		SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at
+		SELECT id, project, type, title, description, status, priority, parent_id,
+			template_id, step_index, variables, template_hash, results,
+			created_at, updated_at
 		FROM items WHERE id = ?`, id)
 
 	item := &model.Item{}
 	var parentID sql.NullString
+	var templateID sql.NullString
+	var stepIndex sql.NullInt64
+	var variables sql.NullString
+	var templateHash sql.NullString
+	var results sql.NullString
 	err := row.Scan(
 		&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
-		&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt,
+		&item.Status, &item.Priority, &parentID,
+		&templateID, &stepIndex, &variables, &templateHash, &results,
+		&item.CreatedAt, &item.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
+		return nil, fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get item: %w", err)
@@ -58,6 +78,26 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 
 	if parentID.Valid {
 		item.ParentID = &parentID.String
+	}
+	if templateID.Valid {
+		item.TemplateID = templateID.String
+	}
+	if stepIndex.Valid {
+		idx := int(stepIndex.Int64)
+		item.StepIndex = &idx
+	}
+	if variables.Valid {
+		vars, err := unmarshalTemplateVars(variables.String)
+		if err != nil {
+			return nil, err
+		}
+		item.TemplateVars = vars
+	}
+	if templateHash.Valid {
+		item.TemplateHash = templateHash.String
+	}
+	if results.Valid {
+		item.Results = results.String
 	}
 	return item, nil
 }
@@ -77,7 +117,23 @@ func (db *DB) UpdateStatus(id string, status model.Status) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	return nil
+}
+
+// CompleteItem marks an item as done and records a results message.
+func (db *DB) CompleteItem(id, results string) error {
+	result, err := db.Exec(`
+		UPDATE items SET status = ?, results = ?, updated_at = ? WHERE id = ?`,
+		model.StatusDone, results, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to complete item: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	return nil
 }
@@ -96,7 +152,7 @@ func (db *DB) AppendDescription(id string, text string) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	return nil
 }
@@ -107,7 +163,7 @@ func (db *DB) SetParent(itemID, parentID string) error {
 	var itemType string
 	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, parentID).Scan(&itemType)
 	if err != nil {
-		return fmt.Errorf("parent not found: %s (use 'tasks list' to see available items)", parentID)
+		return fmt.Errorf("parent not found: %s (use 'tpg list' to see available items)", parentID)
 	}
 	if itemType != string(model.ItemTypeEpic) {
 		return fmt.Errorf("parent must be an epic, got %s", itemType)
@@ -123,7 +179,7 @@ func (db *DB) SetParent(itemID, parentID string) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", itemID)
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", itemID)
 	}
 	return nil
 }
@@ -146,7 +202,7 @@ func (db *DB) SetProject(id string, project string) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	return nil
 }
@@ -165,7 +221,7 @@ func (db *DB) SetDescription(id string, text string) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	return nil
 }
@@ -184,7 +240,7 @@ func (db *DB) SetTitle(id string, title string) error {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	return nil
 }
@@ -198,7 +254,7 @@ func (db *DB) DeleteItem(id string) error {
 		return fmt.Errorf("failed to check item: %w", err)
 	}
 	if count == 0 {
-		return fmt.Errorf("item not found: %s (use 'tasks list' to see available items)", id)
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 
 	// Delete logs

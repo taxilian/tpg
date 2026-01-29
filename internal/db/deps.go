@@ -67,6 +67,36 @@ type DepEdge struct {
 	DependsOnStatus string
 }
 
+// DepStatus represents a dependency with status details.
+type DepStatus struct {
+	ID     string
+	Title  string
+	Status string
+}
+
+// GetDepStatuses returns dependencies for a single item with their statuses.
+func (db *DB) GetDepStatuses(itemID string) ([]DepStatus, error) {
+	rows, err := db.Query(`
+		SELECT d.depends_on, i.title, i.status
+		FROM deps d
+		JOIN items i ON d.depends_on = i.id
+		WHERE d.item_id = ?`, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dependency statuses: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var deps []DepStatus
+	for rows.Next() {
+		var dep DepStatus
+		if err := rows.Scan(&dep.ID, &dep.Title, &dep.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan dependency status: %w", err)
+		}
+		deps = append(deps, dep)
+	}
+	return deps, rows.Err()
+}
+
 // GetAllDeps returns all dependency edges with item details, optionally filtered by project.
 func (db *DB) GetAllDeps(project string) ([]DepEdge, error) {
 	query := `

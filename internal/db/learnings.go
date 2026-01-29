@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 // CreateLearning inserts a new learning and its concept associations.

@@ -1,6 +1,6 @@
-// Package db provides SQLite database operations for the prog task system.
+// Package db provides SQLite database operations for the tpg task system.
 //
-// The database is stored at ~/.prog/prog.db by default.
+// The database is stored under .tpg/ in the project root.
 // Use Open() to connect and Init() to create the schema.
 package db
 
@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -140,24 +140,19 @@ CREATE INDEX IF NOT EXISTS idx_labels_project ON labels(project);
 CREATE INDEX IF NOT EXISTS idx_item_labels_item ON item_labels(item_id);
 CREATE INDEX IF NOT EXISTS idx_item_labels_label ON item_labels(label_id);
 `,
+	// Version 3: Add template metadata and results
+	`
+ALTER TABLE items ADD COLUMN template_id TEXT;
+ALTER TABLE items ADD COLUMN step_index INTEGER;
+ALTER TABLE items ADD COLUMN variables TEXT;
+ALTER TABLE items ADD COLUMN template_hash TEXT;
+ALTER TABLE items ADD COLUMN results TEXT;
+`,
 }
 
 // DB wraps a SQL database connection with task-specific operations.
 type DB struct {
 	*sql.DB
-}
-
-// DefaultPath returns the default database path (~/.prog/prog.db)
-// Can be overridden with PROG_DB environment variable.
-func DefaultPath() (string, error) {
-	if envPath := os.Getenv("PROG_DB"); envPath != "" {
-		return envPath, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	return filepath.Join(home, ".prog", "prog.db"), nil
 }
 
 // Open opens or creates the database at the given path

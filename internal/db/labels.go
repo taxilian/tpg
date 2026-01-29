@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 // CreateLabel inserts a new label.

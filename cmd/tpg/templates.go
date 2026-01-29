@@ -1,0 +1,316 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/taxilian/tpg/internal/db"
+	"github.com/taxilian/tpg/internal/model"
+	"github.com/taxilian/tpg/internal/templates"
+	"gopkg.in/yaml.v3"
+)
+
+type templateCache struct {
+	templates map[string]*templates.Template
+}
+
+func (c *templateCache) get(id string) (*templates.Template, error) {
+	if c.templates == nil {
+		c.templates = map[string]*templates.Template{}
+	}
+	if tmpl, ok := c.templates[id]; ok {
+		return tmpl, nil
+	}
+	tmpl, err := templates.LoadTemplate(id)
+	if err != nil {
+		return nil, err
+	}
+	c.templates[id] = tmpl
+	return tmpl, nil
+}
+
+func parseTemplateVars(pairs []string) (map[string]string, error) {
+	vars := map[string]string{}
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid variable format: %s (expected name=json-string)", pair)
+		}
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			return nil, fmt.Errorf("variable name cannot be empty")
+		}
+		var value string
+		if err := json.Unmarshal([]byte(parts[1]), &value); err != nil {
+			return nil, fmt.Errorf("invalid JSON string for %s", name)
+		}
+		vars[name] = value
+	}
+	return vars, nil
+}
+
+// parseTemplateVarsYAML parses YAML from stdin and returns varPairs in name=json-string format
+func parseTemplateVarsYAML(data []byte) ([]string, error) {
+	var varsMap map[string]interface{}
+	if err := yaml.Unmarshal(data, &varsMap); err != nil {
+		return nil, fmt.Errorf("invalid YAML: %w", err)
+	}
+
+	var pairs []string
+	for name, value := range varsMap {
+		// Convert value to string
+		var strValue string
+		switch v := value.(type) {
+		case string:
+			strValue = v
+		case nil:
+			strValue = ""
+		default:
+			// For other types, marshal to JSON and back to get string representation
+			jsonBytes, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert %s value: %w", name, err)
+			}
+			strValue = string(jsonBytes)
+			// If it's a quoted string, unquote it
+			if len(strValue) >= 2 && strValue[0] == '"' && strValue[len(strValue)-1] == '"' {
+				if err := json.Unmarshal(jsonBytes, &strValue); err == nil {
+					// Successfully unquoted
+				}
+			}
+		}
+
+		// Encode as JSON string for varPair
+		jsonValue, err := json.Marshal(strValue)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode %s: %w", name, err)
+		}
+		pairs = append(pairs, fmt.Sprintf("%s=%s", name, string(jsonValue)))
+	}
+
+	return pairs, nil
+}
+
+func randomStepID() (string, error) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate step id: %w", err)
+	}
+	for i := range b {
+		b[i] = alphabet[int(b[i])%len(alphabet)]
+	}
+	return string(b), nil
+}
+
+func assignStepIDs(steps []templates.Step) ([]string, error) {
+	ids := make([]string, len(steps))
+	used := map[string]bool{}
+	for i, step := range steps {
+		if step.ID == "" {
+			continue
+		}
+		if used[step.ID] {
+			return nil, fmt.Errorf("duplicate step id: %s", step.ID)
+		}
+		ids[i] = step.ID
+		used[step.ID] = true
+	}
+	for i := range steps {
+		if ids[i] != "" {
+			continue
+		}
+		for {
+			id, err := randomStepID()
+			if err != nil {
+				return nil, err
+			}
+			if !used[id] {
+				ids[i] = id
+				used[id] = true
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
+func instantiateTemplate(database *db.DB, project, title, templateID string, varPairs []string, priority int) (string, error) {
+	vars, err := parseTemplateVars(varPairs)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(title) == "" {
+		return "", fmt.Errorf("title is required for template instantiation")
+	}
+
+	tmpl, err := templates.LoadTemplate(templateID)
+	if err != nil {
+		return "", err
+	}
+
+	// Apply defaults and check required variables
+	// Variables are required by default unless marked optional
+	for name, varDef := range tmpl.Variables {
+		if _, ok := vars[name]; !ok {
+			if !varDef.Optional {
+				return "", fmt.Errorf("missing required template variable: %s", name)
+			}
+			// Apply default value for optional variables
+			vars[name] = varDef.Default
+		}
+	}
+	// Check for unknown variables
+	for name := range vars {
+		if _, ok := tmpl.Variables[name]; !ok {
+			return "", fmt.Errorf("unknown template variable: %s", name)
+		}
+	}
+
+	stepIDs, err := assignStepIDs(tmpl.Steps)
+	if err != nil {
+		return "", err
+	}
+	stepIDSet := map[string]bool{}
+	for _, id := range stepIDs {
+		stepIDSet[id] = true
+	}
+	for i, step := range tmpl.Steps {
+		for _, dep := range step.Depends {
+			if !stepIDSet[dep] {
+				return "", fmt.Errorf("step %d depends on unknown step id: %s", i, dep)
+			}
+		}
+	}
+
+	parentID, err := db.GenerateItemID(model.ItemTypeEpic)
+	if err != nil {
+		return "", err
+	}
+	createdIDs := []string{}
+	cleanup := func() {
+		for i := len(createdIDs) - 1; i >= 0; i-- {
+			_ = database.DeleteItem(createdIDs[i])
+		}
+	}
+
+	now := time.Now()
+	parent := &model.Item{
+		ID:           parentID,
+		Project:      project,
+		Type:         model.ItemTypeEpic,
+		Title:        title,
+		Status:       model.StatusOpen,
+		Priority:     priority,
+		TemplateID:   tmpl.ID,
+		TemplateVars: vars,
+		TemplateHash: tmpl.Hash,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := database.CreateItem(parent); err != nil {
+		return "", err
+	}
+	createdIDs = append(createdIDs, parentID)
+
+	childIDs := make([]string, len(tmpl.Steps))
+	stepIDToChildID := map[string]string{}
+	for i := range tmpl.Steps {
+		childID, err := db.GenerateItemID(model.ItemTypeTask)
+		if err != nil {
+			cleanup()
+			return "", err
+		}
+		idx := i
+		child := &model.Item{
+			ID:           childID,
+			Project:      project,
+			Type:         model.ItemTypeTask,
+			Title:        fmt.Sprintf("%s step %d", tmpl.ID, i+1),
+			Status:       model.StatusOpen,
+			Priority:     priority,
+			ParentID:     &parentID,
+			TemplateID:   tmpl.ID,
+			StepIndex:    &idx,
+			TemplateVars: vars,
+			TemplateHash: tmpl.Hash,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		if err := database.CreateItem(child); err != nil {
+			cleanup()
+			return "", err
+		}
+		createdIDs = append(createdIDs, childID)
+		childIDs[i] = childID
+		stepIDToChildID[stepIDs[i]] = childID
+	}
+
+	for i, step := range tmpl.Steps {
+		childID := childIDs[i]
+		for _, dep := range step.Depends {
+			depID := stepIDToChildID[dep]
+			if err := database.AddDep(childID, depID); err != nil {
+				cleanup()
+				return "", err
+			}
+		}
+	}
+	for _, childID := range childIDs {
+		if err := database.AddDep(parentID, childID); err != nil {
+			cleanup()
+			return "", err
+		}
+	}
+
+	return parentID, nil
+}
+
+func sanitizeTitle(title string) string {
+	result := strings.ReplaceAll(title, "\n", " ")
+	result = strings.TrimSpace(result)
+	result = strings.Join(strings.Fields(result), " ")
+	return result
+}
+
+func renderItemTemplate(cache *templateCache, item *model.Item) (bool, error) {
+	if item.TemplateID == "" || item.StepIndex == nil {
+		return false, nil
+	}
+	tmpl, err := cache.get(item.TemplateID)
+	if err != nil {
+		return false, err
+	}
+	if *item.StepIndex < 0 || *item.StepIndex >= len(tmpl.Steps) {
+		return false, fmt.Errorf("template step index out of range")
+	}
+	vars := item.TemplateVars
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	step := templates.RenderStep(tmpl.Steps[*item.StepIndex], vars)
+	if step.Title != "" {
+		item.Title = sanitizeTitle(step.Title)
+	} else {
+		item.Title = fmt.Sprintf("%s step %d", tmpl.ID, *item.StepIndex+1)
+	}
+	item.Description = step.Description
+	hashMismatch := item.TemplateHash != "" && tmpl.Hash != "" && item.TemplateHash != tmpl.Hash
+	return hashMismatch, nil
+}
+
+func renderTemplatesWithCache(cache *templateCache, items []model.Item) error {
+	for i := range items {
+		if _, err := renderItemTemplate(cache, &items[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderTemplatesForItems(items []model.Item) error {
+	return renderTemplatesWithCache(&templateCache{}, items)
+}

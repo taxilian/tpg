@@ -3,9 +3,12 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
+
+const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, template_id, step_index, variables, template_hash, results, created_at, updated_at"
 
 // ListFilter contains optional filters for listing items.
 type ListFilter struct {
@@ -27,7 +30,7 @@ func (db *DB) ListItems(project string, status *model.Status) ([]model.Item, err
 
 // ListItemsFiltered returns items matching the given filters.
 func (db *DB) ListItemsFiltered(filter ListFilter) ([]model.Item, error) {
-	query := `SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at FROM items WHERE 1=1`
+	query := fmt.Sprintf("SELECT %s FROM items WHERE 1=1", itemSelectColumns)
 	args := []any{}
 
 	if filter.Project != "" {
@@ -105,15 +108,15 @@ func (db *DB) ReadyItems(project string) ([]model.Item, error) {
 
 // ReadyItemsFiltered returns ready items with optional label filtering.
 func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item, error) {
-	query := `
-		SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at
+	query := fmt.Sprintf(`
+		SELECT %s
 		FROM items
 		WHERE status = 'open'
 		  AND id NOT IN (
 		    SELECT d.item_id FROM deps d
 		    JOIN items i ON d.depends_on = i.id
 		    WHERE i.status != 'done'
-		  )`
+		  )`, itemSelectColumns)
 	args := []any{}
 
 	if project != "" {
@@ -143,6 +146,18 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 	}
 	query += ` ORDER BY priority ASC, created_at ASC`
 
+	return db.queryItems(query, args...)
+}
+
+// StaleItems returns in-progress items that haven't been updated since the cutoff.
+func (db *DB) StaleItems(project string, cutoff time.Time) ([]model.Item, error) {
+	query := fmt.Sprintf("SELECT %s FROM items WHERE status = 'in_progress' AND updated_at < ?", itemSelectColumns)
+	args := []any{cutoff}
+	if project != "" {
+		query += " AND project = ?"
+		args = append(args, project)
+	}
+	query += " ORDER BY updated_at ASC"
 	return db.queryItems(query, args...)
 }
 
@@ -256,9 +271,9 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 	}
 
 	// Get recent done (last 3)
-	recentQuery := `
-		SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at
-		FROM items WHERE status = 'done'`
+	recentQuery := fmt.Sprintf(`
+		SELECT %s
+		FROM items WHERE status = 'done'`, itemSelectColumns)
 	recentArgs := []any{}
 	if project != "" {
 		recentQuery += ` AND project = ?`
@@ -308,14 +323,41 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 	for rows.Next() {
 		var item model.Item
 		var parentID sql.NullString
+		var templateID sql.NullString
+		var stepIndex sql.NullInt64
+		var variables sql.NullString
+		var templateHash sql.NullString
+		var results sql.NullString
 		if err := rows.Scan(
 			&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
-			&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt,
+			&item.Status, &item.Priority, &parentID,
+			&templateID, &stepIndex, &variables, &templateHash, &results,
+			&item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan item: %w", err)
 		}
 		if parentID.Valid {
 			item.ParentID = &parentID.String
+		}
+		if templateID.Valid {
+			item.TemplateID = templateID.String
+		}
+		if stepIndex.Valid {
+			idx := int(stepIndex.Int64)
+			item.StepIndex = &idx
+		}
+		if variables.Valid {
+			vars, err := unmarshalTemplateVars(variables.String)
+			if err != nil {
+				return nil, err
+			}
+			item.TemplateVars = vars
+		}
+		if templateHash.Valid {
+			item.TemplateHash = templateHash.String
+		}
+		if results.Valid {
+			item.Results = results.String
 		}
 		items = append(items, item)
 	}

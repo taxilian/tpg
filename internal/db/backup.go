@@ -12,17 +12,17 @@ import (
 const (
 	// MaxBackups is the maximum number of backups to keep
 	MaxBackups = 10
-	// BackupDir is the subdirectory for backups within the prog directory
+	// BackupDir is the subdirectory for backups within the data directory
 	BackupDir = "backups"
 )
 
 // BackupPath returns the path to the backups directory
 func BackupPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dataDir, err := findDataDir()
 	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".prog", BackupDir), nil
+	return filepath.Join(dataDir, BackupDir), nil
 }
 
 // Backup creates a backup of the database.
@@ -40,7 +40,7 @@ func (db *DB) Backup() (string, error) {
 
 	// Generate timestamped filename
 	timestamp := time.Now().Format("2006-01-02T15-04-05")
-	backupFile := filepath.Join(backupDir, fmt.Sprintf("prog-%s.db", timestamp))
+	backupFile := filepath.Join(backupDir, fmt.Sprintf("tpg-%s.db", timestamp))
 
 	// Use SQLite's backup via VACUUM INTO for a consistent snapshot
 	_, err = db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupFile))
@@ -84,7 +84,7 @@ func ListBackups() ([]BackupInfo, error) {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasPrefix(name, "prog-") || !strings.HasSuffix(name, ".db") {
+		if !strings.HasPrefix(name, "tpg-") || !strings.HasSuffix(name, ".db") {
 			continue
 		}
 
@@ -136,7 +136,7 @@ func pruneBackups(backupDir string, keep int) error {
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasPrefix(name, "prog-") || !strings.HasSuffix(name, ".db") {
+		if !strings.HasPrefix(name, "tpg-") || !strings.HasSuffix(name, ".db") {
 			continue
 		}
 		info, err := entry.Info()

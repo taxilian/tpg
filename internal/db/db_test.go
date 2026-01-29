@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 func setupTestDB(t *testing.T) *DB {
@@ -44,6 +44,20 @@ func TestOpen(t *testing.T) {
 }
 
 func TestDefaultPath(t *testing.T) {
+	// Create a temp directory with .tpg subdirectory
+	dir := t.TempDir()
+	tpgDir := filepath.Join(dir, ".tpg")
+	if err := os.MkdirAll(tpgDir, 0755); err != nil {
+		t.Fatalf("failed to create .tpg dir: %v", err)
+	}
+
+	// Change to temp dir so findDataDir can find .tpg
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
 	path, err := DefaultPath()
 	if err != nil {
 		t.Fatalf("failed to get default path: %v", err)
@@ -53,8 +67,42 @@ func TestDefaultPath(t *testing.T) {
 		t.Errorf("expected absolute path, got %q", path)
 	}
 
-	if !contains(path, ".prog/prog.db") {
-		t.Errorf("expected path to contain .prog/prog.db, got %q", path)
+	if !contains(path, ".tpg/tpg.db") {
+		t.Errorf("expected path to contain .tpg/tpg.db, got %q", path)
+	}
+}
+
+func TestDefaultPath_EnvVar(t *testing.T) {
+	customPath := "/custom/path/to/db.db"
+	t.Setenv("TPG_DB", customPath)
+
+	path, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("failed to get default path: %v", err)
+	}
+
+	if path != customPath {
+		t.Errorf("expected path %q, got %q", customPath, path)
+	}
+}
+
+func TestDefaultPath_NotFound(t *testing.T) {
+	// Create a temp directory without .tpg
+	dir := t.TempDir()
+
+	// Change to temp dir
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	// Clear any env var
+	t.Setenv("TPG_DB", "")
+
+	_, err := DefaultPath()
+	if err == nil {
+		t.Fatal("expected error when .tpg not found")
 	}
 }
 

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 func TestAddLog(t *testing.T) {

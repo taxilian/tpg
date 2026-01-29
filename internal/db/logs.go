@@ -2,8 +2,9 @@ package db
 
 import (
 	"fmt"
+	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 // AddLog adds a log entry to an item.
@@ -13,6 +14,9 @@ func (db *DB) AddLog(itemID, message string) error {
 		itemID, message)
 	if err != nil {
 		return fmt.Errorf("failed to add log: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE items SET updated_at = ? WHERE id = ?`, time.Now(), itemID); err != nil {
+		return fmt.Errorf("failed to update item timestamp: %w", err)
 	}
 	return nil
 }

@@ -1,0 +1,265 @@
+# TDD Template
+# 
+# A standardized approach for test-driven development.
+# Creates 4 tasks: write tests -> implement -> review -> verify
+#
+# Usage:
+#   tpg add "Feature Name" --template tdd-workflow \
+#     --var 'feature_name="user authentication"' \
+#     --var 'problem="Users need to log in securely"' \
+#     --var 'scope="GraphQL mutation with resolver"' \
+#     --var 'requirements="Validate email, hash passwords, generate JWT"'
+#
+# Optional variables (will be omitted from output if not provided):
+#     --var 'constraints="Must use bcrypt rounds=12"' \
+#     --var 'special_concerns="Concurrent access handling"' \
+#     --var 'additional_context="See docs/AUTH.md"'
+
+title: "TDD"
+description: "Standardized test-driven development approach"
+
+variables:
+  feature_name:
+    description: "Feature name (e.g., 'user authentication', 'payment processing')"
+  problem:
+    description: "What this solves (e.g., 'Users need to log in securely')"
+  scope:
+    description: "What's being built (e.g., 'API endpoint with validation')"
+  requirements:
+    description: "Specific requirements (e.g., 'Validate email format, Hash passwords')"
+  constraints:
+    description: "Hard constraints (e.g., 'Must be backward compatible', 'No external dependencies')"
+    optional: true
+  special_concerns:
+    description: "Special concerns (e.g., 'Concurrent access', 'Performance critical')"
+    optional: true
+  additional_context:
+    description: "Other context (e.g., 'See docs/PATTERNS.md', 'Similar to existing updateUser')"
+    optional: true
+    default: "Review documentation in docs/ before beginning"
+
+steps:
+  - id: write-tests
+    title: "Write tests: {{.feature_name}}"
+    description: |
+      ## Objective
+      
+      Write comprehensive tests for {{.feature_name}} BEFORE implementation.
+      
+      **Problem:** {{.problem}}
+      **Scope:** {{.scope}}
+      **Requirements:** {{.requirements}}
+      {{- if hasValue .constraints}}
+      **Constraints:** {{.constraints}}
+      {{- end}}
+      {{- if hasValue .special_concerns}}
+      **Concerns:** {{.special_concerns}}
+      {{- end}}
+      {{- if hasValue .additional_context}}
+      **Context:** {{.additional_context}}
+      {{- end}}
+      
+      ---
+      
+      ## Testing Guidelines
+      
+      **Key principles:**
+      1. Test behavior, not implementation - Verify WHAT the code does, not HOW
+      2. Ask: "What would a user notice if this test failed?"
+      3. One behavior per test
+      4. Use descriptive names describing user-visible outcomes
+      5. Follow Arrange-Act-Assert pattern
+      
+      ## What TO Test
+      
+      - Public API contracts (valid inputs, expected results)
+      - Edge cases and errors (invalid inputs, boundary conditions)
+      - Business logic (each requirement should have test coverage)
+      - Integration (components work together correctly)
+      
+      ## What NOT to Test
+      
+      - Framework/library behavior (trust your dependencies)
+      - Simple property assignment
+      - Private/internal methods directly (test through public API)
+      - Implementation details that could change during refactoring
+      
+      ## Acceptance
+      
+      - [ ] Tests written following Arrange-Act-Assert pattern
+      - [ ] Test names describe user-visible outcomes
+      - [ ] Each test verifies ONE specific behavior
+      - [ ] All requirements have test coverage
+      - [ ] Tests compile/parse but fail (no implementation yet)
+
+  - id: implement
+    title: "Implement: {{.feature_name}}"
+    depends:
+      - write-tests
+    description: |
+      ## Objective
+      
+      Implement {{.feature_name}} to make tests pass.
+      
+      **Problem:** {{.problem}}
+      **Scope:** {{.scope}}
+      **Requirements:** {{.requirements}}
+      {{- if hasValue .constraints}}
+      **Constraints:** {{.constraints}}
+      {{- end}}
+      {{- if hasValue .special_concerns}}
+      **Concerns:** {{.special_concerns}}
+      {{- end}}
+      {{- if hasValue .additional_context}}
+      **Context:** {{.additional_context}}
+      {{- end}}
+      
+      ---
+      
+      ## Implementation Approach
+      
+      **Start minimal:**
+      - Implement just enough to make tests pass
+      - Don't over-engineer or add unrequested features
+      - Follow existing project patterns and conventions
+      
+      **Code quality:**
+      - Follow project coding standards
+      - DRY (Don't Repeat Yourself) - extract common logic
+      - Use clear, descriptive naming
+      - Document complex or non-obvious logic
+      - Handle errors appropriately
+      
+      ## Acceptance
+      
+      - [ ] Code compiles/parses without errors
+      - [ ] Implementation complete for all requirements
+      - [ ] Requirements met
+      {{- if hasValue .constraints}}
+      - [ ] Constraints satisfied
+      {{- end}}
+      {{- if hasValue .special_concerns}}
+      - [ ] Concerns addressed
+      {{- end}}
+      - [ ] Follows project patterns and conventions
+
+  - id: review-iterate
+    title: "Review and iterate: {{.feature_name}}"
+    depends:
+      - implement
+    description: |
+      ## Objective
+      
+      Review {{.feature_name}} implementation and iterate until correct.
+      
+      **Requirements:** {{.requirements}}
+      {{- if hasValue .constraints}}
+      **Constraints:** {{.constraints}}
+      {{- end}}
+      {{- if hasValue .special_concerns}}
+      **Concerns:** {{.special_concerns}}
+      {{- end}}
+      {{- if hasValue .additional_context}}
+      **Context:** {{.additional_context}}
+      {{- end}}
+      
+      ---
+      
+      ## Review Checklist
+      
+      ### Requirements Check
+      - [ ] All requirements implemented correctly
+      - [ ] No requirements missed or misunderstood
+      - [ ] Implementation matches specification
+      {{- if hasValue .constraints}}
+      
+      ### Constraints Check
+      - [ ] All constraints satisfied
+      - [ ] No constraints violated
+      {{- end}}
+      {{- if hasValue .special_concerns}}
+      
+      ### Concerns Check
+      - [ ] All concerns properly addressed
+      {{- end}}
+      
+      ### Code Quality
+      - [ ] Follows project patterns and conventions
+      - [ ] DRY - no unnecessary duplication
+      - [ ] Clear, readable code
+      - [ ] Error handling is complete and appropriate
+      - [ ] Edge cases handled
+      
+      ## Iterate
+      
+      If issues found:
+      1. Document specific issues
+      2. Fix implementation
+      3. Re-run review checklist
+      4. Repeat until all checks pass
+      
+      ## Acceptance
+      
+      - [ ] All requirements met
+      {{- if hasValue .constraints}}
+      - [ ] All constraints satisfied
+      {{- end}}
+      {{- if hasValue .special_concerns}}
+      - [ ] All concerns addressed
+      {{- end}}
+      - [ ] Code quality acceptable
+      - [ ] Ready for final verification
+
+  - id: verify-tests
+    title: "Verify tests: {{.feature_name}}"
+    depends:
+      - review-iterate
+    description: |
+      ## Objective
+      
+      Verify all tests pass and the implementation is complete.
+      
+      **Feature:** {{.feature_name}}
+      
+      ---
+      
+      ## Process
+      
+      ### 1. Run Tests
+      
+      Run the project's test suite. Follow project-specific instructions for running tests.
+      
+      ### 2. Analyze Results
+      
+      **All pass?** Proceed to final verification.
+      
+      **Some fail?**
+      - Review failure messages carefully
+      - Identify root cause:
+        - Implementation bug?
+        - Test bug?
+        - Misunderstood requirement?
+      - Fix the issue and re-run tests
+      
+      ### 3. Final Verification
+      
+      - Run any project build/compile steps
+      - Run linters or static analysis if available
+      - Run formatters if required by project
+      - Verify no warnings or errors
+      
+      ### 4. Iterate if Needed
+      
+      If any step fails:
+      1. Fix the issue
+      2. Re-run all verification steps
+      3. Repeat until everything passes
+      
+      ## Acceptance
+      
+      - [ ] All tests pass
+      - [ ] No skipped or ignored tests (without documented reason)
+      - [ ] Build/compile succeeds
+      - [ ] No linter warnings (if applicable)
+      - [ ] Code properly formatted (if applicable)
+      - [ ] Ready to merge/close

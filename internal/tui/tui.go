@@ -1,4 +1,4 @@
-// Package tui provides an interactive terminal UI for prog using Bubble Tea.
+// Package tui provides an interactive terminal UI for tpg using Bubble Tea.
 package tui
 
 import (
@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/baiirun/prog/internal/db"
-	"github.com/baiirun/prog/internal/model"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/taxilian/tpg/internal/db"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 // ViewMode represents the current view state.
@@ -396,9 +396,13 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			project = m.filtered[m.cursor].Project
 		}
 		return m, func() tea.Msg {
+			itemID, err := db.GenerateItemID(model.ItemTypeTask)
+			if err != nil {
+				return actionMsg{err: err}
+			}
 			now := time.Now()
 			newItem := &model.Item{
-				ID:        model.GenerateID(model.ItemTypeTask),
+				ID:        itemID,
 				Project:   project,
 				Type:      model.ItemTypeTask,
 				Title:     text,
@@ -699,7 +703,7 @@ func (m Model) listView() string {
 	var b strings.Builder
 
 	// Header
-	title := "prog"
+	title := "tpg"
 	b.WriteString(titleStyle.Render(title))
 	b.WriteString(fmt.Sprintf("  %d/%d items", len(m.filtered), len(m.items)))
 

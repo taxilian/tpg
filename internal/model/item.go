@@ -4,6 +4,7 @@ package model
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
 )
 
@@ -13,15 +14,25 @@ import (
 //   - task: "ts-" (e.g., ts-a1b2c3)
 //   - epic: "ep-" (e.g., ep-a1b2c3)
 func GenerateID(itemType ItemType) string {
-	prefix := "ts-"
+	prefix := "ts"
 	if itemType == ItemTypeEpic {
-		prefix = "ep-"
+		prefix = "ep"
+	}
+	return GenerateIDWithPrefix(prefix)
+}
+
+// GenerateIDWithPrefix returns a new ID with the provided prefix and 6 hex chars.
+func GenerateIDWithPrefix(prefix string) string {
+	p := strings.TrimSpace(prefix)
+	p = strings.TrimSuffix(p, "-")
+	if p == "" {
+		p = "ts"
 	}
 	b := make([]byte, 3)
 	if _, err := rand.Read(b); err != nil {
 		panic("crypto/rand failed: " + err.Error())
 	}
-	return prefix + hex.EncodeToString(b)
+	return p + "-" + hex.EncodeToString(b)
 }
 
 type ItemType string
@@ -51,17 +62,22 @@ func (s Status) IsValid() bool {
 
 // Item represents a task or epic in the system.
 type Item struct {
-	ID          string   // Unique identifier (ts-XXXXXX or ep-XXXXXX)
-	Project     string   // Project scope (e.g., "gaia", "myapp")
-	Type        ItemType // "task" or "epic"
-	Title       string   // Short description
-	Description string   // Full context, notes, handoff info
-	Status      Status   // Current state
-	Priority    int      // 1=high, 2=medium, 3=low
-	ParentID    *string  // Optional parent epic ID
-	Labels      []string // Attached label names (populated separately)
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID           string            // Unique identifier
+	Project      string            // Project scope (e.g., "gaia", "myapp")
+	Type         ItemType          // "task" or "epic"
+	Title        string            // Short description
+	Description  string            // Full context, notes, handoff info
+	Status       Status            // Current state
+	Priority     int               // 1=high, 2=medium, 3=low
+	ParentID     *string           // Optional parent epic ID
+	TemplateID   string            // Template identifier (if templated)
+	StepIndex    *int              // Step index within template (nil if none)
+	TemplateVars map[string]string // Template variables (if templated)
+	TemplateHash string            // Hash of template at instantiation
+	Results      string            // Results message when done
+	Labels       []string          // Attached label names (populated separately)
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Log is a timestamped audit trail entry for an item.

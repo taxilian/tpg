@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/baiirun/prog/internal/model"
+	"github.com/taxilian/tpg/internal/model"
 )
 
 func createTestItemWithProject(t *testing.T, db *DB, title, project string, status model.Status, priority int) *model.Item {
@@ -485,4 +485,233 @@ func TestListItemsFiltered_CombinedFilters(t *testing.T) {
 	}
 
 	_ = task3
+}
+
+// createTestItemWithTimestamp creates a test item with a specific updated_at time.
+func createTestItemWithTimestamp(t *testing.T, db *DB, title, project string, status model.Status, updatedAt time.Time) *model.Item {
+	t.Helper()
+	item := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   project,
+		Type:      model.ItemTypeTask,
+		Title:     title,
+		Status:    status,
+		Priority:  2,
+		CreatedAt: updatedAt,
+		UpdatedAt: updatedAt,
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+	return item
+}
+
+func TestStaleItems_ReturnsInProgressOlderThanCutoff(t *testing.T) {
+	db := setupTestDB(t)
+
+	cutoff := time.Now()
+	oldTime := cutoff.Add(-2 * time.Hour)
+
+	// Create an old in_progress item (should be stale)
+	staleItem := createTestItemWithTimestamp(t, db, "Stale Task", "test", model.StatusInProgress, oldTime)
+
+	items, err := db.StaleItems("", cutoff)
+	if err != nil {
+		t.Fatalf("failed to get stale items: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Errorf("expected 1 stale item, got %d", len(items))
+	}
+	if len(items) > 0 && items[0].ID != staleItem.ID {
+		t.Errorf("expected stale item %s, got %s", staleItem.ID, items[0].ID)
+	}
+}
+
+func TestStaleItems_DoesNotReturnItemsNewerThanCutoff(t *testing.T) {
+	db := setupTestDB(t)
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	newTime := time.Now()
+
+	// Create a recent in_progress item (should NOT be stale)
+	createTestItemWithTimestamp(t, db, "Recent Task", "test", model.StatusInProgress, newTime)
+
+	items, err := db.StaleItems("", cutoff)
+	if err != nil {
+		t.Fatalf("failed to get stale items: %v", err)
+	}
+
+	if len(items) != 0 {
+		t.Errorf("expected 0 stale items, got %d", len(items))
+	}
+}
+
+func TestStaleItems_DoesNotReturnOtherStatuses(t *testing.T) {
+	db := setupTestDB(t)
+
+	cutoff := time.Now()
+	oldTime := cutoff.Add(-2 * time.Hour)
+
+	// Create old items with various statuses (none should be returned except in_progress)
+	createTestItemWithTimestamp(t, db, "Old Open", "test", model.StatusOpen, oldTime)
+	createTestItemWithTimestamp(t, db, "Old Done", "test", model.StatusDone, oldTime)
+	createTestItemWithTimestamp(t, db, "Old Blocked", "test", model.StatusBlocked, oldTime)
+	createTestItemWithTimestamp(t, db, "Old Canceled", "test", model.StatusCanceled, oldTime)
+
+	items, err := db.StaleItems("", cutoff)
+	if err != nil {
+		t.Fatalf("failed to get stale items: %v", err)
+	}
+
+	if len(items) != 0 {
+		t.Errorf("expected 0 stale items (no in_progress), got %d", len(items))
+	}
+}
+
+func TestStaleItems_FiltersByProject(t *testing.T) {
+	db := setupTestDB(t)
+
+	cutoff := time.Now()
+	oldTime := cutoff.Add(-2 * time.Hour)
+
+	// Create stale items in different projects
+	staleProj1 := createTestItemWithTimestamp(t, db, "Stale Proj1", "proj1", model.StatusInProgress, oldTime)
+	createTestItemWithTimestamp(t, db, "Stale Proj2", "proj2", model.StatusInProgress, oldTime)
+
+	// Filter by proj1
+	items, err := db.StaleItems("proj1", cutoff)
+	if err != nil {
+		t.Fatalf("failed to get stale items: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Errorf("expected 1 stale item in proj1, got %d", len(items))
+	}
+	if len(items) > 0 && items[0].ID != staleProj1.ID {
+		t.Errorf("expected stale item %s, got %s", staleProj1.ID, items[0].ID)
+	}
+
+	// No project filter should return both
+	items, err = db.StaleItems("", cutoff)
+	if err != nil {
+		t.Fatalf("failed to get stale items: %v", err)
+	}
+
+	if len(items) != 2 {
+		t.Errorf("expected 2 stale items total, got %d", len(items))
+	}
+}
+
+func TestStaleItems_ReturnsEmptyWhenNoStaleItems(t *testing.T) {
+	db := setupTestDB(t)
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	newTime := time.Now()
+
+	// Create items that won't be stale
+	createTestItemWithTimestamp(t, db, "Recent InProgress", "test", model.StatusInProgress, newTime)
+	createTestItemWithProject(t, db, "Open Task", "test", model.StatusOpen, 2)
+
+	items, err := db.StaleItems("", cutoff)
+	if err != nil {
+		t.Fatalf("failed to get stale items: %v", err)
+	}
+
+	if len(items) != 0 {
+		t.Errorf("expected 0 stale items, got %d", len(items))
+	}
+}
+
+func TestCompleteItem_SetsStatusToDone(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := createTestItemWithProject(t, db, "Task to complete", "test", model.StatusInProgress, 2)
+
+	if err := db.CompleteItem(item.ID, "Completed successfully"); err != nil {
+		t.Fatalf("failed to complete item: %v", err)
+	}
+
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+
+	if got.Status != model.StatusDone {
+		t.Errorf("status = %q, want %q", got.Status, model.StatusDone)
+	}
+}
+
+func TestCompleteItem_StoresResultsMessage(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := createTestItemWithProject(t, db, "Task to complete", "test", model.StatusInProgress, 2)
+	resultsMsg := "Task completed with following outcomes: feature implemented, tests passing"
+
+	if err := db.CompleteItem(item.ID, resultsMsg); err != nil {
+		t.Fatalf("failed to complete item: %v", err)
+	}
+
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+
+	if got.Results != resultsMsg {
+		t.Errorf("results = %q, want %q", got.Results, resultsMsg)
+	}
+}
+
+func TestCompleteItem_UpdatesTimestamp(t *testing.T) {
+	db := setupTestDB(t)
+
+	oldTime := time.Now().Add(-1 * time.Hour)
+	item := createTestItemWithTimestamp(t, db, "Task to complete", "test", model.StatusInProgress, oldTime)
+
+	beforeComplete := time.Now()
+	if err := db.CompleteItem(item.ID, "Done"); err != nil {
+		t.Fatalf("failed to complete item: %v", err)
+	}
+
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+
+	if got.UpdatedAt.Before(beforeComplete) {
+		t.Errorf("updated_at should be updated, got %v (before %v)", got.UpdatedAt, beforeComplete)
+	}
+}
+
+func TestCompleteItem_ReturnsErrorForNonExistentItem(t *testing.T) {
+	db := setupTestDB(t)
+
+	err := db.CompleteItem("nonexistent-id", "Some results")
+	if err == nil {
+		t.Error("expected error for non-existent item")
+	}
+}
+
+func TestCompleteItem_ResultsCanBeRetrievedViaGetItem(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := createTestItemWithProject(t, db, "Task with results", "test", model.StatusOpen, 2)
+	resultsMsg := "Implementation complete:\n- Added feature X\n- Fixed bug Y\n- Updated docs"
+
+	if err := db.CompleteItem(item.ID, resultsMsg); err != nil {
+		t.Fatalf("failed to complete item: %v", err)
+	}
+
+	// Retrieve via GetItem and verify results
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+
+	if got.Results != resultsMsg {
+		t.Errorf("results from GetItem = %q, want %q", got.Results, resultsMsg)
+	}
+	if got.Status != model.StatusDone {
+		t.Errorf("status from GetItem = %q, want %q", got.Status, model.StatusDone)
+	}
 }
