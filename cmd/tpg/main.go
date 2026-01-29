@@ -82,6 +82,7 @@ var (
 	flagTemplateVarsYAML bool
 	flagPrimeCustomize   bool
 	flagPrimeRender      string
+	flagVerbose          bool
 )
 
 func openDB() (*db.DB, error) {
@@ -2003,6 +2004,51 @@ For full workflow: ` + "`tpg prime`" + `
 		fmt.Println("Otherwise, run 'tpg prime' and paste output into agent context.")
 	}
 
+	// Add .tpg/tpg.db to .gitignore if not already present
+	if err := ensureGitignore(); err != nil {
+		fmt.Printf("\nWarning: failed to update .gitignore: %v\n", err)
+	}
+
+	return nil
+}
+
+// ensureGitignore adds .tpg/tpg.db to .gitignore if not already present
+func ensureGitignore() error {
+	gitignorePath := ".gitignore"
+	entry := ".tpg/tpg.db"
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Create new .gitignore
+			if err := os.WriteFile(gitignorePath, []byte(entry+"\n"), 0644); err != nil {
+				return err
+			}
+			fmt.Println("\nCreated .gitignore with .tpg/tpg.db")
+			return nil
+		}
+		return err
+	}
+
+	// Check if already present
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == entry {
+			return nil // Already present
+		}
+	}
+
+	// Append to existing .gitignore
+	newContent := string(content)
+	if !strings.HasSuffix(newContent, "\n") {
+		newContent += "\n"
+	}
+	newContent += entry + "\n"
+
+	if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
+		return err
+	}
+	fmt.Println("\nAdded .tpg/tpg.db to .gitignore")
 	return nil
 }
 
@@ -2647,6 +2693,18 @@ Press q to quit.`,
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "", "Project scope")
+	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Show agent context and other debug info")
+
+	// Show agent context when verbose
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		if flagVerbose {
+			agentID := os.Getenv("AGENT_ID")
+			agentType := os.Getenv("AGENT_TYPE")
+			if agentID != "" || agentType != "" {
+				fmt.Fprintf(os.Stderr, "[agent] ID=%s TYPE=%s\n", agentID, agentType)
+			}
+		}
+	}
 
 	// add flags
 	addCmd.Flags().BoolVarP(&flagEpic, "epic", "e", false, "Create an epic instead of a task")
