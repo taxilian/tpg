@@ -27,6 +27,10 @@ type PrimeData struct {
 	OtherInProgCount int
 	BlockedCount     int
 
+	// Stale items (in-progress with no updates > 5 min)
+	StaleItems []PrimeItem
+	StaleCount int
+
 	// Config
 	Project        string
 	TaskPrefix     string
@@ -129,15 +133,24 @@ func RenderPrime(templateText string, data PrimeData) (string, error) {
 
 // DefaultPrimeTemplate returns the condensed default template
 func DefaultPrimeTemplate() string {
-	return `# Tpg Context
+	return `# TPG Context
 
-This project uses 'tpg' for cross-session task management.
+This project uses **tpg** for cross-session task management.
 {{if .Project}}Project: {{.Project}}{{else if .DefaultProject}}Default: {{.DefaultProject}}{{end}}
 
 ## Status
 {{if not .HasDB -}}
 No database - run 'tpg init'
 {{else -}}
+{{if gt .StaleCount 0 -}}
+**⚠️ STALE ({{.StaleCount}} task{{if ne .StaleCount 1}}s{{end}} with no updates >5min):**
+{{if gt (len .StaleItems) 0 -}}
+{{range .StaleItems}}  • [{{.ID}}] {{.Title}}
+{{end}}
+{{else -}}
+  (too many to list - run 'tpg stale')
+{{end}}
+{{end -}}
 {{if gt (len .MyInProgItems) 0 -}}
 **Your work:**
 {{range .MyInProgItems}}  • [{{.ID}}] {{.Title}}{{if eq .Priority 1}} ⚡{{end}}
@@ -207,6 +220,19 @@ func BuildPrimeData(report *db.StatusReport, config *db.Config, agentCtx db.Agen
 				Title:    item.Title,
 				Priority: item.Priority,
 			})
+		}
+
+		// Convert stale items (limit to 20 for display)
+		data.StaleCount = len(report.StaleItems)
+		staleLimit := 20
+		if data.StaleCount <= staleLimit {
+			for _, item := range report.StaleItems {
+				data.StaleItems = append(data.StaleItems, PrimeItem{
+					ID:       item.ID,
+					Title:    item.Title,
+					Priority: item.Priority,
+				})
+			}
 		}
 	}
 

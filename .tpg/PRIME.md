@@ -7,6 +7,15 @@ This project uses **tpg** for cross-session task management with template suppor
 {{if not .HasDB -}}
 No database - run `tpg init`
 {{else -}}
+{{if gt .StaleCount 0 -}}
+**STALE ({{.StaleCount}} task{{if ne .StaleCount 1}}s{{end}} with no updates >5min):**
+{{if gt (len .StaleItems) 0 -}}
+{{range .StaleItems}}  - [{{.ID}}] {{.Title}}
+{{end}}
+{{else -}}
+  (too many to list - run `tpg stale`)
+{{end}}
+{{end -}}
 {{if gt (len .MyInProgItems) 0 -}}
 **Your work:**
 {{range .MyInProgItems}}  - [{{.ID}}] {{.Title}}{{if eq .Priority 1}} (HIGH){{end}}

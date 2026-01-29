@@ -3042,6 +3042,24 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	// Show project in output when viewing all projects
 	showProject := report.Project == ""
 
+	// Show stale items first (important warning)
+	if len(report.StaleItems) > 0 {
+		fmt.Printf("⚠️  Stale (%d task(s) with no updates >5min):\n", len(report.StaleItems))
+		if len(report.StaleItems) <= 20 {
+			for _, item := range report.StaleItems {
+				fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
+			}
+		} else {
+			// Too many to list - show IDs only
+			ids := make([]string, len(report.StaleItems))
+			for i, item := range report.StaleItems {
+				ids[i] = item.ID
+			}
+			fmt.Printf("  IDs: %s\n", strings.Join(ids, ", "))
+		}
+		fmt.Println()
+	}
+
 	if len(report.RecentDone) > 0 {
 		fmt.Println("Recently completed:")
 		for _, item := range report.RecentDone {

@@ -151,8 +151,10 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 
 // StaleItems returns in-progress items that haven't been updated since the cutoff.
 func (db *DB) StaleItems(project string, cutoff time.Time) ([]model.Item, error) {
+	// SQLite stores timestamps in UTC, so convert cutoff to UTC string format
+	cutoffStr := cutoff.UTC().Format("2006-01-02 15:04:05")
 	query := fmt.Sprintf("SELECT %s FROM items WHERE status = 'in_progress' AND updated_at < ?", itemSelectColumns)
-	args := []any{cutoff}
+	args := []any{cutoffStr}
 	if project != "" {
 		query += " AND project = ?"
 		args = append(args, project)
@@ -174,6 +176,7 @@ type StatusReport struct {
 	InProgItems      []model.Item // current in-progress (all)
 	BlockedItems     []model.Item // blocked with reasons
 	ReadyItems       []model.Item // ready for work
+	StaleItems       []model.Item // in-progress with no updates > 5 min
 	AgentID          string
 	MyInProgItems    []model.Item // this agent's in-progress tasks
 	OtherInProgCount int          // count of other agents' tasks
@@ -305,6 +308,13 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string, agentID str
 	}
 	recentQuery += ` ORDER BY updated_at DESC LIMIT 3`
 	report.RecentDone, err = db.queryItems(recentQuery, recentArgs...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get stale in-progress items (no updates in > 5 minutes)
+	staleCutoff := time.Now().Add(-5 * time.Minute)
+	report.StaleItems, err = db.StaleItems(project, staleCutoff)
 	if err != nil {
 		return nil, err
 	}
