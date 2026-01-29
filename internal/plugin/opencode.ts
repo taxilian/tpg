@@ -113,7 +113,7 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
     tool: {
       // Check if subagent exists and get its metadata
       inspect_subagent_metadata: {
-        description: "Check if a subagent session exists and get its metadata",
+        description: "Check if a subagent session exists and get its metadata (including message count estimate)",
         parameters: z.object({ subagentID: z.string() }),
         execute: async ({ subagentID }) => {
           try {
@@ -122,6 +122,18 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
             
             if (!session) {
               return { accessible: false, reason: "not_found" }
+            }
+            
+            // Get message count for size estimate
+            let messageCount = 0
+            let sizeEstimate = "small"
+            try {
+              const messages = await client.session.messages({ sessionID: subagentID })
+              messageCount = messages.length
+              if (messageCount > 100) sizeEstimate = "large"
+              else if (messageCount > 30) sizeEstimate = "medium"
+            } catch {
+              // Can't get message count, ignore
             }
             
             return {
@@ -133,7 +145,9 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
               created: session.createdAt || session.time?.created,
               lastUpdate: session.updatedAt || session.time?.updated,
               directory: session.directory,
-              isSubagent: session.parentID != null
+              isSubagent: session.parentID != null,
+              messageCount,
+              sizeEstimate
             }
           } catch {
             return { accessible: false, reason: "error_accessing" }
