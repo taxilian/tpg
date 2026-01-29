@@ -1,12 +1,15 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -1987,17 +1990,20 @@ For full workflow: ` + "`tpg prime`" + `
 	}
 
 	// Install OpenCode plugin if opencode or shuvcode is available
-	if installed, symlink, err := installOpencodePlugin(force); err != nil {
+	if installed, upToDate, symlink, err := installOpencodePlugin(force); err != nil {
 		fmt.Printf("\nWarning: failed to install OpenCode plugin: %v\n", err)
 	} else if installed {
 		fmt.Println("\nInstalled OpenCode plugin to .opencode/plugins/tpg.ts")
 		fmt.Println("  Plugin injects tpg prime on new sessions and compaction,")
 		fmt.Println("  and sets AGENT_ID/AGENT_TYPE on tpg commands.")
+	} else if upToDate {
+		fmt.Println("\nOpenCode plugin already up to date (.opencode/plugins/tpg.ts)")
 	} else if symlink {
 		fmt.Println("\nOpenCode plugin is symlinked (.opencode/plugins/tpg.ts)")
 	} else if detectOpencode() != "" {
-		fmt.Println("\nOpenCode plugin already installed (.opencode/plugins/tpg.ts)")
-		fmt.Println("Use --force to update")
+		fmt.Println("\nOpenCode plugin was modified (.opencode/plugins/tpg.ts)")
+		fmt.Println("  Skipping automatic update to preserve your changes.")
+		fmt.Println("  Use --force to overwrite with latest version.")
 	} else {
 		fmt.Println()
 		fmt.Println("For hooks, add 'tpg prime' to your agent's session start hook if available.")
@@ -2064,13 +2070,50 @@ func detectOpencode() string {
 	return ""
 }
 
+// pluginVersionPattern matches the version header line in the plugin file
+var pluginVersionPattern = regexp.MustCompile(`^// tpg-plugin version:(\S+) hash:(\S+)`)
+
+// calculatePluginHash computes SHA256 hash of plugin content
+func calculatePluginHash(content string) string {
+	hash := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(hash[:8]) // Use first 8 chars for brevity
+}
+
+// readPluginVersion reads the version and hash from the first line of plugin file
+// Returns (version, hash, restOfFile, error)
+func readPluginVersion(path string) (string, string, string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	lines := strings.Split(string(content), "\n")
+	if len(lines) == 0 {
+		return "", "", "", fmt.Errorf("empty file")
+	}
+
+	firstLine := lines[0]
+	matches := pluginVersionPattern.FindStringSubmatch(firstLine)
+	if matches == nil {
+		// No header - file was modified or is from older version
+		return "", "", string(content), nil
+	}
+
+	version := matches[1]
+	hash := matches[2]
+	rest := strings.Join(lines[1:], "\n")
+	return version, hash, rest, nil
+}
+
 // installOpencodePlugin installs the tpg plugin into .opencode/plugins/tpg.ts.
-// It first checks ~/.config/tpg/opencode-plugin.ts for a user-customized version;
-// if not found, uses the embedded default and writes it there for future editing.
-// Returns (installed, isSymlink, error).
-func installOpencodePlugin(force bool) (bool, bool, error) {
+// Returns (installed, upToDate, isSymlink, error):
+//   - installed: true if a new/updated version was written
+//   - upToDate: true if already at current version (not modified)
+//   - isSymlink: true if plugin is a symlink (user customization)
+//   - error: any error that occurred
+func installOpencodePlugin(force bool) (bool, bool, bool, error) {
 	if detectOpencode() == "" {
-		return false, false, nil
+		return false, false, false, nil
 	}
 
 	pluginDir := filepath.Join(".opencode", "plugins")
@@ -2079,30 +2122,62 @@ func installOpencodePlugin(force bool) (bool, bool, error) {
 	// Check if it's a symlink - never overwrite symlinks (user intentionally linked it)
 	if info, err := os.Lstat(pluginPath); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
-			return false, true, nil // Symlink exists, leave it alone
-		}
-		// Regular file exists
-		if !force {
-			return false, false, nil
+			return false, false, true, nil // Symlink exists, leave it alone
 		}
 	}
 
 	// Use embedded source (--force always uses latest embedded version)
 	source := plugin.OpencodeSource
 
+	// Check if plugin already exists and decide whether to update
+	if _, err := os.Stat(pluginPath); err == nil && !force {
+		// File exists and we're not forcing - check if we should update
+		oldVersion, oldHash, oldContent, err := readPluginVersion(pluginPath)
+		if err != nil {
+			// Can't read it, skip
+			return false, false, false, nil
+		}
+
+		if oldVersion == "" {
+			// No version header - file was modified (old version or custom)
+			return false, false, false, nil
+		}
+
+		// Calculate hash of current content (without header)
+		currentHash := calculatePluginHash(oldContent)
+
+		if currentHash != oldHash {
+			// Content was modified
+			return false, false, false, nil
+		}
+
+		// File is unmodified, safe to update
+		if oldVersion == version {
+			// Already up to date
+			return false, true, false, nil
+		}
+
+		// Need to update - fall through to write
+	} else if err != nil {
+		// File doesn't exist, will install
+	}
+
 	// Write plugin to project
 	if err := os.MkdirAll(pluginDir, 0755); err != nil {
-		return false, false, fmt.Errorf("failed to create %s: %w", pluginDir, err)
+		return false, false, false, fmt.Errorf("failed to create %s: %w", pluginDir, err)
 	}
 
-	// Remove existing file (we already checked it's not a symlink)
-	_ = os.Remove(pluginPath)
+	// Calculate hash of new source and add header
+	sourceHash := calculatePluginHash(source)
+	header := fmt.Sprintf("// tpg-plugin version:%s hash:%s (auto-generated, do not modify)\n", version, sourceHash)
+	contentWithHeader := header + source
 
-	if err := os.WriteFile(pluginPath, []byte(source), 0644); err != nil {
-		return false, false, fmt.Errorf("failed to write plugin: %w", err)
+	// Write the file
+	if err := os.WriteFile(pluginPath, []byte(contentWithHeader), 0644); err != nil {
+		return false, false, false, fmt.Errorf("failed to write plugin: %w", err)
 	}
 
-	return true, false, nil
+	return true, false, false, nil
 }
 
 // replaceTaskTrackingSection finds the "## Task Tracking" section and replaces it
