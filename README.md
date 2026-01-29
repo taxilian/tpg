@@ -6,12 +6,6 @@ SQLite-backed task and tacit knowledge management for AI agents. Agents lose con
 
 ## Install
 
-### Homebrew (macOS/Linux)
-
-```bash
-brew install baiirun/tap/tpg
-```
-
 ### Go install
 
 Requires Go 1.24+.
