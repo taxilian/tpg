@@ -22,8 +22,8 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
 
     let agentType: "primary" | "subagent" = "primary"
     try {
-      const session = await client.session.get({ sessionID })
-      if ((session as any)?.parentID) {
+      const result = await client.session.get({ sessionID })
+      if ((result as any)?.data?.parentID || (result as any)?.parentID) {
         agentType = "subagent"
       }
     } catch {
