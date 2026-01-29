@@ -1363,17 +1363,114 @@ Example:
 	},
 }
 
+// dep command - parent for dependency management subcommands
+var depCmd = &cobra.Command{
+	Use:   "dep <id> <action> [other-id]",
+	Short: "Manage task dependencies",
+	Long: `Manage dependencies between tasks.
+
+Actions:
+  blocks <other-id>     Mark this task as blocking another (other cannot start until this is done)
+  after <other-id>      Mark this task as depending on another (this cannot start until other is done)
+  list                  Show all dependencies for this task
+  remove <other-id>     Remove a dependency relationship
+
+Examples:
+  tpg dep ts-a1b2c3 blocks ts-d4e5f6     # ts-d4e5f6 waits for ts-a1b2c3
+  tpg dep ts-d4e5f6 after ts-a1b2c3      # same thing, other direction
+  tpg dep ts-a1b2c3 list                  # show all deps for ts-a1b2c3
+  tpg dep ts-a1b2c3 remove ts-d4e5f6     # remove dependency between them`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id := args[0]
+		action := args[1]
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		switch action {
+		case "blocks":
+			if len(args) < 3 {
+				return fmt.Errorf("usage: tpg dep <id> blocks <other-id>")
+			}
+			otherID := args[2]
+			// "A blocks B" means B depends on A
+			if err := database.AddDep(otherID, id); err != nil {
+				return err
+			}
+			fmt.Printf("%s now blocks %s\n", id, otherID)
+
+		case "after":
+			if len(args) < 3 {
+				return fmt.Errorf("usage: tpg dep <id> after <other-id>")
+			}
+			otherID := args[2]
+			// "A after B" means A depends on B
+			if err := database.AddDep(id, otherID); err != nil {
+				return err
+			}
+			fmt.Printf("%s now depends on %s\n", id, otherID)
+
+		case "remove":
+			if len(args) < 3 {
+				return fmt.Errorf("usage: tpg dep <id> remove <other-id>")
+			}
+			otherID := args[2]
+			// Try both directions
+			err1 := database.RemoveDep(id, otherID)
+			err2 := database.RemoveDep(otherID, id)
+			if err1 != nil && err2 != nil {
+				return fmt.Errorf("no dependency found between %s and %s", id, otherID)
+			}
+			fmt.Printf("Removed dependency between %s and %s\n", id, otherID)
+
+		case "list":
+			// Show what this task depends on
+			waitingOn, err := database.GetDepStatuses(id)
+			if err != nil {
+				return err
+			}
+			// Show what this task blocks
+			blocking, err := database.GetBlockedBy(id)
+			if err != nil {
+				return err
+			}
+
+			if len(waitingOn) == 0 && len(blocking) == 0 {
+				fmt.Printf("%s has no dependencies\n", id)
+				return nil
+			}
+
+			if len(waitingOn) > 0 {
+				fmt.Printf("Waiting on:\n")
+				for _, dep := range waitingOn {
+					fmt.Printf("  %s [%s] %s\n", dep.ID, dep.Status, dep.Title)
+				}
+			}
+			if len(blocking) > 0 {
+				fmt.Printf("Blocks:\n")
+				for _, dep := range blocking {
+					fmt.Printf("  %s [%s] %s\n", dep.ID, dep.Status, dep.Title)
+				}
+			}
+
+		default:
+			return fmt.Errorf("unknown action %q (use: blocks, after, list, remove)", action)
+		}
+
+		return nil
+	},
+}
+
+// blocksCmd kept for backward compatibility
 var blocksCmd = &cobra.Command{
-	Use:   "blocks <id> <other-id>",
-	Short: "Mark a task as blocking another",
-	Long: `Mark a task as blocking another task.
-
-The second task cannot be started until the first is done.
-
-Example:
-  tpg blocks ts-a1b2c3 ts-d4e5f6
-  # ts-d4e5f6 cannot start until ts-a1b2c3 is done`,
-	Args: cobra.ExactArgs(2),
+	Use:        "blocks <id> <other-id>",
+	Short:      "Mark a task as blocking another (deprecated: use 'tpg dep <id> blocks <other-id>')",
+	Deprecated: "use 'tpg dep <id> blocks <other-id>' instead",
+	Args:       cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -1381,7 +1478,6 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		// blocks A B means B depends on A (A blocks B)
 		if err := database.AddDep(args[1], args[0]); err != nil {
 			return err
 		}
@@ -2100,7 +2196,7 @@ For full workflow: ` + "`tpg prime`" + `
 		fmt.Println("Otherwise, run 'tpg prime' and paste output into agent context.")
 	}
 
-	// Add .tpg/tpg.db to .gitignore if not already present
+	// Create .tpg/.gitignore to exclude db and backups
 	if err := ensureGitignore(); err != nil {
 		fmt.Printf("\nWarning: failed to update .gitignore: %v\n", err)
 	}
@@ -2108,43 +2204,46 @@ For full workflow: ` + "`tpg prime`" + `
 	return nil
 }
 
-// ensureGitignore adds .tpg/tpg.db to .gitignore if not already present
+// ensureGitignore creates .tpg/.gitignore to exclude db and backups
 func ensureGitignore() error {
-	gitignorePath := ".gitignore"
-	entry := ".tpg/tpg.db"
+	gitignorePath := filepath.Join(".tpg", ".gitignore")
+	desired := "tpg.db\nbackups/\n"
 
 	content, err := os.ReadFile(gitignorePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Create new .gitignore
-			if err := os.WriteFile(gitignorePath, []byte(entry+"\n"), 0644); err != nil {
+			if err := os.WriteFile(gitignorePath, []byte(desired), 0644); err != nil {
 				return err
 			}
-			fmt.Println("\nCreated .gitignore with .tpg/tpg.db")
+			fmt.Println("\nCreated .tpg/.gitignore")
 			return nil
 		}
 		return err
 	}
 
-	// Check if already present
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		if strings.TrimSpace(line) == entry {
-			return nil // Already present
-		}
+	// Check if both entries are present
+	text := string(content)
+	needsDB := !strings.Contains(text, "tpg.db")
+	needsBackups := !strings.Contains(text, "backups/")
+
+	if !needsDB && !needsBackups {
+		return nil // Already has both
 	}
 
-	// Append to existing .gitignore
-	newContent := string(content)
-	if !strings.HasSuffix(newContent, "\n") {
-		newContent += "\n"
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
 	}
-	newContent += entry + "\n"
+	if needsDB {
+		text += "tpg.db\n"
+	}
+	if needsBackups {
+		text += "backups/\n"
+	}
 
-	if err := os.WriteFile(gitignorePath, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(gitignorePath, []byte(text), 0644); err != nil {
 		return err
 	}
-	fmt.Println("\nAdded .tpg/tpg.db to .gitignore")
+	fmt.Println("\nUpdated .tpg/.gitignore")
 	return nil
 }
 
@@ -2857,7 +2956,7 @@ Press q to quit.`,
 
 func init() {
 	// Global flags
-	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "", "Project scope")
+	rootCmd.PersistentFlags().StringVar(&flagProject, "project", "", "Project scope")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Show agent context and other debug info")
 
 	// Show agent context when verbose
@@ -2873,7 +2972,7 @@ func init() {
 
 	// add flags
 	addCmd.Flags().BoolVarP(&flagEpic, "epic", "e", false, "Create an epic instead of a task")
-	addCmd.Flags().IntVar(&flagPriority, "priority", 2, "Priority (1=high, 2=medium, 3=low)")
+	addCmd.Flags().IntVarP(&flagPriority, "priority", "p", 2, "Priority (1=high, 2=medium, 3=low)")
 	addCmd.Flags().StringVar(&flagParent, "parent", "", "Parent epic ID")
 	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block (it depends on this)")
 	addCmd.Flags().StringVar(&flagAfter, "after", "", "ID of task this depends on (must complete first)")
@@ -2982,6 +3081,7 @@ func init() {
 	rootCmd.AddCommand(editCmd)
 	rootCmd.AddCommand(parentCmd)
 	rootCmd.AddCommand(projectCmd)
+	rootCmd.AddCommand(depCmd)
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(labelCmd)
 	rootCmd.AddCommand(unlabelCmd)

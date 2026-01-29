@@ -25,6 +25,42 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 	return nil
 }
 
+// RemoveDep removes a dependency between items.
+func (db *DB) RemoveDep(itemID, dependsOnID string) error {
+	result, err := db.Exec(`DELETE FROM deps WHERE item_id = ? AND depends_on = ?`, itemID, dependsOnID)
+	if err != nil {
+		return fmt.Errorf("failed to remove dependency: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("no dependency found: %s does not depend on %s", itemID, dependsOnID)
+	}
+	return nil
+}
+
+// GetBlockedBy returns the IDs and details of items that the given item blocks.
+func (db *DB) GetBlockedBy(itemID string) ([]DepStatus, error) {
+	rows, err := db.Query(`
+		SELECT d.item_id, i.title, i.status
+		FROM deps d
+		JOIN items i ON d.item_id = i.id
+		WHERE d.depends_on = ?`, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get blocked items: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var deps []DepStatus
+	for rows.Next() {
+		var dep DepStatus
+		if err := rows.Scan(&dep.ID, &dep.Title, &dep.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan blocked item: %w", err)
+		}
+		deps = append(deps, dep)
+	}
+	return deps, rows.Err()
+}
+
 // GetDeps returns the IDs of items that the given item depends on.
 func (db *DB) GetDeps(itemID string) ([]string, error) {
 	rows, err := db.Query(`SELECT depends_on FROM deps WHERE item_id = ?`, itemID)

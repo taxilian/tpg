@@ -113,7 +113,10 @@ tpg done ts-a1b2c3 "Implemented JWT auth with refresh tokens"
 | Command | Description |
 |---------|-------------|
 | `tpg parent <id> <epic-id>` | Set task's parent epic |
-| `tpg blocks <id> <other>` | Add blocking relationship (other blocked until id done) |
+| `tpg dep <id> blocks <other>` | Add blocking relationship (other blocked until id done) |
+| `tpg dep <id> after <other>` | Add dependency (id depends on other) |
+| `tpg dep <id> list` | Show all dependencies for a task |
+| `tpg dep <id> remove <other>` | Remove dependency between tasks |
 | `tpg graph` | Show dependency graph |
 | `tpg projects` | List all projects |
 | `tpg add -e <title>` | Create an epic instead of task |
@@ -133,10 +136,10 @@ tpg done ts-a1b2c3 "Implemented JWT auth with refresh tokens"
 
 | Flag | Commands | Description |
 |------|----------|-------------|
-| `-p, --project` | all | Filter/set project scope |
+| `--project` | all | Filter/set project scope |
+| `-p, --priority` | add | Priority: 1=high, 2=medium (default), 3=low |
 | `-e, --epic` | add | Create epic instead of task |
 | `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
-| `--priority` | add | Priority: 1=high, 2=medium (default), 3=low |
 | `--parent` | add, list | Set parent epic at creation / filter by parent |
 | `--blocks` | add | Set task this will block at creation |
 | `--status` | list | Filter by status |
@@ -230,8 +233,15 @@ Use dependencies to enforce task ordering. A task with unmet dependencies won't 
 tpg add "Build API" --blocks ts-frontend
 # New task blocks ts-frontend, so ts-frontend can't start until the new task is done
 
-# Or add blocking relationship to existing tasks
-tpg blocks ts-backend ts-frontend
+# Add dependency to existing tasks
+tpg dep ts-backend blocks ts-frontend
+# ts-frontend cannot start until ts-backend is done
+
+# View dependencies for a task
+tpg dep ts-frontend list
+
+# Remove a dependency
+tpg dep ts-backend remove ts-frontend
 
 # View all dependencies
 tpg graph

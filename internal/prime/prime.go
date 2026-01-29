@@ -193,14 +193,16 @@ You have {{.SubagentTaskCount}} tasks assigned to this session:
 ## Workflow
 
 **Start:** 'tpg ready' → 'tpg show <id>' → 'tpg start <id>'
-**During:** 'tpg log <id> "progress"' — log significant discoveries and milestones as you work
+**During:** 'tpg log <id> "msg"' — log significant milestones as you work
 **Finish:** 'tpg done <id>' or 'tpg block <id> "reason"'
 **Context:** 'tpg concepts' → 'tpg context -c <name>'
 
-**Logging:** While working on a task, use 'tpg log' to record:
-- Significant discoveries (unexpected behavior, key insights, design decisions)
-- Implementation milestones (tests passing, component complete, integration done)
-This builds cross-session context so progress is never lost.
+**Logging:** Log things that would matter if someone else picks up this task,
+or that management would want to know about how the work went:
+- Discoveries (answered key questions, found existing code, unexpected constraints)
+- Design decisions with rationale (chose X because Y)
+- Finishing key parts (core logic done, tests passing, integration verified)
+Don't log routine actions (started file, read docs, ran tests).
 
 ## Templates
 
@@ -208,7 +210,8 @@ This builds cross-session context so progress is never lost.
 Available templates ({{.TemplateCount}}):
 {{range .Templates}}  {{.ID}} ({{len .Variables}} vars): {{.Description}}
 {{end}}
-Use: 'tpg add "Title" --template <id> --vars-yaml <<EOF'
+Use:
+  tpg add "Title" --template <id> --vars-yaml <<EOF
   problem: "What we're solving"
   requirements: |
     - Specific requirement 1
@@ -221,13 +224,15 @@ No templates found. Create templates in .tpg/templates/ to standardize workflows
 
 ## Key Commands
 
-  tpg ready         # Available work
-  tpg show <id>     # Task details
-  tpg start <id>    # Claim task
-  tpg log <id> "msg"  # Log progress
-  tpg done <id>     # Complete
-  tpg status        # Overview
-  tpg context -c X  # Load learnings
+  tpg ready                        # Available work
+  tpg show <id>                    # Task details
+  tpg start <id>                   # Claim task
+  tpg log <id> "msg"               # Log progress
+  tpg done <id>                    # Complete
+  tpg dep <id> blocks <other-id>   # Set dependency
+  tpg dep <id> list                # Show dependencies
+  tpg status                       # Overview
+  tpg context -c X                 # Load learnings
 `
 }
 
