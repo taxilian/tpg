@@ -21,16 +21,17 @@ import (
 )
 
 // version is set via ldflags at build time, or read from module info
-var version = ""
+var version = "dev"
 
 func init() {
-	if version == "" {
+	// Try to get version from build info if not set via ldflags
+	if version == "dev" {
 		if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
 			version = info.Main.Version
-		} else {
-			version = "dev"
 		}
 	}
+	// Update rootCmd.Version since it was initialized before this runs
+	rootCmd.Version = version
 }
 
 var (
