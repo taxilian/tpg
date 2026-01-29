@@ -2426,13 +2426,17 @@ Template locations (searched in priority order):
   3. Global: ~/.config/opencode/tpg-templates/`,
 }
 
+var flagTemplateListDetail bool
+
 var templateListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List available templates",
 	Long: `List all available templates from all template locations.
 
-Shows template ID, description, variables, and source location.
+Default output is a compact one-liner per template.
+Use --detail for full variable and step information.
+
 Templates from more local locations (project) override global ones with the same ID.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tmpls, err := templates.ListTemplates()
@@ -2458,36 +2462,49 @@ Templates from more local locations (project) override global ones with the same
 			return nil
 		}
 
-		for i, tmpl := range tmpls {
-			if i > 0 {
-				fmt.Println()
-			}
-			fmt.Printf("%s", tmpl.ID)
-			if tmpl.Source != "" {
-				fmt.Printf(" (%s)", tmpl.Source)
-			}
-			fmt.Println()
-			if tmpl.Description != "" {
-				fmt.Printf("  %s\n", tmpl.Description)
-			}
-			if len(tmpl.Variables) > 0 {
-				fmt.Println("  Variables:")
-				for name, v := range tmpl.Variables {
-					req := "required"
-					if v.Optional {
-						req = "optional"
-					}
-					if v.Default != "" {
-						req = fmt.Sprintf("default: %s", v.Default)
-					}
-					desc := v.Description
-					if desc == "" {
-						desc = "(no description)"
-					}
-					fmt.Printf("    %s (%s): %s\n", name, req, desc)
+		if flagTemplateListDetail {
+			// Detailed output (original behavior)
+			for i, tmpl := range tmpls {
+				if i > 0 {
+					fmt.Println()
 				}
+				fmt.Printf("%s", tmpl.ID)
+				if tmpl.Source != "" {
+					fmt.Printf(" (%s)", tmpl.Source)
+				}
+				fmt.Println()
+				if tmpl.Description != "" {
+					fmt.Printf("  %s\n", tmpl.Description)
+				}
+				if len(tmpl.Variables) > 0 {
+					fmt.Println("  Variables:")
+					for name, v := range tmpl.Variables {
+						req := "required"
+						if v.Optional {
+							req = "optional"
+						}
+						if v.Default != "" {
+							req = fmt.Sprintf("default: %s", v.Default)
+						}
+						desc := v.Description
+						if desc == "" {
+							desc = "(no description)"
+						}
+						fmt.Printf("    %s (%s): %s\n", name, req, desc)
+					}
+				}
+				fmt.Printf("  Steps: %d\n", len(tmpl.Steps))
 			}
-			fmt.Printf("  Steps: %d\n", len(tmpl.Steps))
+		} else {
+			// Compact output (new default)
+			for _, tmpl := range tmpls {
+				desc := tmpl.Description
+				if desc == "" {
+					desc = "(no description)"
+				}
+				fmt.Printf("%s (%d variables, %d steps): %s\n", tmpl.ID, len(tmpl.Variables), len(tmpl.Steps), desc)
+			}
+			fmt.Println("\nUse 'tpg template usage <id>' for usage details")
 		}
 		return nil
 	},
@@ -2562,6 +2579,83 @@ Example:
 				fmt.Printf("       Depends: %s\n", strings.Join(step.Depends, ", "))
 			}
 		}
+
+		return nil
+	},
+}
+
+var templateUsageCmd = &cobra.Command{
+	Use:   "usage <template-id>",
+	Short: "Show template usage and variables",
+	Long: `Show how to use a template, including all variables and their descriptions.
+
+Unlike 'show', this does not display the full step descriptions - just enough
+to understand what variables to provide.
+
+Example:
+  tpg template usage tdd-task`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		tmpl, err := templates.LoadTemplate(args[0])
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Template: %s\n", tmpl.ID)
+		if tmpl.Description != "" {
+			fmt.Printf("  %s\n", tmpl.Description)
+		}
+		fmt.Printf("  Steps: %d\n", len(tmpl.Steps))
+
+		if len(tmpl.Variables) > 0 {
+			// Separate required and optional
+			var required, optional []string
+			for name := range tmpl.Variables {
+				v := tmpl.Variables[name]
+				if v.Optional || v.Default != "" {
+					optional = append(optional, name)
+				} else {
+					required = append(required, name)
+				}
+			}
+
+			if len(required) > 0 {
+				fmt.Println("\nRequired variables:")
+				for _, name := range required {
+					v := tmpl.Variables[name]
+					fmt.Printf("  %s\n", name)
+					if v.Description != "" {
+						fmt.Printf("    %s\n", v.Description)
+					}
+				}
+			}
+
+			if len(optional) > 0 {
+				fmt.Println("\nOptional variables:")
+				for _, name := range optional {
+					v := tmpl.Variables[name]
+					if v.Default != "" {
+						fmt.Printf("  %s (default: %s)\n", name, v.Default)
+					} else {
+						fmt.Printf("  %s\n", name)
+					}
+					if v.Description != "" {
+						fmt.Printf("    %s\n", v.Description)
+					}
+				}
+			}
+		}
+
+		// Show example usage
+		fmt.Println("\nExample:")
+		fmt.Printf("  tpg add \"Title\" --template %s --vars-yaml <<EOF\n", tmpl.ID)
+		for name := range tmpl.Variables {
+			v := tmpl.Variables[name]
+			if !v.Optional && v.Default == "" {
+				fmt.Printf("  %s: \"value\"\n", name)
+			}
+		}
+		fmt.Println("  EOF")
 
 		return nil
 	},
@@ -2891,9 +2985,11 @@ func init() {
 	rootCmd.AddCommand(backupsCmd)
 	rootCmd.AddCommand(restoreCmd)
 
-	// Template subcommands
+	// Template subcommands and flags
+	templateListCmd.Flags().BoolVar(&flagTemplateListDetail, "detail", false, "Show full variable details")
 	templateCmd.AddCommand(templateListCmd)
 	templateCmd.AddCommand(templateShowCmd)
+	templateCmd.AddCommand(templateUsageCmd)
 	templateCmd.AddCommand(templateLocationsCmd)
 	rootCmd.AddCommand(templateCmd)
 }
