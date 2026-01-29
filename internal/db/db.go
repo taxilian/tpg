@@ -9,9 +9,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// sqlTime formats a time.Time as a SQLite-compatible UTC string.
+// This ensures consistent timestamp format across inserts and queries,
+// avoiding comparison issues between Go's time.Time serialization
+// and SQLite's datetime functions.
+func sqlTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05")
+}
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.

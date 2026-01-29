@@ -15,7 +15,7 @@ func (db *DB) AddLog(itemID, message string) error {
 	if err != nil {
 		return fmt.Errorf("failed to add log: %w", err)
 	}
-	if _, err := db.Exec(`UPDATE items SET updated_at = ? WHERE id = ?`, time.Now(), itemID); err != nil {
+	if _, err := db.Exec(`UPDATE items SET updated_at = ? WHERE id = ?`, sqlTime(time.Now()), itemID); err != nil {
 		return fmt.Errorf("failed to update item timestamp: %w", err)
 	}
 	return nil

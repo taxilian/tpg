@@ -88,7 +88,7 @@ func (db *DB) RenameLabel(project, oldName, newName string) error {
 	result, err := db.Exec(`
 		UPDATE labels SET name = ?, updated_at = ?
 		WHERE name = ? AND project = ?
-	`, newName, time.Now(), oldName, project)
+	`, newName, sqlTime(time.Now()), oldName, project)
 	if err != nil {
 		return fmt.Errorf("failed to rename label: %w", err)
 	}
@@ -282,7 +282,7 @@ func (db *DB) SetLabelColor(project, name, color string) error {
 	result, err := db.Exec(`
 		UPDATE labels SET color = ?, updated_at = ?
 		WHERE name = ? AND project = ?
-	`, color, time.Now(), name, project)
+	`, color, sqlTime(time.Now()), name, project)
 	if err != nil {
 		return fmt.Errorf("failed to update label color: %w", err)
 	}

@@ -208,7 +208,9 @@ func TestGenerateItemIDStatic_UniqueIDs(t *testing.T) {
 	defer cleanup()
 
 	ids := make(map[string]bool)
-	const iterations = 100
+	// With 36^3 = 46656 possible values, keep iterations low to avoid
+	// birthday-paradox collisions (~10% at 100, ~0.4% at 20).
+	const iterations = 20
 
 	for i := 0; i < iterations; i++ {
 		id, err := GenerateItemIDStatic(model.ItemTypeTask)

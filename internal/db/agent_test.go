@@ -339,7 +339,7 @@ func TestRecordAgentProjectAccess_UpdatesExisting(t *testing.T) {
 	var firstTime string
 	db.QueryRow("SELECT last_active FROM agent_sessions WHERE agent_id = ? AND project = ?", agentID, project).Scan(&firstTime)
 
-	time.Sleep(100 * time.Millisecond) // Ensure different timestamps
+	time.Sleep(1100 * time.Millisecond) // Must cross a second boundary (timestamps have second precision)
 
 	// Record second access to SAME project - should update timestamp
 	db.RecordAgentProjectAccess(agentID, project)
@@ -447,12 +447,13 @@ func TestRecordAgentProjectAccess_MultipleProjects(t *testing.T) {
 
 	agentID := "agent-123"
 
-	// Record accesses to multiple projects
+	// Record accesses to multiple projects with distinct timestamps
 	db.RecordAgentProjectAccess(agentID, "project1")
-	time.Sleep(50 * time.Millisecond)
+	db.Exec("UPDATE agent_sessions SET last_active = '2026-01-01 00:00:01' WHERE agent_id = ? AND project = ?", agentID, "project1")
 	db.RecordAgentProjectAccess(agentID, "project2")
-	time.Sleep(50 * time.Millisecond)
+	db.Exec("UPDATE agent_sessions SET last_active = '2026-01-01 00:00:02' WHERE agent_id = ? AND project = ?", agentID, "project2")
 	db.RecordAgentProjectAccess(agentID, "project3")
+	db.Exec("UPDATE agent_sessions SET last_active = '2026-01-01 00:00:03' WHERE agent_id = ? AND project = ?", agentID, "project3")
 
 	// Should return most recent
 	lastProject, err := db.GetAgentLastProject(agentID)

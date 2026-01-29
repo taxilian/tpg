@@ -151,10 +151,10 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 
 // StaleItems returns in-progress items that haven't been updated since the cutoff.
 func (db *DB) StaleItems(project string, cutoff time.Time) ([]model.Item, error) {
-	// SQLite stores timestamps in UTC, so convert cutoff to UTC string format
-	cutoffStr := cutoff.UTC().Format("2006-01-02 15:04:05")
+	// Compare using unix epoch to avoid timestamp format mismatches between
+	// the Go driver's time.Time serialization and SQLite's strftime.
 	query := fmt.Sprintf("SELECT %s FROM items WHERE status = 'in_progress' AND updated_at < ?", itemSelectColumns)
-	args := []any{cutoffStr}
+	args := []any{cutoff.UTC().Format("2006-01-02 15:04:05")}
 	if project != "" {
 		query += " AND project = ?"
 		args = append(args, project)

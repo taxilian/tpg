@@ -177,7 +177,7 @@ func (db *DB) EnsureConcept(name, project string) error {
 		INSERT INTO concepts (id, name, project, last_updated)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT (name, project) DO NOTHING
-	`, model.GenerateConceptID(), name, project, time.Now())
+	`, model.GenerateConceptID(), name, project, sqlTime(time.Now()))
 	return err
 }
 
@@ -186,7 +186,7 @@ func (db *DB) SetConceptSummary(name, project, summary string) error {
 	result, err := db.Exec(`
 		UPDATE concepts SET summary = ?, last_updated = ?
 		WHERE name = ? AND project = ?
-	`, summary, time.Now(), name, project)
+	`, summary, sqlTime(time.Now()), name, project)
 	if err != nil {
 		return fmt.Errorf("failed to update concept: %w", err)
 	}
@@ -202,7 +202,7 @@ func (db *DB) UpdateLearningSummary(id, summary string) error {
 	result, err := db.Exec(`
 		UPDATE learnings SET summary = ?, updated_at = ?
 		WHERE id = ?
-	`, summary, time.Now(), id)
+	`, summary, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to update learning: %w", err)
 	}
@@ -218,7 +218,7 @@ func (db *DB) UpdateLearningStatus(id string, status model.LearningStatus) error
 	result, err := db.Exec(`
 		UPDATE learnings SET status = ?, updated_at = ?
 		WHERE id = ?
-	`, status, time.Now(), id)
+	`, status, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to update learning status: %w", err)
 	}
@@ -234,7 +234,7 @@ func (db *DB) UpdateLearningDetail(id, detail string) error {
 	result, err := db.Exec(`
 		UPDATE learnings SET detail = ?, updated_at = ?
 		WHERE id = ?
-	`, detail, time.Now(), id)
+	`, detail, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to update learning detail: %w", err)
 	}
@@ -280,7 +280,7 @@ func (db *DB) RenameConcept(oldName, newName, project string) error {
 	result, err := db.Exec(`
 		UPDATE concepts SET name = ?, last_updated = ?
 		WHERE name = ? AND project = ?
-	`, newName, time.Now(), oldName, project)
+	`, newName, sqlTime(time.Now()), oldName, project)
 	if err != nil {
 		return fmt.Errorf("failed to rename concept: %w", err)
 	}
@@ -473,14 +473,16 @@ func (db *DB) ListConceptsWithStats(project string) ([]ConceptStats, error) {
 			return nil, fmt.Errorf("failed to scan concept stats: %w", err)
 		}
 		if oldestStr != nil && *oldestStr != "" {
-			// Parse the timestamp string - Go's default format with monotonic clock suffix
-			// Format: "2006-01-02 15:04:05.999999999 -0700 MST m=+0.000000000"
 			str := *oldestStr
-			// Strip monotonic clock suffix if present
-			if idx := strings.Index(str, " m="); idx > 0 {
-				str = str[:idx]
+			// Try normalized format first, then fall back to alternatives
+			oldest, err := time.Parse("2006-01-02 15:04:05", str)
+			if err != nil {
+				// Strip monotonic clock suffix if present
+				if idx := strings.Index(str, " m="); idx > 0 {
+					str = str[:idx]
+				}
+				oldest, err = time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", str)
 			}
-			oldest, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", str)
 			if err != nil {
 				oldest, err = time.Parse(time.RFC3339Nano, str)
 			}

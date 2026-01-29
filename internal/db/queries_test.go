@@ -668,7 +668,7 @@ func TestCompleteItem_UpdatesTimestamp(t *testing.T) {
 	oldTime := time.Now().Add(-1 * time.Hour)
 	item := createTestItemWithTimestamp(t, db, "Task to complete", "test", model.StatusInProgress, oldTime)
 
-	beforeComplete := time.Now()
+	beforeComplete := time.Now().UTC().Truncate(time.Second)
 	if err := db.CompleteItem(item.ID, "Done", AgentContext{}); err != nil {
 		t.Fatalf("failed to complete item: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestCompleteItem_UpdatesTimestamp(t *testing.T) {
 		t.Fatalf("failed to get item: %v", err)
 	}
 
-	if got.UpdatedAt.Before(beforeComplete) {
+	if got.UpdatedAt.UTC().Truncate(time.Second).Before(beforeComplete) {
 		t.Errorf("updated_at should be updated, got %v (before %v)", got.UpdatedAt, beforeComplete)
 	}
 }

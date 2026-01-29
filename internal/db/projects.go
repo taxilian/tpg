@@ -12,7 +12,7 @@ func (db *DB) EnsureProject(name string) error {
 		INSERT INTO projects (name, created_at, updated_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT(name) DO NOTHING`,
-		name, time.Now(), time.Now(),
+		name, sqlTime(time.Now()), sqlTime(time.Now()),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to ensure project: %w", err)

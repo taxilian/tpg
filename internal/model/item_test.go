@@ -32,10 +32,10 @@ func TestGenerateID(t *testing.T) {
 }
 
 func TestGenerateID_Uniqueness(t *testing.T) {
-	// With 36^3 = 46656 possible values and 100 iterations,
-	// collision probability is low enough for a smoke test.
+	// With 36^3 = 46656 possible values, keep iterations low to
+	// avoid birthday-paradox collisions (~10% at 100, ~0.4% at 20).
 	seen := make(map[string]bool)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 20; i++ {
 		id := GenerateID(ItemTypeTask)
 		if seen[id] {
 			t.Errorf("duplicate ID generated: %s", id)

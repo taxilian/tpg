@@ -40,7 +40,7 @@ func (db *DB) CreateItem(item *model.Item) error {
 		item.ID, item.Project, item.Type, item.Title, item.Description,
 		item.Status, item.Priority, item.ParentID,
 		item.TemplateID, item.StepIndex, varsJSON, item.TemplateHash, item.Results,
-		item.CreatedAt, item.UpdatedAt,
+		sqlTime(item.CreatedAt), sqlTime(item.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create item: %w", err)
@@ -122,7 +122,7 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 	// Update status and timestamp
 	result, err := db.Exec(`
 		UPDATE items SET status = ?, updated_at = ? WHERE id = ?`,
-		status, time.Now(), id)
+		status, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
 	}
@@ -159,7 +159,7 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
 	result, err := db.Exec(`
 		UPDATE items SET status = ?, results = ?, updated_at = ? WHERE id = ?`,
-		model.StatusDone, results, time.Now(), id)
+		model.StatusDone, results, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to complete item: %w", err)
 	}
@@ -187,7 +187,7 @@ func (db *DB) AppendDescription(id string, text string) error {
 		SET description = COALESCE(description, '') || ? || char(10) || ?,
 		    updated_at = ?
 		WHERE id = ?`,
-		"\n", text, time.Now(), id)
+		"\n", text, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to append description: %w", err)
 	}
@@ -214,7 +214,7 @@ func (db *DB) SetParent(itemID, parentID string) error {
 	// Update the item's parent
 	result, err := db.Exec(`
 		UPDATE items SET parent_id = ?, updated_at = ? WHERE id = ?`,
-		parentID, time.Now(), itemID)
+		parentID, sqlTime(time.Now()), itemID)
 	if err != nil {
 		return fmt.Errorf("failed to set parent: %w", err)
 	}
@@ -237,7 +237,7 @@ func (db *DB) SetProject(id string, project string) error {
 
 	result, err := db.Exec(`
 		UPDATE items SET project = ?, updated_at = ? WHERE id = ?`,
-		project, time.Now(), id)
+		project, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to set project: %w", err)
 	}
@@ -256,7 +256,7 @@ func (db *DB) SetDescription(id string, text string) error {
 		SET description = ?,
 		    updated_at = ?
 		WHERE id = ?`,
-		text, time.Now(), id)
+		text, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to set description: %w", err)
 	}
@@ -275,7 +275,7 @@ func (db *DB) SetTitle(id string, title string) error {
 		SET title = ?,
 		    updated_at = ?
 		WHERE id = ?`,
-		title, time.Now(), id)
+		title, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to set title: %w", err)
 	}

@@ -37,7 +37,7 @@ func (db *DB) RecordAgentProjectAccess(agentID, project string) error {
 		return nil
 	}
 
-	now := time.Now()
+	now := sqlTime(time.Now())
 	_, err := db.Exec(`
 		INSERT INTO agent_sessions (agent_id, project, last_active)
 		VALUES (?, ?, ?)
