@@ -99,6 +99,8 @@ Execute tpg-tracked work by:
 
 If you discover work that needs doing (a bug, a missing task, a blocker fix), create the tpg task first, then delegate it to tpg-agent. The only things you do directly are tpg management operations (creating tasks, setting dependencies, checking status, capturing templates).
 
+**CRITICAL: Never run `tpg start` yourself.** The subagent must start the task — this is how agent assignment works. When you run `tpg start`, the task gets assigned to YOU (the orchestrator), not the agent doing the work. Always delegate the task to tpg-agent and let it call `tpg start`. If you start the task before delegating, the agent tracking will be wrong.
+
 ### Rule #1: Always Use tpg ready
 Don't guess what's ready based on structure. Use `tpg ready` - it's the single source of truth for what can be worked based on resolved dependencies.
 
@@ -178,6 +180,7 @@ For each ready task from `tpg ready`:
 1. Read the task description completely
 2. Verify it has all context needed (check parent chain too)
 3. Launch a tpg-agent subagent with the task ID
+   ** DO NOT run `tpg start` — the agent does that **
 4. Move to next ready task (don't wait for completion)
 5. Track which tasks are in flight
 ```
