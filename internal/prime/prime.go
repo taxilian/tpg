@@ -43,6 +43,10 @@ type PrimeData struct {
 	AgentType  string
 	IsSubagent bool
 
+	// Subagent-specific: tasks assigned to this subagent session
+	SubagentTasks     []PrimeItem // in-progress tasks assigned to this subagent
+	SubagentTaskCount int
+
 	// Knowledge base stats
 	ConceptCount  int
 	LearningCount int
@@ -162,6 +166,24 @@ No database - run 'tpg init'
 - {{.Done}} done, {{.Open}} open
 {{if gt .ConceptCount 0}}- {{.LearningCount}} learnings in {{.ConceptCount}} concepts{{end}}
 {{end}}
+{{if .IsSubagent -}}
+{{if gt .SubagentTaskCount 0 -}}
+
+## Your Assigned Task{{if gt .SubagentTaskCount 1}}s{{end}}
+{{if eq .SubagentTaskCount 1 -}}
+You have 1 task assigned to this session:
+{{range .SubagentTasks}}  • [{{.ID}}] {{.Title}}{{if eq .Priority 1}} ⚡{{end}}
+{{end}}
+{{else -}}
+You have {{.SubagentTaskCount}} tasks assigned to this session:
+{{range .SubagentTasks}}  • [{{.ID}}]{{end}}
+
+**Note:** You have multiple tasks assigned. Unless you're intentionally working on them together, consider reviewing to finish or close some:
+  tpg done <id> "completed"
+  tpg cancel <id>
+{{end -}}
+{{end -}}
+{{end -}}
 
 ## Workflow
 
@@ -228,6 +250,20 @@ func BuildPrimeData(report *db.StatusReport, config *db.Config, agentCtx db.Agen
 		if data.StaleCount <= staleLimit {
 			for _, item := range report.StaleItems {
 				data.StaleItems = append(data.StaleItems, PrimeItem{
+					ID:       item.ID,
+					Title:    item.Title,
+					Priority: item.Priority,
+				})
+			}
+		}
+	}
+
+	// If this is a subagent, get tasks assigned to this specific session
+	if data.IsSubagent && agentCtx.ID != "" && database != nil {
+		if tasks, err := database.InProgressItemsByAgent(agentCtx.ID); err == nil {
+			data.SubagentTaskCount = len(tasks)
+			for _, item := range tasks {
+				data.SubagentTasks = append(data.SubagentTasks, PrimeItem{
 					ID:       item.ID,
 					Title:    item.Title,
 					Priority: item.Priority,

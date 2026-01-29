@@ -163,6 +163,12 @@ func (db *DB) StaleItems(project string, cutoff time.Time) ([]model.Item, error)
 	return db.queryItems(query, args...)
 }
 
+// InProgressItemsByAgent returns in-progress items assigned to a specific agent.
+func (db *DB) InProgressItemsByAgent(agentID string) ([]model.Item, error) {
+	query := fmt.Sprintf("SELECT %s FROM items WHERE status = 'in_progress' AND agent_id = ? ORDER BY updated_at DESC", itemSelectColumns)
+	return db.queryItems(query, agentID)
+}
+
 // StatusReport contains aggregated project status.
 type StatusReport struct {
 	Project          string
