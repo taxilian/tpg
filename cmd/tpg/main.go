@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -19,25 +20,17 @@ import (
 	"github.com/taxilian/tpg/internal/tui"
 )
 
-// version is set by goreleaser via ldflags; update before each release
-var version = "0.1.0"
+// version is set via ldflags at build time, or read from module info
+var version = ""
 
-// ClaudeSettings represents ~/.claude/settings.json structure
-type ClaudeSettings struct {
-	Hooks          map[string][]HookMatcher `json:"hooks,omitempty"`
-	EnabledPlugins map[string]bool          `json:"enabledPlugins,omitempty"`
-}
-
-// HookMatcher represents a hook configuration with a matcher pattern
-type HookMatcher struct {
-	Matcher string `json:"matcher"`
-	Hooks   []Hook `json:"hooks"`
-}
-
-// Hook represents a single hook command
-type Hook struct {
-	Type    string `json:"type"`
-	Command string `json:"command"`
+func init() {
+	if version == "" {
+		if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		} else {
+			version = "dev"
+		}
+	}
 }
 
 var (
@@ -83,7 +76,7 @@ var (
 	flagFilterLabels     []string
 	flagStaleThreshold   string
 	flagDoneOverride     bool
-	flagClaude           bool
+
 	flagDescription      string
 	flagTemplateVarsYAML bool
 	flagPrimeCustomize   bool
@@ -1900,25 +1893,18 @@ var onboardCmd = &cobra.Command{
 	Short: "Set up tpg integration for AI agents",
 	Long: `Set up tpg integration for AI agents.
 
-Primary target: Opencode (writes to AGENTS.md)
-
 This command:
 1. Writes a tpg workflow snippet to AGENTS.md in the current directory
-2. If hooks are available in your agent, add 'tpg prime' to session start
-
-For Claude Code users:
-- Use 'tpg onboard --claude' to write to CLAUDE.md and install hooks
-- Or manually copy the Task Tracking section to your CLAUDE.md
+2. Installs the OpenCode plugin for automatic context injection
 
 Creates files if they don't exist. Skips if already configured (use --force to update).
 
 Example:
   cd ~/code/myproject
-  tpg onboard              # Opencode (AGENTS.md)
-  tpg onboard --claude     # Claude Code (CLAUDE.md + hooks)
+  tpg onboard
   tpg onboard --force      # Update existing configuration`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runOnboard(flagForce, flagClaude)
+		return runOnboardOpencode(flagForce)
 	},
 }
 
@@ -1936,29 +1922,6 @@ func findAgentsMD() string {
 	}
 	// Default to uppercase if none exists
 	return "AGENTS.md"
-}
-
-func findClaudeMD() string {
-	// Check for existing file with exact case match
-	// (os.Stat is case-insensitive on macOS, so we use ReadDir)
-	entries, err := os.ReadDir(".")
-	if err == nil {
-		for _, e := range entries {
-			name := e.Name()
-			if strings.EqualFold(name, "claude.md") {
-				return name // Return actual casing
-			}
-		}
-	}
-	// Default to uppercase if none exists
-	return "CLAUDE.md"
-}
-
-func runOnboard(force bool, claudeMode bool) error {
-	if claudeMode {
-		return runOnboardClaude(force, "")
-	}
-	return runOnboardOpencode(force)
 }
 
 // runOnboardOpencode sets up tpg integration for Opencode (writes to AGENTS.md)
@@ -2095,94 +2058,6 @@ func installOpencodePlugin(force bool) (bool, bool, error) {
 	return true, false, nil
 }
 
-// runOnboardClaude sets up tpg integration for Claude Code (writes to CLAUDE.md + hooks)
-func runOnboardClaude(force bool, settingsPath string) error {
-	return runOnboardWithSettings(force, settingsPath)
-}
-
-func runOnboardWithSettings(force bool, settingsPath string) error {
-	claudePath := findClaudeMD()
-	snippet := `## Task Tracking
-
-This project uses **tpg** for cross-session task management.
-Run ` + "`tpg prime`" + ` for workflow context, or configure hooks for auto-injection.
-
-**Quick reference:**
-` + "```" + `
-tpg ready              # Find unblocked work
-tpg add "Title" -p X   # Create task
-tpg start <id>         # Claim work
-tpg log <id> "msg"     # Log progress
-tpg done <id>          # Complete work
-` + "```" + `
-
-For full workflow: ` + "`tpg prime`" + `
-`
-
-	var claudeMDUpdated bool
-
-	// Check if file exists
-	content, err := os.ReadFile(claudePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Create new file
-			if err := os.WriteFile(claudePath, []byte(snippet), 0644); err != nil {
-				return fmt.Errorf("failed to create CLAUDE.md: %w", err)
-			}
-			fmt.Println("Created CLAUDE.md with tpg integration")
-			claudeMDUpdated = true
-		} else {
-			return fmt.Errorf("failed to read CLAUDE.md: %w", err)
-		}
-	} else {
-		// Check if already onboarded
-		if strings.Contains(string(content), "## Task Tracking") {
-			if !force {
-				fmt.Println("CLAUDE.md already has Task Tracking section")
-			} else {
-				// Replace existing section
-				newContent := replaceTaskTrackingSection(string(content), snippet)
-				if err := os.WriteFile(claudePath, []byte(newContent), 0644); err != nil {
-					return fmt.Errorf("failed to update %s: %w", claudePath, err)
-				}
-				fmt.Printf("Updated Task Tracking section in %s\n", claudePath)
-				claudeMDUpdated = true
-			}
-		} else {
-			// Append to existing file
-			newContent := string(content)
-			if !strings.HasSuffix(newContent, "\n") {
-				newContent += "\n"
-			}
-			newContent += "\n" + snippet
-
-			if err := os.WriteFile(claudePath, []byte(newContent), 0644); err != nil {
-				return fmt.Errorf("failed to update %s: %w", claudePath, err)
-			}
-			fmt.Printf("Added tpg integration to %s\n", claudePath)
-			claudeMDUpdated = true
-		}
-	}
-
-	// Install SessionStart hook
-	hookAdded, err := installSessionStartHook(settingsPath)
-	if err != nil {
-		return fmt.Errorf("failed to install hook: %w", err)
-	}
-
-	if hookAdded {
-		fmt.Println("Installed SessionStart hook in ~/.claude/settings.json")
-	} else {
-		fmt.Println("SessionStart hook already installed")
-	}
-
-	if !claudeMDUpdated && !hookAdded && !force {
-		fmt.Println("Use --force to update existing configuration")
-	}
-
-	return nil
-}
-
 // replaceTaskTrackingSection finds the "## Task Tracking" section and replaces it
 // with the new snippet. The section ends at the next heading (# or ##) or EOF.
 func replaceTaskTrackingSection(content, snippet string) string {
@@ -2232,90 +2107,6 @@ func replaceTaskTrackingSection(content, snippet string) string {
 	return result
 }
 
-// installSessionStartHook installs "tpg prime" in ~/.claude/settings.json
-// Returns true if hook was added, false if already present
-func installSessionStartHook(settingsPath string) (bool, error) {
-	// Default to ~/.claude/settings.json if not specified
-	if settingsPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false, fmt.Errorf("failed to get home directory: %w", err)
-		}
-		settingsPath = filepath.Join(home, ".claude", "settings.json")
-	}
-
-	// Read existing settings or create new
-	var settings ClaudeSettings
-	content, err := os.ReadFile(settingsPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return false, fmt.Errorf("failed to read settings: %w", err)
-		}
-		// File doesn't exist, start fresh
-		settings = ClaudeSettings{
-			Hooks: make(map[string][]HookMatcher),
-		}
-	} else {
-		if err := json.Unmarshal(content, &settings); err != nil {
-			return false, fmt.Errorf("failed to parse settings: %w", err)
-		}
-		if settings.Hooks == nil {
-			settings.Hooks = make(map[string][]HookMatcher)
-		}
-	}
-
-	// Check if hook already exists
-	const hookCommand = "tpg prime"
-	for _, matcher := range settings.Hooks["SessionStart"] {
-		for _, hook := range matcher.Hooks {
-			if hook.Command == hookCommand {
-				return false, nil // Already installed
-			}
-		}
-	}
-
-	// Add the hook
-	newHook := Hook{
-		Type:    "command",
-		Command: hookCommand,
-	}
-
-	// Find or create a matcher with empty string (matches all)
-	found := false
-	for i, matcher := range settings.Hooks["SessionStart"] {
-		if matcher.Matcher == "" {
-			settings.Hooks["SessionStart"][i].Hooks = append(matcher.Hooks, newHook)
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		// Create new matcher
-		settings.Hooks["SessionStart"] = append(settings.Hooks["SessionStart"], HookMatcher{
-			Matcher: "",
-			Hooks:   []Hook{newHook},
-		})
-	}
-
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
-		return false, fmt.Errorf("failed to create settings directory: %w", err)
-	}
-
-	// Write settings back
-	output, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return false, fmt.Errorf("failed to marshal settings: %w", err)
-	}
-
-	if err := os.WriteFile(settingsPath, append(output, '\n'), 0644); err != nil {
-		return false, fmt.Errorf("failed to write settings: %w", err)
-	}
-
-	return true, nil
-}
-
 var primeCmd = &cobra.Command{
 	Use:   "prime",
 	Short: "Output context for AI agent hooks",
@@ -2327,11 +2118,7 @@ context about the tpg workflow.
 Customize the output template with --customize. Use --render to test
 a specific template file.
 
-For Opencode: Add 'tpg prime' to your hooks if supported.
-For Claude Code: Configure in ~/.claude/settings.json:
-  "hooks": {
-    "SessionStart": [{"command": "tpg prime"}]
-  }`,
+For Opencode: The plugin installed by 'tpg onboard' handles this automatically.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		config, _ := db.LoadConfig()
@@ -2895,7 +2682,6 @@ func init() {
 
 	// onboard flags
 	onboardCmd.Flags().BoolVar(&flagForce, "force", false, "Replace existing Task Tracking section")
-	onboardCmd.Flags().BoolVar(&flagClaude, "claude", false, "Use Claude Code mode (CLAUDE.md + hooks)")
 
 	// edit flags
 	editCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title for the task")

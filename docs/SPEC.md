@@ -6,7 +6,7 @@ This document specifies the required behavior changes for the current prog CLI, 
 - CLI name: `prog` with commands for tasks, epics, dependencies, logs, labels, learnings, and TUI.
 - Storage: SQLite database at `~/.prog/prog.db` with backups in `~/.prog/backups/`.
 - Projects: optional `-p` flag across commands; empty project allowed.
-- Onboarding: `prog onboard` writes a Task Tracking snippet to `CLAUDE.md` and installs a Claude Code SessionStart hook to run `prog prime`.
+- Onboarding: `tpg onboard` writes a Task Tracking snippet to `AGENTS.md` and installs an OpenCode plugin.
 - Task reading: `prog show` prints task details, logs, deps, and suggested concepts.
 - Readiness: `prog ready` filters out tasks with unmet dependencies.
 - Tasks vs Epics: Both are items. Epics (`ep-` prefix) are a grouping mechanism; tasks (`ts-` prefix) can have a parent epic. The parent relationship is hierarchical/organizational, separate from the dependency system which controls work ordering.
@@ -48,7 +48,7 @@ This document specifies the required behavior changes for the current prog CLI, 
 ### 4) Opencode-First Integration
 - Opencode is the primary agent target in onboarding and documentation.
 - `tpg onboard` (or equivalent) writes the Task Tracking snippet to the Opencode instruction file/location and configures a session-start hook to run `tpg prime` where Opencode supports hooks.
-- Claude-specific language is removed or moved to a secondary "other agents" section.
+- OpenCode is the primary target; other agents can manually use the workflow.
 - `tpg prime` output text references Opencode and `tpg` commands.
 
 ### 5) Templates
@@ -241,15 +241,9 @@ func GenerateID(itemType ItemType) string {
 #### 3. Onboarding (Medium Impact)
 
 **Current:**
-- Writes to `CLAUDE.md` or `claude.md`
-- Installs hook in `~/.claude/settings.json`
-- Hook command: `"prog prime"`
-
-**Needed:**
-- Write to Opencode instruction file (determine location)
-- Install hook in Opencode config (determine location)
-- Hook command: `"tpg prime"`
-- Move Claude-specific to secondary section
+- Writes to `AGENTS.md`
+- Installs OpenCode plugin at `.opencode/plugins/tpg.ts`
+- Plugin injects `tpg prime` context automatically
 
 #### 4. `tpg done` Requires Results Message (Medium Impact)
 
