@@ -2,7 +2,7 @@
 
 Templates define **standardized ways to solve problems**. A "tdd" template encodes the standard approach for test-driven development. A "discovery" template defines how to investigate unknowns. A "bug-fix" template captures the proven method for diagnosing and resolving issues.
 
-When you instantiate a template, tpg creates a parent epic with child tasks that follow the standardized approach, including proper dependencies between steps.
+When you instantiate a template, tpg creates a parent item with child tasks that follow the standardized approach, including proper dependencies between steps.
 
 ## Quick Start
 
@@ -383,11 +383,11 @@ Variables are passed as `name=json-string`:
 
 Instantiating a template creates:
 
-1. **Parent epic** with the title you provide
+1. **Parent item** with the title you provide (type defaults to `epic` unless overridden)
 2. **Child tasks** for each step, with:
    - Rendered title and description
    - Dependencies between tasks (based on `depends`)
-   - All child tasks as dependencies of the parent epic
+   - All child tasks as dependencies of the parent item
 
 ```bash
 $ tpg add "Auth Feature" --template tdd-workflow --var 'feature_name="auth"' ...
@@ -405,9 +405,9 @@ ep-abc123 [open] Auth Feature
   ├── ts-ghi789 [open] Implement: auth
   └── ts-jkl012 [open] Review: auth
 ts-ghi789 [open] Implement: auth
-  └── ts-def456 [open] Write tests: auth
+   └── ts-def456 [open] Write tests: auth
 ts-jkl012 [open] Review: auth
-  └── ts-ghi789 [open] Implement: auth
+   └── ts-ghi789 [open] Implement: auth
 ```
 
 ### Viewing Templated Tasks

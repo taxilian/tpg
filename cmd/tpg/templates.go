@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -138,7 +139,7 @@ func assignStepIDs(steps []templates.Step) ([]string, error) {
 	return ids, nil
 }
 
-func instantiateTemplate(database *db.DB, project, title, templateID string, varPairs []string, priority int) (string, error) {
+func instantiateTemplate(database *db.DB, project, title, templateID string, varPairs []string, priority int, parentType model.ItemType) (string, error) {
 	vars, err := parseTemplateVars(varPairs)
 	if err != nil {
 		return "", err
@@ -186,7 +187,7 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 		}
 	}
 
-	parentID, err := database.GenerateItemID(model.ItemTypeEpic)
+	parentID, err := database.GenerateItemID(parentType)
 	if err != nil {
 		return "", err
 	}
@@ -201,7 +202,7 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 	parent := &model.Item{
 		ID:           parentID,
 		Project:      project,
-		Type:         model.ItemTypeEpic,
+		Type:         parentType,
 		Title:        title,
 		Status:       model.StatusOpen,
 		Priority:     priority,
@@ -218,18 +219,26 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 
 	childIDs := make([]string, len(tmpl.Steps))
 	stepIDToChildID := map[string]string{}
-	for i := range tmpl.Steps {
+	for i, step := range tmpl.Steps {
 		childID, err := database.GenerateItemID(model.ItemTypeTask)
 		if err != nil {
 			cleanup()
 			return "", err
 		}
 		idx := i
+
+		// Render step title with variable substitution
+		renderedStep := templates.RenderStep(step, vars)
+		stepTitle := renderedStep.Title
+		if stepTitle == "" {
+			stepTitle = fmt.Sprintf("%s step %d", tmpl.ID, i+1)
+		}
+
 		child := &model.Item{
 			ID:           childID,
 			Project:      project,
 			Type:         model.ItemTypeTask,
-			Title:        fmt.Sprintf("%s step %d", tmpl.ID, i+1),
+			Title:        sanitizeTitle(stepTitle),
 			Status:       model.StatusOpen,
 			Priority:     priority,
 			ParentID:     &parentID,
@@ -282,7 +291,9 @@ func renderItemTemplate(cache *templateCache, item *model.Item) (bool, error) {
 	}
 	tmpl, err := cache.get(item.TemplateID)
 	if err != nil {
-		return false, err
+		// Log warning but don't fail - allow tpg to work even with missing templates
+		fmt.Fprintf(os.Stderr, "Warning: template not found: %s (item: %s)\n", item.TemplateID, item.ID)
+		return false, nil
 	}
 	if *item.StepIndex < 0 || *item.StepIndex >= len(tmpl.Steps) {
 		return false, fmt.Errorf("template step index out of range")

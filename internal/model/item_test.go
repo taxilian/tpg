@@ -54,8 +54,10 @@ func TestItemType_IsValid(t *testing.T) {
 		{ItemType("task"), true},
 		{ItemType("epic"), true},
 		{ItemType(""), false},
-		{ItemType("invalid"), false},
-		{ItemType("Task"), false}, // case sensitive
+		{ItemType("invalid"), true}, // arbitrary types are now valid
+		{ItemType("Task"), true},    // case sensitive but allowed
+		{ItemType("bug"), true},     // arbitrary types are now valid
+		{ItemType("story"), true},   // arbitrary types are now valid
 	}
 
 	for _, tt := range tests {

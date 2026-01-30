@@ -1,16 +1,22 @@
 # Simple Task Template
 #
 # Lightweight template for non-TDD work.
+# Provides context and constraints for a competent engineer to solve a problem.
 #
 # Usage:
-#   tpg add "Add config validation" --template simple-task \
-#     --var 'task_name="Add config validation"' \
-#     --var 'objective="Validate config on startup, fail fast on invalid values"' \
-#     --var 'scope="Config loading and validation"' \
-#     --var 'files_to_touch="src/config.ts"' \
-#     --var 'implementation_notes="Check required fields, validate types"' \
-#     --var 'validation="Unit tests for valid/invalid configs"' \
-#     --var 'acceptance_criteria="Invalid config fails at startup with clear error"'
+#   tpg add "Add config validation" --template simple-task --vars-yaml <<'EOF'
+#   task_name: "Add config validation"
+#   objective: "Validate config on startup, fail fast on invalid values"
+#   acceptance_criteria: |
+#     - Invalid config fails at startup with clear error
+#     - Valid configs continue to work normally
+#   context: |
+#     Currently invalid configs are silently ignored, causing runtime errors later.
+#     This makes debugging difficult for users.
+#   constraints: |
+#     - Must not break existing valid configs
+#     - Error messages must be actionable
+#   EOF
 
 title: "Simple Task"
 description: "Lightweight template for non-TDD work"
@@ -19,31 +25,19 @@ variables:
   task_name:
     description: "Short task title"
   objective:
-    description: "One-sentence, verifiable goal"
-  scope:
-    description: "In-scope behavior or change"
-  files_to_touch:
-    description: "Exact files or directories"
-  implementation_notes:
-    description: "How to implement or references"
-  validation:
-    description: "Tests or verification steps (or why not needed)"
+    description: "elevator pitch, verifiable goal"
   acceptance_criteria:
-    description: "Specific, testable outcomes"
+    description: "Criteria for success / how we know when it's done"
   context:
-    description: "Why this work is needed"
+    description: "Background information to assist with making decisions"
     optional: true
     default: ""
   constraints:
-    description: "Hard constraints"
-    optional: true
-    default: ""
-  dependencies:
-    description: "Blocking or related issues"
+    description: "Hard constraints that must be followed"
     optional: true
     default: ""
   unknowns:
-    description: "Open questions or decisions"
+    description: "Open questions or decisions that need resolution"
     optional: true
     default: ""
 
@@ -54,47 +48,32 @@ steps:
       ## Objective
 
       {{.objective}}
+
+      ## Acceptance Criteria
+
+      Before marking this complete, verify:
+
+      {{.acceptance_criteria}}
       {{- if hasValue .context}}
 
       ## Context
 
       {{.context}}
       {{- end}}
-
-      ## Scope
-
-      {{.scope}}
       {{- if hasValue .constraints}}
 
       ## Constraints
 
+      These are mandatory. If you cannot satisfy a constraint, log the blocker
+      and create a follow-up task rather than violating it.
+
       {{.constraints}}
-      {{- end}}
-
-      ## Files / Locations
-
-      {{.files_to_touch}}
-
-      ## Implementation Notes
-
-      {{.implementation_notes}}
-
-      ## Validation
-
-      {{.validation}}
-
-      ## Acceptance Criteria
-
-      {{.acceptance_criteria}}
-      {{- if hasValue .dependencies}}
-
-      ## Dependencies
-
-      {{.dependencies}}
-      {{- end}}
+      {{- end }}
       {{- if hasValue .unknowns}}
 
       ## Unknowns / Decisions
 
       {{.unknowns}}
+
+      When you make a decision, log it immediately with `tpg log`.
       {{- end}}

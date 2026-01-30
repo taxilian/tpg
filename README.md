@@ -48,7 +48,7 @@ tpg done ts-a1b "JWT auth with refresh tokens"
 ### Organize with dependencies and epics
 
 ```bash
-tpg add "Auth system" -e                    # Create an epic → ep-c3d
+tpg add "Auth system" --type epic           # Create an epic → ep-c3d
 tpg add "Login endpoint" --parent ep-c3d    # Task under epic
 tpg add "Auth tests" --parent ep-c3d        # Another task
 tpg dep ts-login blocks ts-tests            # Tests wait for login
@@ -73,12 +73,12 @@ tpg add "User Auth" --template tdd --var 'feature_name="user auth"'
 
 ## Core Concepts
 
-- **Tasks** (`ts-xxx`) — Units of work with status, priority, description, logs
-- **Epics** (`ep-xxx`) — Group related tasks
+- **Types** — Arbitrary work item types (task, epic, bug, story, etc.). Any type can have children.
+- **IDs** — Auto-generated with configurable prefixes (default: `ts-xxx` for tasks, `ep-xxx` for epics)
 - **Dependencies** — Task A blocks Task B; `ready` respects this
 - **Labels** — Tags for categorization (bug, feature, etc.)
 - **Logs** — Timestamped progress entries per task
-- **Templates** — Reusable workflows that expand into epic + tasks
+- **Templates** — Reusable workflows that expand into parent + child tasks
 
 ## Key Commands
 
@@ -87,7 +87,7 @@ tpg add "User Auth" --template tdd --var 'feature_name="user auth"'
 | `tpg ready` | What can be worked on right now |
 | `tpg status` | Full project overview |
 | `tpg show <id>` | Task details, logs, dependencies |
-| `tpg add <title>` | Create task (or epic with `-e`) |
+| `tpg add <title>` | Create task (or use `--type epic` for epics) |
 | `tpg start <id>` | Claim work |
 | `tpg log <id> <msg>` | Record progress |
 | `tpg done <id> [msg]` | Complete task |

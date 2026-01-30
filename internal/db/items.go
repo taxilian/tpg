@@ -199,16 +199,13 @@ func (db *DB) AppendDescription(id string, text string) error {
 	return nil
 }
 
-// SetParent sets an item's parent to an epic.
+// SetParent sets an item's parent.
 func (db *DB) SetParent(itemID, parentID string) error {
-	// Verify parent exists and is an epic
+	// Verify parent exists
 	var itemType string
 	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, parentID).Scan(&itemType)
 	if err != nil {
 		return fmt.Errorf("parent not found: %s (use 'tpg list' to see available items)", parentID)
-	}
-	if itemType != string(model.ItemTypeEpic) {
-		return fmt.Errorf("parent must be an epic, got %s", itemType)
 	}
 
 	// Update the item's parent
@@ -318,4 +315,58 @@ func (db *DB) DeleteItem(id string) error {
 	}
 
 	return nil
+}
+
+// GetChildren returns all items that have the given ID as their parent.
+func (db *DB) GetChildren(parentID string) ([]model.Item, error) {
+	query := fmt.Sprintf("SELECT %s FROM items WHERE parent_id = ? ORDER BY priority ASC, created_at ASC", itemSelectColumns)
+	return db.queryItems(query, parentID)
+}
+
+// GetEpics returns all epics for a project (or all projects if empty).
+func (db *DB) GetEpics(project string) ([]model.Item, error) {
+	query := fmt.Sprintf("SELECT %s FROM items WHERE type = 'epic'", itemSelectColumns)
+	args := []any{}
+	if project != "" {
+		query += " AND project = ?"
+		args = append(args, project)
+	}
+	query += " ORDER BY priority ASC, created_at ASC"
+	return db.queryItems(query, args...)
+}
+
+// GetDescendants returns all descendants of an item (children, grandchildren, etc.)
+func (db *DB) GetDescendants(itemID string) ([]model.Item, error) {
+	query := fmt.Sprintf(`
+		WITH RECURSIVE descendants(id) AS (
+			-- Base case: direct children
+			SELECT id FROM items WHERE parent_id = ?
+			UNION ALL
+			-- Recursive case: children of children
+			SELECT i.id FROM items i
+			JOIN descendants d ON i.parent_id = d.id
+		)
+		SELECT %s FROM items WHERE id IN (SELECT id FROM descendants)
+		ORDER BY priority ASC, created_at ASC
+	`, itemSelectColumns)
+	return db.queryItems(query, itemID)
+}
+
+// GetParentChain returns all ancestors of an item up to the root.
+func (db *DB) GetParentChain(itemID string) ([]model.Item, error) {
+	query := fmt.Sprintf(`
+		WITH RECURSIVE ancestors(id, parent_id, depth) AS (
+			-- Base case: the item itself
+			SELECT id, parent_id, 0 FROM items WHERE id = ?
+			UNION ALL
+			-- Recursive case: parents of parents
+			SELECT i.id, i.parent_id, a.depth + 1
+			FROM items i
+			JOIN ancestors a ON i.id = a.parent_id
+			WHERE a.depth < 100  -- Prevent infinite loops
+		)
+		SELECT %s FROM items WHERE id IN (SELECT id FROM ancestors WHERE depth > 0)
+		ORDER BY (SELECT depth FROM ancestors WHERE id = items.id) DESC
+	`, itemSelectColumns)
+	return db.queryItems(query, itemID)
 }

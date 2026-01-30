@@ -119,7 +119,7 @@ Common patterns you'll use:
 | Auth Flow | `{{.provider}}`, `{{.token_type}}` |
 | Integration | `{{.service}}`, `{{.base_url}}` |
 
-**Check templates first:** `tpg template list` - if a template fits, design to match it and document which template applies.
+**MANDATORY: Check templates first:** `tpg template list` - if a template fits, design to match it and document which template applies. **Never skip this step.**
 
 ### Phase 1: Requirements Clarification
 
@@ -369,7 +369,14 @@ For each pattern that appears 2+ times in your spec:
 **Template strategy:**
 1. Build the first instance completely (this is your reference template).
 2. Create template YAML in `.tpg/templates/` with title, description, variables, and steps.
-3. For subsequent instances, create tasks with `tpg add "Title" --template <id> --var 'name="value"'` and wire dependencies with `tpg dep`.
+3. For subsequent instances, create tasks with heredoc syntax:
+   ```bash
+   tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF
+   entity: "Order"
+   table: "orders"
+   EOF
+   ```
+   Then wire dependencies with `tpg dep`.
 
 **Skip template planning when:**
 - Pattern only appears once

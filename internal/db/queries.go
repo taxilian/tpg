@@ -51,7 +51,7 @@ func (db *DB) ListItemsFiltered(filter ListFilter) ([]model.Item, error) {
 	if filter.Type != "" {
 		itemType := model.ItemType(filter.Type)
 		if !itemType.IsValid() {
-			return nil, fmt.Errorf("invalid type: %s (valid: task, epic)", filter.Type)
+			return nil, fmt.Errorf("invalid type: %s (type cannot be empty)", filter.Type)
 		}
 		query += ` AND type = ?`
 		args = append(args, filter.Type)

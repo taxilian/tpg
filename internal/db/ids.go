@@ -15,10 +15,7 @@ func (db *DB) GenerateItemID(itemType model.ItemType) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prefix := config.Prefixes.Task
-	if itemType == model.ItemTypeEpic {
-		prefix = config.Prefixes.Epic
-	}
+	prefix := config.GetPrefixForType(string(itemType))
 	idLen := config.IDLength
 	if idLen == 0 {
 		idLen = model.DefaultIDLength
@@ -44,9 +41,6 @@ func GenerateItemIDStatic(itemType model.ItemType) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prefix := config.Prefixes.Task
-	if itemType == model.ItemTypeEpic {
-		prefix = config.Prefixes.Epic
-	}
+	prefix := config.GetPrefixForType(string(itemType))
 	return model.GenerateIDWithPrefixN(prefix, itemType, config.IDLength), nil
 }

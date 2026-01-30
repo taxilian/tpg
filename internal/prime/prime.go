@@ -193,11 +193,14 @@ You have {{.SubagentTaskCount}} tasks assigned to this session:
 ## Workflow
 
 **Start:** 'tpg ready' → 'tpg show <id>' → 'tpg start <id>'
-**During:** 'tpg log <id> "msg"' — log significant milestones as you work
+**During:** Log milestones (always use heredoc for detail):
+  tpg log <id> - <<EOF
+  What was decided, alternatives considered, blockers, next steps.
+  EOF
 **Finish:** 'tpg done <id>' | blocked? → 'tpg dep <blocker> blocks <id>'
 **Context:** 'tpg concepts' → 'tpg context -c <name>'
 
-**Logging:** You MUST call 'tpg log <id> "msg"' when any of these happen:
+**Logging:** You MUST call 'tpg log <id> - <<EOF ... EOF' when any of these happen:
 - You discover a blocker or create a dependency
 - You choose between alternatives (log what and why)
 - You find existing code/patterns that change your approach
@@ -230,12 +233,22 @@ No templates found. Create templates in .tpg/templates/ to standardize workflows
   tpg ready                        # Available work
   tpg show <id>                    # Task details
   tpg start <id>                   # Claim task
-  tpg log <id> "msg"               # Log progress
   tpg done <id>                    # Complete
   tpg dep <id> blocks <other-id>   # Set dependency
   tpg dep <id> list                # Show dependencies
   tpg status                       # Overview
   tpg context -c X                 # Load learnings
+
+  # Always use heredoc for add and log:
+  tpg add "Title" -p 1 --desc - <<EOF
+  What to do, why it matters, constraints, acceptance criteria.
+  Future agents won't have your current context—be thorough.
+  EOF
+
+  tpg log <id> - <<EOF
+  Decisions made, alternatives considered, blockers found,
+  milestones reached. Skip routine actions (opened file, ran cmd).
+  EOF
 `
 }
 

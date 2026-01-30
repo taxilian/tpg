@@ -3,5 +3,6 @@
     "task": "ts",
     "epic": "ep"
   },
-  "default_project": "tpg"
+  "default_project": "tpg",
+  "id_length": 3
 }

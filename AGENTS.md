@@ -10,24 +10,38 @@ Run `tpg prime` for workflow context, or configure hooks for auto-injection.
 **Quick reference:**
 ```
 tpg ready                        # Find unblocked work
-tpg add "Title" -p 1             # Create task (priority 1)
 tpg start <id>                   # Claim work
-tpg log <id> "msg"               # Log progress
 tpg done <id>                    # Complete work
 tpg dep <id> blocks <other-id>   # Set dependency
 tpg dep <id> list                # Show dependencies
+
+# Creating tasks — always use heredoc for full context:
+tpg add "Title" -p 1 --desc - <<EOF
+What to do, why it matters, constraints, acceptance criteria.
+Future agents won't have your current context—be thorough.
+EOF
+
+# Logging progress — always use heredoc for detail:
+tpg log <id> - <<EOF
+Decisions made, alternatives considered, blockers found,
+milestones reached. Skip routine actions (opened file, ran cmd).
+EOF
 ```
 
 For full workflow: `tpg prime`
 
 ## Templates
 
+**MANDATORY:** Before creating ANY task, you MUST run `tpg template list` and check if a template applies. No exceptions.
+
 Check `.tpg/templates/` for reusable task templates before creating tasks manually:
 ```
-tpg template list                                    # List available templates
+tpg template list                                    # List available templates (MANDATORY FIRST STEP)
 tpg template show <id>                               # View template details
 tpg add "Title" --template <id> --var 'key="value"'  # Create from template
 ```
+
+**Rule:** If a template exists that fits the work, use it. Only create ad-hoc tasks when no template is appropriate.
 
 ## Agents
 

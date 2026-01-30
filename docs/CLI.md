@@ -4,9 +4,9 @@
 
 | Command | Description |
 |---------|-------------|
-| `tpg init` | Initialize the database (supports `--prefix`, `--epic-prefix`) |
+| `tpg init` | Initialize the database |
 | `tpg onboard` | Set up tpg integration for Opencode |
-| `tpg add <title>` | Create a task (returns ID) |
+| `tpg add <title>` | Create a work item (returns ID) |
 | `tpg list` | List all tasks |
 | `tpg show <id>` | Show task details, logs, deps, suggested concepts |
 | `tpg ready` | Show tasks ready for work (open + deps met) |
@@ -40,7 +40,7 @@
 | `tpg dep <id> remove <other>` | Remove dependency between tasks |
 | `tpg graph` | Show dependency graph |
 | `tpg projects` | List all projects |
-| `tpg add -e <title>` | Create an epic instead of task |
+| `tpg add "<title>" --type <type>` | Create item with custom type (task, epic, bug, story, etc.) |
 
 ## Labels
 
@@ -83,12 +83,12 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 |------|----------|-------------|
 | `--project` | all | Filter/set project scope |
 | `-p, --priority` | add | Priority: 1=high, 2=medium (default), 3=low |
-| `-e, --epic` | add | Create epic instead of task |
+| `--type <type>` | add | Create item with custom type (task, epic, bug, story, etc.) |
 | `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
-| `--parent` | add, list | Set parent epic at creation / filter by parent |
+| `--parent <id>` | add, list | Set parent item at creation / filter by parent (any type can have children) |
 | `--blocks` | add | Set task this will block at creation |
 | `--status` | list | Filter by status |
-| `--type` | list | Filter by item type (task, epic) |
+| `--type` | list | Filter by item type (task, epic, bug, etc.) |
 | `--blocking` | list | Show items that block the given ID |
 | `--blocked-by` | list | Show items blocked by the given ID |
 | `--has-blockers` | list | Show only items with unresolved blockers |
@@ -97,9 +97,26 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 
 ## ID Format
 
-IDs are auto-generated with type prefixes:
+IDs are auto-generated with configurable type prefixes:
+
+**Default prefixes:**
 - `ts-XXXXXX` — tasks (e.g., `ts-a1b2c3`)
 - `ep-XXXXXX` — epics (e.g., `ep-f0a20b`)
+
+**Arbitrary types:** Any type can be used (bug, story, feature, etc.). Configure custom prefixes in `.tpg/config.json`:
+
+```json
+{
+  "prefixes": {
+    "task": "ts",
+    "epic": "ep"
+  },
+  "custom_prefixes": {
+    "bug": "bg",
+    "story": "st"
+  }
+}
+```
 
 ID length is configurable via `id_length` in `.tpg/config.json` (default: 3 characters, base-36 alphabet `[0-9a-z]`).
 
@@ -112,9 +129,11 @@ ID length is configurable via `id_length` in `.tpg/config.json` (default: 3 char
 
 ## Data Model
 
-- **Items**: Tasks or epics with title, description, status, priority
+- **Items**: Work items of arbitrary types (task, epic, bug, story, etc.) with title, description, status, priority
+- **Type**: Arbitrary string identifying the item type. Any type can have child items via the parent relationship.
 - **Status**: `open` -> `in_progress` -> `done` (or `blocked`, `canceled`)
-- **Dependencies**: Task A can depend on Task B (A is blocked until B is done)
+- **Dependencies**: Item A can depend on Item B (A is blocked until B is done)
+- **Parent**: Any item can be a parent of other items, creating hierarchies
 - **Labels**: Tags for categorization (bug, feature, refactor, etc), project-scoped
 - **Logs**: Timestamped audit trail per item
 - **Projects**: String tag to scope work (e.g., "gaia", "myapp")

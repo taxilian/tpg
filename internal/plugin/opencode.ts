@@ -9,9 +9,9 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { z } from "zod"
+import { tool } from "@opencode-ai/plugin"
 
-export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
+export const TpgPlugin: Plugin = async ({ $, directory, client, project, worktree, serverUrl }) => {
   // Cache agent type per session to avoid repeated API calls
   const agentTypeCache = new Map<string, "primary" | "subagent">()
 
@@ -145,13 +145,15 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
      */
     tool: {
       // Check if subagent exists and get its metadata
-      inspect_subagent_metadata: {
+      inspect_subagent_metadata: tool({
         description: "Check if a subagent session exists and get its metadata (including message count estimate)",
-        parameters: z.object({ subagentID: z.string() }),
-        execute: async ({ subagentID }) => {
-          const verify = await verifySubagent(subagentID)
+        args: {
+          subagentID: tool.schema.string().describe("The ID of the subagent session to inspect")
+        },
+        async execute(args, ctx) {
+          const verify = await verifySubagent(args.subagentID)
           if (!verify.ok) {
-            return { accessible: false, reason: verify.reason }
+            return JSON.stringify({ accessible: false, reason: verify.reason })
           }
           
           const session = verify.session
@@ -160,15 +162,20 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
           let messageCount = 0
           let sizeEstimate = "small"
           try {
-            const messages = await client.session.messages({ sessionID: subagentID })
-            messageCount = messages.length
+            const messagesResult = await client.session.messages({ sessionID: args.subagentID })
+            // Handle different response formats
+            const messages = Array.isArray(messagesResult) ? messagesResult : 
+                            (messagesResult as any)?.data || 
+                            (messagesResult as any)?.messages || 
+                            []
+            messageCount = messages.length || 0
             if (messageCount > 100) sizeEstimate = "large"
             else if (messageCount > 30) sizeEstimate = "medium"
           } catch {
             // Can't get message count, ignore
           }
           
-          return {
+          return JSON.stringify({
             accessible: true,
             id: session.id,
             parentID: session.parentID,
@@ -180,66 +187,75 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
             isSubagent: true,
             messageCount,
             sizeEstimate
-          }
+          })
         }
-      },
+      }),
 
       // List messages with only metadata (no content) - lightweight index
-      list_subagent_messages: {
+      list_subagent_messages: tool({
         description: "Get a lightweight index of messages in a subagent without full content",
-        parameters: z.object({
-          subagentID: z.string(),
-          limit: z.number().optional().default(20)
-        }),
-        execute: async ({ subagentID, limit }) => {
-          const verify = await verifySubagent(subagentID)
+        args: {
+          subagentID: tool.schema.string().describe("The ID of the subagent session"),
+          limit: tool.schema.number().optional().default(20).describe("Maximum number of messages to return")
+        },
+        async execute(args, ctx) {
+          const verify = await verifySubagent(args.subagentID)
           if (!verify.ok) {
-            return { error: `Cannot access: ${verify.reason}` }
+            return JSON.stringify({ error: `Cannot access: ${verify.reason}` })
           }
           
           try {
-            const messages = await client.session.messages({ sessionID: subagentID })
-            const recent = messages.slice(-limit)
+            const messagesResult = await client.session.messages({ sessionID: args.subagentID })
+            // Handle different response formats
+            const messages = Array.isArray(messagesResult) ? messagesResult : 
+                            (messagesResult as any)?.data || 
+                            (messagesResult as any)?.messages || 
+                            []
+            const recent = messages.slice(-args.limit)
             
-            return {
+            return JSON.stringify({
               totalMessages: messages.length,
               returned: recent.length,
-              messages: recent.map(m => ({
+              messages: recent.map((m: any) => ({
                 id: m.id,
                 role: m.role,
                 created: m.createdAt,
                 toolCalls: m.toolCalls?.map((t: any) => t.tool) || [],
                 hasErrors: m.toolResults?.some((r: any) => r.error) || false
               }))
-            }
+            })
           } catch {
-            return { error: "Failed to retrieve messages" }
+            return JSON.stringify({ error: "Failed to retrieve messages" })
           }
         }
-      },
+      }),
 
       // Get specific message content only when needed
-      get_subagent_message: {
+      get_subagent_message: tool({
         description: "Retrieve full content of a specific message from a subagent",
-        parameters: z.object({
-          subagentID: z.string(),
-          messageID: z.string()
-        }),
-        execute: async ({ subagentID, messageID }) => {
-          const verify = await verifySubagent(subagentID)
+        args: {
+          subagentID: tool.schema.string().describe("The ID of the subagent session"),
+          messageID: tool.schema.string().describe("The ID of the message to retrieve")
+        },
+        async execute(args, ctx) {
+          const verify = await verifySubagent(args.subagentID)
           if (!verify.ok) {
-            return { error: `Cannot access: ${verify.reason}` }
+            return JSON.stringify({ error: `Cannot access: ${verify.reason}` })
           }
           
           try {
-            const messages = await client.session.messages({ sessionID: subagentID })
-            const message = messages.find(m => m.id === messageID)
+            const messagesResult = await client.session.messages({ sessionID: args.subagentID })
+            const messages = Array.isArray(messagesResult) ? messagesResult : 
+                            (messagesResult as any)?.data || 
+                            (messagesResult as any)?.messages || 
+                            []
+            const message = messages.find((m: any) => m.id === args.messageID)
             
             if (!message) {
-              return { error: "Message not found" }
+              return JSON.stringify({ error: "Message not found" })
             }
             
-            return {
+            return JSON.stringify({
               id: message.id,
               role: message.role,
               created: message.createdAt,
@@ -250,34 +266,38 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
                 status: r.error ? "error" : "success",
                 output: r.output?.substring(0, 1000) // Truncate
               }))
-            }
+            })
           } catch {
-            return { error: "Failed to retrieve message" }
+            return JSON.stringify({ error: "Failed to retrieve message" })
           }
         }
-      },
+      }),
 
       // Get recent messages with content summaries for diagnosis
-      get_subagent_recent: {
+      get_subagent_recent: tool({
         description: "Get recent messages from a subagent with brief content summaries",
-        parameters: z.object({
-          subagentID: z.string(),
-          count: z.number().optional().default(10)
-        }),
-        execute: async ({ subagentID, count }) => {
-          const verify = await verifySubagent(subagentID)
+        args: {
+          subagentID: tool.schema.string().describe("The ID of the subagent session"),
+          count: tool.schema.number().optional().default(10).describe("Number of recent messages to retrieve")
+        },
+        async execute(args, ctx) {
+          const verify = await verifySubagent(args.subagentID)
           if (!verify.ok) {
-            return { error: `Cannot access: ${verify.reason}` }
+            return JSON.stringify({ error: `Cannot access: ${verify.reason}` })
           }
           
           try {
-            const messages = await client.session.messages({ sessionID: subagentID })
-            const recent = messages.slice(-count)
+            const messagesResult = await client.session.messages({ sessionID: args.subagentID })
+            const messages = Array.isArray(messagesResult) ? messagesResult : 
+                            (messagesResult as any)?.data || 
+                            (messagesResult as any)?.messages || 
+                            []
+            const recent = messages.slice(-args.count)
             
-            return {
+            return JSON.stringify({
               totalMessages: messages.length,
               returned: recent.length,
-              messages: recent.map(m => {
+              messages: recent.map((m: any) => {
                 // Build a brief summary
                 let summary = ""
                 if (m.role === "user") {
@@ -298,37 +318,41 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
                   hasErrors: m.toolResults?.some((r: any) => r.error) || false
                 }
               })
-            }
+            })
           } catch {
-            return { error: "Failed to retrieve messages" }
+            return JSON.stringify({ error: "Failed to retrieve messages" })
           }
         }
-      },
+      }),
 
       // Find error messages specifically
-      find_subagent_errors: {
+      find_subagent_errors: tool({
         description: "Find messages with tool errors in a subagent",
-        parameters: z.object({
-          subagentID: z.string(),
-          limit: z.number().optional().default(5)
-        }),
-        execute: async ({ subagentID, limit }) => {
-          const verify = await verifySubagent(subagentID)
+        args: {
+          subagentID: tool.schema.string().describe("The ID of the subagent session"),
+          limit: tool.schema.number().optional().default(5).describe("Maximum number of error messages to return")
+        },
+        async execute(args, ctx) {
+          const verify = await verifySubagent(args.subagentID)
           if (!verify.ok) {
-            return { error: `Cannot access: ${verify.reason}` }
+            return JSON.stringify({ error: `Cannot access: ${verify.reason}` })
           }
           
           try {
-            const messages = await client.session.messages({ sessionID: subagentID })
+            const messagesResult = await client.session.messages({ sessionID: args.subagentID })
+            const messages = Array.isArray(messagesResult) ? messagesResult : 
+                            (messagesResult as any)?.data || 
+                            (messagesResult as any)?.messages || 
+                            []
             
             // Find messages with errors
             const errorMessages = messages
-              .filter(m => m.toolResults?.some((r: any) => r.error))
-              .slice(-limit)
+              .filter((m: any) => m.toolResults?.some((r: any) => r.error))
+              .slice(-args.limit)
             
-            return {
+            return JSON.stringify({
               totalErrors: errorMessages.length,
-              errors: errorMessages.map(m => {
+              errors: errorMessages.map((m: any) => {
                 const failedTools = m.toolResults
                   ?.filter((r: any) => r.error)
                   ?.map((r: any) => ({
@@ -343,27 +367,31 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
                   contextBefore: messages[Math.max(0, messages.indexOf(m) - 1)]?.content?.substring(0, 200)
                 }
               })
-            }
+            })
           } catch {
-            return { error: "Failed to search for errors" }
+            return JSON.stringify({ error: "Failed to search for errors" })
           }
         }
-      },
+      }),
 
       // Get a summary of what the subagent was working on
-      summarize_subagent_work: {
+      summarize_subagent_work: tool({
         description: "Get a summary of what a subagent was working on based on its tool calls",
-        parameters: z.object({
-          subagentID: z.string()
-        }),
-        execute: async ({ subagentID }) => {
-          const verify = await verifySubagent(subagentID)
+        args: {
+          subagentID: tool.schema.string().describe("The ID of the subagent session to summarize")
+        },
+        async execute(args, ctx) {
+          const verify = await verifySubagent(args.subagentID)
           if (!verify.ok) {
-            return { error: `Cannot access: ${verify.reason}` }
+            return JSON.stringify({ error: `Cannot access: ${verify.reason}` })
           }
           
           try {
-            const messages = await client.session.messages({ sessionID: subagentID })
+            const messagesResult = await client.session.messages({ sessionID: args.subagentID })
+            const messages = Array.isArray(messagesResult) ? messagesResult : 
+                            (messagesResult as any)?.data || 
+                            (messagesResult as any)?.messages || 
+                            []
             
             // Collect all tool calls
             const toolUsage: Record<string, number> = {}
@@ -371,7 +399,7 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
             const filesWritten: string[] = []
             const commands: string[] = []
             
-            messages.forEach(m => {
+            messages.forEach((m: any) => {
               m.toolCalls?.forEach((t: any) => {
                 toolUsage[t.tool] = (toolUsage[t.tool] || 0) + 1
                 
@@ -387,7 +415,7 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
               })
             })
             
-            return {
+            return JSON.stringify({
               totalMessages: messages.length,
               toolUsage: Object.entries(toolUsage)
                 .sort((a, b) => b[1] - a[1])
@@ -395,12 +423,12 @@ export const TpgPlugin: Plugin = async ({ $, directory, client }) => {
               filesRead: [...new Set(fileReads)].slice(-10),
               filesWritten: [...new Set(filesWritten)].slice(-10),
               commandsUsed: [...new Set(commands)].slice(-10)
-            }
+            })
           } catch {
-            return { error: "Failed to summarize work" }
+            return JSON.stringify({ error: "Failed to summarize work" })
           }
         }
-      }
+      })
     }
   }
 }

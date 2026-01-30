@@ -148,14 +148,14 @@ func TestCreateItem_InvalidType(t *testing.T) {
 	item := &model.Item{
 		ID:      "ts-123456",
 		Project: "test",
-		Type:    model.ItemType("invalid"),
+		Type:    model.ItemType(""), // empty type is invalid
 		Title:   "Test",
 		Status:  model.StatusOpen,
 	}
 
 	err := db.CreateItem(item)
 	if err == nil {
-		t.Error("expected error for invalid type")
+		t.Error("expected error for invalid (empty) type")
 	}
 }
 
@@ -298,7 +298,7 @@ func TestSetParent(t *testing.T) {
 	}
 }
 
-func TestSetParent_NotEpic(t *testing.T) {
+func TestSetParent_NonEpicParent(t *testing.T) {
 	db := setupTestDB(t)
 
 	task1 := &model.Item{
@@ -327,9 +327,21 @@ func TestSetParent_NotEpic(t *testing.T) {
 		t.Fatalf("failed to create task2: %v", err)
 	}
 
+	// Non-epics can now be parents (arbitrary hierarchies allowed)
 	err := db.SetParent(task2.ID, task1.ID)
-	if err == nil {
-		t.Error("expected error when parent is not an epic")
+	if err != nil {
+		t.Errorf("unexpected error when setting non-epic as parent: %v", err)
+	}
+
+	// Verify the parent was set
+	got, err := db.GetItem(task2.ID)
+	if err != nil {
+		t.Fatalf("failed to get task2: %v", err)
+	}
+	if got.ParentID == nil {
+		t.Error("expected parent to be set")
+	} else if *got.ParentID != task1.ID {
+		t.Errorf("parent = %q, want %q", *got.ParentID, task1.ID)
 	}
 }
 

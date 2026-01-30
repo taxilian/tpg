@@ -17,9 +17,10 @@ const (
 
 // Config holds per-project settings stored in .tpg/config.json.
 type Config struct {
-	Prefixes       PrefixConfig `json:"prefixes"`
-	DefaultProject string       `json:"default_project"`
-	IDLength       int          `json:"id_length,omitempty"`
+	Prefixes       PrefixConfig      `json:"prefixes"`
+	CustomPrefixes map[string]string `json:"custom_prefixes"`
+	DefaultProject string            `json:"default_project"`
+	IDLength       int               `json:"id_length,omitempty"`
 }
 
 // PrefixConfig holds ID prefixes for items.
@@ -154,4 +155,142 @@ func UpdatePrefixes(taskPrefix, epicPrefix string) error {
 		config.Prefixes.Epic = normalizePrefix(epicPrefix)
 	}
 	return SaveConfig(config)
+}
+
+// GetPrefixForType returns the prefix for a given item type.
+// Checks custom_prefixes first, then falls back to default prefixes.
+func (c *Config) GetPrefixForType(itemType string) string {
+	// Check custom prefixes first
+	if c.CustomPrefixes != nil {
+		if prefix, ok := c.CustomPrefixes[itemType]; ok && prefix != "" {
+			return normalizePrefix(prefix)
+		}
+	}
+	// Fall back to default prefixes
+	switch itemType {
+	case "task":
+		return c.Prefixes.Task
+	case "epic":
+		return c.Prefixes.Epic
+	default:
+		// For unknown types, return a generic prefix
+		return "it"
+	}
+}
+
+// mergeConfigs merges multiple configs, with later configs overriding earlier ones.
+// It applies defaults after merging.
+func mergeConfigs(dataDir string, configs []*Config) *Config {
+	merged := &Config{}
+
+	// Merge in order: earlier configs are base, later configs override
+	for _, cfg := range configs {
+		if cfg.Prefixes.Task != "" {
+			merged.Prefixes.Task = cfg.Prefixes.Task
+		}
+		if cfg.Prefixes.Epic != "" {
+			merged.Prefixes.Epic = cfg.Prefixes.Epic
+		}
+		if cfg.DefaultProject != "" {
+			merged.DefaultProject = cfg.DefaultProject
+		}
+		if cfg.IDLength != 0 {
+			merged.IDLength = cfg.IDLength
+		}
+		// Merge custom prefixes - later configs override individual entries
+		if cfg.CustomPrefixes != nil {
+			if merged.CustomPrefixes == nil {
+				merged.CustomPrefixes = make(map[string]string)
+			}
+			for k, v := range cfg.CustomPrefixes {
+				merged.CustomPrefixes[k] = v
+			}
+		}
+	}
+
+	applyDefaults(merged, dataDir)
+	return merged
+}
+
+// loadConfigFromPath loads a config from a specific file path.
+// Returns nil config if file doesn't exist.
+func loadConfigFromPath(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read config from %s: %w", path, err)
+	}
+
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config from %s: %w", path, err)
+	}
+	return &config, nil
+}
+
+// LoadMergedConfigWithPaths loads and merges configs from the specified paths.
+// Later configs override earlier ones. Missing files are skipped gracefully.
+// Returns error if any config file has invalid JSON.
+func LoadMergedConfigWithPaths(paths ...string) (*Config, error) {
+	var configs []*Config
+
+	for _, path := range paths {
+		cfg, err := loadConfigFromPath(path)
+		if err != nil {
+			return nil, err
+		}
+		if cfg != nil {
+			configs = append(configs, cfg)
+		}
+	}
+
+	// Get data directory for defaults - use the last path's directory or current
+	dataDir := "."
+	if len(paths) > 0 {
+		dataDir = filepath.Dir(filepath.Dir(paths[len(paths)-1]))
+	}
+
+	return mergeConfigs(dataDir, configs), nil
+}
+
+// LoadMergedConfig loads and merges configs from standard locations:
+// - System config (e.g., /etc/tpg/config.json)
+// - User config (e.g., ~/.config/tpg/config.json)
+// - Worktree config (found by searching upward from current directory)
+// Later configs override earlier ones.
+func LoadMergedConfig() (*Config, error) {
+	// Find worktree data directory
+	dataDir, err := findDataDir()
+	if err != nil {
+		return nil, err
+	}
+
+	// Build list of paths to check
+	var paths []string
+
+	// System config
+	if sysPath := os.Getenv("TPG_SYSTEM_CONFIG"); sysPath != "" {
+		paths = append(paths, sysPath)
+	}
+
+	// User config
+	if home, err := os.UserHomeDir(); err == nil {
+		userConfigPath := filepath.Join(home, ".config", "tpg", ConfigFile)
+		paths = append(paths, userConfigPath)
+	}
+
+	// Worktree config (highest priority)
+	paths = append(paths, filepath.Join(dataDir, ConfigFile))
+
+	// Load and merge
+	merged, err := LoadMergedConfigWithPaths(paths...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-apply defaults with correct dataDir
+	applyDefaults(merged, dataDir)
+	return merged, nil
 }

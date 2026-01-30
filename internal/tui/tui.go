@@ -27,15 +27,16 @@ const (
 type InputMode int
 
 const (
-	InputNone    InputMode = iota
-	InputBlock             // Entering block reason
-	InputLog               // Entering log message
-	InputCancel            // Entering cancel reason
-	InputSearch            // Entering search text
-	InputProject           // Entering project filter
-	InputLabel             // Entering label filter
-	InputAddDep            // Entering dependency ID to add
-	InputCreate            // Entering new task title
+	InputNone       InputMode = iota
+	InputBlock                // Entering block reason
+	InputLog                  // Entering log message
+	InputCancel               // Entering cancel reason
+	InputSearch               // Entering search text
+	InputProject              // Entering project filter
+	InputLabel                // Entering label filter
+	InputAddDep               // Entering dependency ID to add
+	InputCreate               // Entering new item title
+	InputCreateType           // Entering type for new item
 )
 
 // Status icons
@@ -62,9 +63,10 @@ type Model struct {
 	filterLabel    string // label filter (partial match, like search)
 
 	// Input state
-	inputMode  InputMode
-	inputText  string
-	inputLabel string
+	inputMode    InputMode
+	inputText    string
+	inputLabel   string
+	inputContext string // For multi-step inputs (e.g., storing title before asking for type)
 
 	// UI state
 	width   int
@@ -435,6 +437,7 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.inputMode = InputNone
 		m.inputText = ""
+		m.inputContext = ""
 		return m, nil
 
 	case "enter":
@@ -505,13 +508,28 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		if text == "" {
 			return m, nil
 		}
+		// Store the title and ask for type
+		m.inputContext = text
+		m.inputMode = InputCreateType
+		m.inputLabel = "Type (default: task): "
+		m.inputText = ""
+		return m, nil
+
+	case InputCreateType:
 		// Use the selected item's project if available
 		var project string
 		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
 			project = m.filtered[m.cursor].Project
 		}
+		// Default to "task" if no type specified
+		itemType := model.ItemType(text)
+		if text == "" {
+			itemType = model.ItemTypeTask
+		}
+		title := m.inputContext
+		m.inputContext = ""
 		return m, func() tea.Msg {
-			itemID, err := m.db.GenerateItemID(model.ItemTypeTask)
+			itemID, err := m.db.GenerateItemID(itemType)
 			if err != nil {
 				return actionMsg{err: err}
 			}
@@ -519,8 +537,8 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			newItem := &model.Item{
 				ID:        itemID,
 				Project:   project,
-				Type:      model.ItemTypeTask,
-				Title:     text,
+				Type:      itemType,
+				Title:     title,
 				Status:    model.StatusOpen,
 				Priority:  2,
 				CreatedAt: now,
@@ -529,7 +547,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			if err := m.db.CreateItem(newItem); err != nil {
 				return actionMsg{err: err}
 			}
-			return actionMsg{message: fmt.Sprintf("Created %s", newItem.ID)}
+			return actionMsg{message: fmt.Sprintf("Created %s (%s)", newItem.ID, newItem.Type)}
 		}
 	}
 
@@ -684,10 +702,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Create
 	case "n":
-		label := "New task: "
+		label := "New item: "
 		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
 			if proj := m.filtered[m.cursor].Project; proj != "" {
-				label = fmt.Sprintf("New task [%s]: ", proj)
+				label = fmt.Sprintf("New item [%s]: ", proj)
 			}
 		}
 		return m.startInput(InputCreate, label)
@@ -861,7 +879,7 @@ func (m Model) doStart() (Model, tea.Cmd) {
 	}
 	item := m.filtered[m.cursor]
 	if item.Status != model.StatusOpen && item.Status != model.StatusBlocked {
-		m.message = "Can only start open or blocked tasks"
+		m.message = "Can only start open or blocked items"
 		return m, nil
 	}
 	return m, func() tea.Msg {
@@ -878,7 +896,7 @@ func (m Model) doDone() (Model, tea.Cmd) {
 	}
 	item := m.filtered[m.cursor]
 	if item.Status != model.StatusInProgress {
-		m.message = "Can only complete in_progress tasks"
+		m.message = "Can only complete in_progress items"
 		return m, nil
 	}
 	return m, func() tea.Msg {
@@ -1023,7 +1041,14 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 		agentWidth = 2
 	}
 
-	// Format: icon id title [label1] [label2] [project]
+	// Type indicator (abbreviated)
+	itemType := string(item.Type)
+	if len(itemType) > 4 {
+		itemType = itemType[:4]
+	}
+	typeWidth := 5 // 4 chars + space
+
+	// Format: icon type id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
@@ -1040,7 +1065,7 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth
+	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -1052,9 +1077,9 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	if agent != "" {
-		return fmt.Sprintf("%s%s %s %s %-*s%s %s", stale, icon, item.ID, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%s %-4s %s %s %-*s%s %s", stale, icon, itemType, item.ID, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%s %s  %-*s%s %s", stale, icon, item.ID, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s %-4s %s  %-*s%s %s", stale, icon, itemType, item.ID, titleWidth, title, labels, project)
 }
 
 // formatItemLineStyled returns a styled line with colors for non-selected rows.
@@ -1081,7 +1106,15 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 
 	id := dimStyle.Render(item.ID)
 
-	// Format: icon id title [label1] [label2] [project]
+	// Type indicator (abbreviated, dimmed)
+	itemType := string(item.Type)
+	if len(itemType) > 4 {
+		itemType = itemType[:4]
+	}
+	typeStyled := dimStyle.Render(fmt.Sprintf("%-4s", itemType))
+	typeWidth := 5 // 4 chars + space
+
+	// Format: icon type id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
@@ -1098,7 +1131,7 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth
+	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -1110,9 +1143,9 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	if agent != "" {
-		return fmt.Sprintf("%s%s %s %s %-*s%s %s", stale, iconStyled, id, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%s %s %s %s %-*s%s %s", stale, iconStyled, typeStyled, id, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%s %s  %-*s%s %s", stale, iconStyled, id, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s %s %s  %-*s%s %s", stale, iconStyled, typeStyled, id, titleWidth, title, labels, project)
 }
 
 func (m Model) activeFiltersString() string {

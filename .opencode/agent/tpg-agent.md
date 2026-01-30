@@ -79,12 +79,14 @@ Run `tpg log <id> "msg"` immediately when any of these happen — not later, not
 
 Do NOT log routine actions (opened a file, read docs, ran a test command).
 
-### Template-First For Follow-Up Tasks
+### Template-First For Follow-Up Tasks (MANDATORY)
 When creating follow-up tasks:
-1. **FIRST: Check available templates** with `tpg template list`.
-2. **If a template fits:** Create the task from the template with `tpg add "Title" --template <id> --var 'name="value"'`.
+1. **MANDATORY FIRST STEP: Check available templates** with `tpg template list`.
+2. **If a template fits:** Create the task from the template with heredoc syntax for variables:
 3. **If no template fits:** Create a regular task with `tpg add`.
 4. **Always prefer template structure** when it fits the work.
+
+**CRITICAL:** Never skip the template check. If you haven't run `tpg template list`, STOP and do it now.
 
 Templates are stored in `.tpg/templates/`. You can inspect a template with `tpg template show <id>`.
 
@@ -93,11 +95,23 @@ Example:
 # Check available templates
 tpg template list
 
-# Create from template
-tpg add "Replace payment mock" --template <template-id> --var 'module="payment"' --priority 2 --blocks <parent-id>
+# Create from template with heredoc for clean variable passing
+tpg add "Replace payment mock" --template <template-id> --vars-yaml <<EOF
+module: "payment"
+EOF
 
-# Or create a plain follow-up
-tpg add "Replace payment mock" -p 2 --blocks <parent-id>
+# Or create a plain follow-up with description
+tpg add "Replace payment mock" --priority 2 --blocks <parent-id> --desc <<EOF
+Replace the mock payment processor with real integration.
+
+## Current State
+Currently using mock that returns success for all transactions.
+
+## Required Changes
+- [ ] Integrate with Stripe API
+- [ ] Add error handling for failed payments
+- [ ] Update tests to use Stripe test mode
+EOF
 ```
 
 ### You Have No External Memory
@@ -132,106 +146,13 @@ When you do anything temporary (mock, disabled test, TODO, placeholder, etc.):
 tpg template list
 
 # If a template fits, use it
-tpg add "Replace UserRepository mock" --template <refactor-task> \
-  --var 'component=UserRepository' \
-  --var 'reason=Currently returns hardcoded test users in login.ts:15-23' \
-  -p 1 --blocks <parent>
-```
-
-**GOOD: Detailed description with problem + context + success criteria:**
-```bash
-tpg add "Replace UserRepository mock with real DB integration" -p 1 --blocks <parent> --desc "## Problem\n\nThe login endpoint currently uses a mock that returns hardcoded users. It needs real DB integration.\n\n## Location\n- Mock: src/api/auth/login.ts:15-23\n- Interface: src/repositories/UserRepository.ts\n\n## Success Criteria\n- [ ] Replace mock with real UserRepository calls\n- [ ] Update tests to use test database""
-```
-
-**BAD (NEVER DO THIS):**
-```bash
-tpg add "Replace mock" -p 1 --blocks <parent>
-```
-
-## Gathering Context
-
-### Always Gather Context First
-
-For a given issue `<id>`:
-
-```bash
-# 1. The issue itself
-tpg show <id>
-
-# 2. Dependency graph for full context
-tpg graph
-
-# 3. What blocks this task
-tpg list --blocking <id>
-
-# 4. What this task blocks
-tpg list --blocked-by <id>
-```
-
-### Template-Based Task Context
-
-If a task references a template:
-- Follow the template structure described in the task or check `.tpg/templates/`.
-- Focus on the **custom logic** documented in the task.
-- If the template seems wrong, create a follow-up task rather than rewriting.
-
-## Your Workflow
-
-### 1. Understand the Task
-
-```
-1. Retrieve task: tpg show <id>
-2. View dependency graph: tpg graph
-3. Note if a template is referenced (check for pattern/variables in description)
-4. Understand: objective, acceptance criteria, approach, test requirements
-5. If critical info missing, STOP and request clarification
-```
-
-### 2. Claim the Work
-
-```bash
-tpg start <id>
-```
-
-### 3. Execute — Log Discoveries and Decisions As They Happen
-
-Implement the task. Logging is not optional — see "You MUST Log As You Work" above.
-
-```bash
-# You found existing code that changes your approach — log it NOW
-tpg log <id> "Found existing retry logic in http.go:45 — extending it instead of building new"
-
-# You chose between options — log it NOW
-tpg log <id> "Using table-driven tests to match pattern in user_test.go"
-
-# Key milestone reached — log it NOW
-tpg log <id> "Core validation complete, all 12 edge cases passing"
-
-# You created a blocker/follow-up task — log it NOW
-tpg log <id> "Created ts-xyz: need to replace mock before integration test"
-
-# For multi-line logs (answering a key unknown, complex decision), use heredoc:
-tpg log <id> - <<EOF
-Investigated token expiry behavior:
-- Tokens expire server-side after 1hr, but client caches for 2hr
-- Found race condition in refresh logic (auth/refresh.go:45)
-- Root cause: mutex protects write but not the staleness check
-Decision: extend mutex scope rather than add retry logic
+tpg add "Replace UserRepository mock with real DB integration" \
+  --template <refactor-task> \
+  --priority 1 \
+  --blocks <parent-id> \
+  --vars-yaml <<EOF
+component: "UserRepository"
 EOF
-```
-
-### 4. Handle Temporary Work
-
-For EACH temporary thing (mock, stub, TODO, etc.):
-
-```bash
-# Check for a matching template first
-tpg template list
-
-# Create from template if one fits
-tpg add "Replace [X] mock with real implementation" \
-  --template <template-id> --priority 1 \
-  --blocks <parent-id>
 
 # Or create a plain follow-up
 tpg add "Replace [X] mock with real implementation" \

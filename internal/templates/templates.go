@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -52,16 +53,36 @@ type TemplateLocation struct {
 }
 
 // GetTemplateLocations returns all template directories in priority order (most local first).
-// Priority: project (.tpg/templates) > user (~/.config/tpg/templates) > global (~/.config/opencode/tpg-templates)
+// Priority: worktree-local (.tpg/templates) > worktree-root (.tpg/templates) > user (~/.config/tpg/templates) > global (~/.config/opencode/tpg-templates)
 func GetTemplateLocations() []TemplateLocation {
 	var locations []TemplateLocation
 
-	// 1. Project-local: search upward for .tpg/templates
-	if projectDir, err := findProjectTemplatesDir(); err == nil {
-		locations = append(locations, TemplateLocation{Path: projectDir, Source: "project"})
+	// 1. Worktree-local: search upward for .tpg/templates
+	if localDir, err := findProjectTemplatesDir(); err == nil {
+		locations = append(locations, TemplateLocation{Path: localDir, Source: "project"})
+
+		// 2. Worktree-root: if we're in a worktree, also include the main repo's templates
+		// Only add worktree root if it's different from the local dir (i.e., we're actually in a worktree)
+		if worktreeRoot, err := findWorktreeRoot(); err == nil && worktreeRoot != "" {
+			// Check for .tpg/templates in worktree root
+			rootTemplatesDir := filepath.Join(worktreeRoot, ".tpg", templatesDirName)
+			if info, err := os.Stat(rootTemplatesDir); err == nil && info.IsDir() {
+				// Only add if it's a different directory than the local one
+				if rootTemplatesDir != localDir {
+					locations = append(locations, TemplateLocation{Path: rootTemplatesDir, Source: "project"})
+				}
+			}
+			// Also check .tgz/templates for backward compatibility
+			rootTemplatesDir = filepath.Join(worktreeRoot, ".tgz", templatesDirName)
+			if info, err := os.Stat(rootTemplatesDir); err == nil && info.IsDir() {
+				if rootTemplatesDir != localDir {
+					locations = append(locations, TemplateLocation{Path: rootTemplatesDir, Source: "project"})
+				}
+			}
+		}
 	}
 
-	// 2. User config: ~/.config/tpg/templates
+	// 3. User config: ~/.config/tpg/templates
 	if home, err := os.UserHomeDir(); err == nil {
 		userDir := filepath.Join(home, ".config", "tpg", "templates")
 		if info, err := os.Stat(userDir); err == nil && info.IsDir() {
@@ -69,7 +90,7 @@ func GetTemplateLocations() []TemplateLocation {
 		}
 	}
 
-	// 3. Global/Opencode: ~/.config/opencode/tpg-templates
+	// 4. Global/Opencode: ~/.config/opencode/tpg-templates
 	if home, err := os.UserHomeDir(); err == nil {
 		globalDir := filepath.Join(home, ".config", "opencode", "tpg-templates")
 		if info, err := os.Stat(globalDir); err == nil && info.IsDir() {
@@ -106,6 +127,95 @@ func findProjectTemplatesDir() (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// findWorktreeRoot detects if the current directory is in a git worktree and returns
+// the main repository root path. If .git is a directory (regular repo) or doesn't exist,
+// it returns an empty string.
+func findWorktreeRoot() (string, error) {
+	startDir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	// Search upward to find .git file or directory
+	dir := startDir
+	for {
+		gitPath := filepath.Join(dir, ".git")
+		info, err := os.Stat(gitPath)
+		if err == nil {
+			if info.IsDir() {
+				// Regular repo - not a worktree
+				return "", nil
+			}
+			// It's a file - this is a worktree
+			return parseGitFile(gitPath)
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("failed to check %s: %w", gitPath, err)
+		}
+
+		// Move to parent directory
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached root without finding .git
+			return "", nil
+		}
+		dir = parent
+	}
+}
+
+// parseGitFile parses a .git file (used by worktrees) and extracts the main repo path.
+// The file format is: "gitdir: <path>" where path points to the main repo's .git directory.
+func parseGitFile(gitFilePath string) (string, error) {
+	file, err := os.Open(gitFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open .git file: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("failed to read .git file: %w", err)
+		}
+		return "", fmt.Errorf(".git file is empty")
+	}
+
+	line := strings.TrimSpace(scanner.Text())
+
+	// Parse "gitdir: <path>" format
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(line, prefix) {
+		return "", fmt.Errorf("malformed .git file: missing gitdir prefix")
+	}
+
+	gitDir := strings.TrimSpace(line[len(prefix):])
+	if gitDir == "" {
+		return "", fmt.Errorf("malformed .git file: empty gitdir path")
+	}
+
+	// Extract the main repo path from the gitdir path
+	// gitdir points to something like /path/to/repo/.git or /path/to/repo/.git/worktrees/myworktree
+	// We need to find the main repo root (parent of .git)
+
+	// If it's a worktrees path, go up to find the main .git directory
+	gitDir = filepath.Clean(gitDir)
+
+	// Walk up through "worktrees" directories to find the main .git
+	for strings.Contains(gitDir, "worktrees") {
+		parent := filepath.Dir(gitDir)
+		if parent == gitDir {
+			break
+		}
+		gitDir = parent
+	}
+
+	// Now gitDir should be the main .git directory
+	// The repo root is the parent of .git
+	repoRoot := filepath.Dir(gitDir)
+
+	return repoRoot, nil
 }
 
 // FindTemplatesDir returns the first available templates directory (for backward compatibility).
@@ -331,4 +441,70 @@ func RenderStep(step Step, vars map[string]string) Step {
 		Description: RenderText(step.Description, vars),
 		Depends:     step.Depends,
 	}
+}
+
+// LoadTemplatesWithWorktree loads templates from both local and worktree root directories.
+// It searches local templates first, then worktree root templates, merging the results.
+// Local templates take priority over worktree root templates.
+// If worktreeRoot is empty, only local templates are loaded.
+func LoadTemplatesWithWorktree(localDir, worktreeRoot string) ([]*Template, error) {
+	// Map of template ID to template (local templates take priority)
+	seen := make(map[string]*Template)
+
+	// 1. Load from local directory (highest priority)
+	localTemplatesDir := filepath.Join(localDir, ".tpg", templatesDirName)
+	if info, err := os.Stat(localTemplatesDir); err == nil && info.IsDir() {
+		loadTemplatesFromDir(localTemplatesDir, "project", seen)
+	}
+
+	// 2. Load from worktree root (if provided and different from local)
+	if worktreeRoot != "" && worktreeRoot != localDir {
+		rootTemplatesDir := filepath.Join(worktreeRoot, ".tpg", templatesDirName)
+		if info, err := os.Stat(rootTemplatesDir); err == nil && info.IsDir() {
+			loadTemplatesFromDir(rootTemplatesDir, "project", seen)
+		}
+	}
+
+	// Convert to sorted slice
+	var result []*Template
+	for _, tmpl := range seen {
+		result = append(result, tmpl)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ID < result[j].ID
+	})
+
+	return result, nil
+}
+
+// loadTemplatesFromDir loads all templates from a directory into the provided map.
+// Templates already in the map are not overwritten (preserving priority).
+func loadTemplatesFromDir(dir, source string, seen map[string]*Template) {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors, continue walking
+		}
+		if info.IsDir() {
+			return nil // Continue into directories
+		}
+
+		ext := strings.ToLower(filepath.Ext(info.Name()))
+		if ext != ".yaml" && ext != ".yml" && ext != ".toml" {
+			return nil
+		}
+
+		id := strings.TrimSuffix(info.Name(), ext)
+		if _, exists := seen[id]; exists {
+			// Already have this template from a higher-priority location
+			return nil
+		}
+
+		tmpl, err := loadTemplateFromPath(path, id, source)
+		if err != nil {
+			// Skip invalid templates
+			return nil
+		}
+		seen[id] = tmpl
+		return nil
+	})
 }

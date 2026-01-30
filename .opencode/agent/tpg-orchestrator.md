@@ -128,11 +128,20 @@ Don't guess what's ready based on structure. Use `tpg ready` - it's the single s
 
 Be very cautious if you pipe the output of `tpg` to anything, including `jq` as it may hide warnings (like page limits) or otherwise fail without you realizing it. Also remember that many tpg commands (like `tpg list`) limit the number returned; if 50 are returned there are likely more, use `--limit 0` or pagination to get a better list.
 
-### Rule #2: Track Pattern Completion
+### Rule #2: Track Pattern Completion + MANDATORY Template Check
 When the first instance of a pattern completes (e.g., first CRUD module):
 1. Check if it's marked as a template candidate in the spec
 2. Create a reusable template YAML in `.tpg/templates/`
-3. Apply the template for subsequent instances using `tpg add "Title" --template <id> --var 'name="value"'`
+3. Apply the template for subsequent instances:
+   ```bash
+   tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF
+   entity: "Order"
+   table: "orders"
+   EOF
+   ```
+
+**CRITICAL: Before creating ANY task, you MUST run `tpg template list`.** 
+If you haven't checked for templates, STOP and do it now. Never create ad-hoc tasks when a template exists.
 
 ### Rule #3: Always Create Follow-Up Tasks
 **The mantra: "If it's temporary, it gets a task. No exceptions."**
@@ -191,7 +200,13 @@ tpg template show <id>
 ```
 
 **When to apply templates vs build manually:**
-- Template exists + matches the work → Apply it with `tpg add "Title" --template <id> --var 'name="value"'`
+- Template exists + matches the work → Apply it:
+  ```bash
+  tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF
+  entity: "Order"
+  table: "orders"
+  EOF
+  ```
 - No template + this is first instance of pattern → Build manually, plan to capture a template
 - No template + unique work → Build manually, no template needed
 
@@ -231,7 +246,10 @@ tpg show <completed-epic-id>
 
 # 2. Create a reusable template YAML in .tpg/templates/
 # 3. Apply template for subsequent instances:
-tpg add "Title" --template <id> --var 'name="value"'
+tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF
+entity: "Order"
+table: "orders"
+EOF
 ```
 
 **Example template flow:**
@@ -241,10 +259,16 @@ Products CRUD module complete (first instance)
 Create template YAML in .tpg/templates/
 ↓
 Apply template for Orders:
-  tpg add "Orders CRUD" --template crud-module --var 'entity="Order"' --var 'table="orders"'
+  tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF
+entity: "Order"
+table: "orders"
+EOF
 ↓
 Apply template for Inventory:
-  tpg add "Inventory CRUD" --template crud-module --var 'entity="Inventory"' --var 'table="inventory"'
+  tpg add "Inventory CRUD" --template crud-module --vars-yaml <<EOF
+entity: "Inventory"
+table: "inventory"
+EOF
 ```
 
 ### 6. Monitor and Adapt
@@ -281,7 +305,15 @@ tpg dep <task-id> list
 **When you discover a blocker yourself:**
 ```bash
 # Create the blocker task with --blocks in one step
-tpg add "Resolve: [blocker description]" -p 1 --blocks <blocked-task>
+tpg add "Resolve: [blocker description]" --priority 1 --blocks <blocked-task> --desc <<EOF
+[Blocker description and context]
+
+## Why This Blocks
+[Explain what is blocked and why]
+
+## Resolution Criteria
+- [ ] [Specific criteria for resolving]
+EOF
 # If the blocked task was in_progress, the system auto-reverts it to open and logs the reason
 
 # Route the blocker to an agent
@@ -308,21 +340,11 @@ tpg history <id>     # See the full timeline — did the agent make progress?
 
 **When you find a stale/abandoned task:**
 
+Tasks should be reopened by the agent, not by you!
+
 1. Check `tpg show <id>` — read the logs to understand how far the agent got
-2. Reset it to open so another agent can pick it up:
-```bash
-tpg set-status <id> open
-```
-(`set-status` auto-logs "Status force-set to open" so the history is preserved)
-
-3. If the agent made partial progress, `tpg append` context so the next agent doesn't repeat work:
-```bash
-tpg append <id> "Previous agent got partway: [summary of what logs show]. Resume from there."
-```
-
-4. The task will reappear in `tpg ready` (assuming deps are met) and can be picked up fresh.
-
-**Do NOT re-delegate a stale task while it's still in_progress** — the previous agent may still hold it. Reset to open first, then let the normal `tpg ready` flow handle assignment.
+2. Assign it to a new agent; that agent should reopen it, check previous logs (with `tpg show <id>`) and continue work
+**Do NOT change the status with --set-status** — that command is strictly reserved for fixing unfixable errors, it is not a normal workflow.
 
 ## Using tpg-agent Effectively
 
@@ -334,7 +356,7 @@ tpg append <id> "Previous agent got partway: [summary of what logs show]. Resume
 @tpg-agent Work on AUTH-1.2: Implement JWT token service.
 ```
 
-The task description has the requirements. Agents gather context from tpg. Only add hints if you know the task is incomplete.
+The task description has the requirements. Agents gather context from tpg. Only add hints if there is additional context the agent needs to get, usually that will involve telling it to look at other tasks for background or making sure it remembers to `tpg show <id>` so it sees log messages
 
 **For template-based work:**
 ```
@@ -433,11 +455,22 @@ dependencies.
 
 **Pattern:**
 ```bash
-# Create follow-up task
+# Create follow-up task with proper description
 tpg add "Replace payment API mock with real integration" \
-  -p 2 \
+  --priority 2 \
   --blocks TASK-142 \
-  --desc "In src/services/payment.ts we added a mock. Replace with real Stripe integration."
+  --desc <<EOF
+In src/services/payment.ts we added a mock for the payment service.
+
+## Current State
+Currently returning hardcoded success responses.
+
+## Required Changes
+- [ ] Integrate with Stripe API
+- [ ] Add proper error handling
+- [ ] Update tests to use Stripe test mode
+- [ ] Add webhook handling for async events
+EOF
 ```
 
 ## Best Practices
@@ -502,7 +535,10 @@ Before capturing a template:
 |-----------|---------|-------------|
 | List templates | `tpg template list` | Before starting similar work |
 | Inspect template | `tpg template show <id>` | Understanding template structure |
-| Apply template | `tpg add "Title" --template <id> --var 'name="value"'` | When template matches new work |
+| Apply template | `tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF` | When template matches new work |
+| | `entity: "Order"` | |
+| | `table: "orders"` | |
+| | `EOF` | |
 | Capture template | Create YAML in `.tpg/templates/` | After first instance completes |
 | Check ready | `tpg ready` | Finding work to execute |
 

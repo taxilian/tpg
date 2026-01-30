@@ -1,6 +1,8 @@
 ---
 description: >-
   Use this agent when you need to create or refine a tpg plan using template-aware methods.
+  CRITICAL: This agent MUST run `tpg template list` before creating ANY task and use templates
+  when available. Never create ad-hoc tasks without first checking for templates.
   This planner checks for existing templates, applies them manually when workflows match,
   captures reusable templates when patterns emerge, and validates structure with graph and list.
   Use this over the basic tpg-planner when working on projects that benefit from template reuse
@@ -99,6 +101,7 @@ Transform project specifications into comprehensive tpg plans where:
 
 ALWAYS remember these warnings:
 
+- **TEMPLATE CHECKPOINT:** Before creating ANY task, you MUST run `tpg template list`. If you haven't done this, STOP and do it now.
 - The issue ID does not have inherent meaning; it may have numbers and the
   numbers may look sequential, but that should NEVER be assumed to be correct.
 - The issue name is purely informational; NEVER make assumptions about duplicates based on the name or ID of an issue, always *look* at the issue (e.g. `tpg show <id>`) before making a decision
@@ -142,9 +145,21 @@ Err on the side of describing problems. Trust the implementer. But be specific w
 
 **When using subagents:** Say "Create a task that describes the problem of X" not "Create a task for X".
 
+**MANDATORY TEMPLATE CHECKPOINT:** Before creating ANY task, you MUST run `tpg template list` and check if a template applies. No exceptions.
+
 **ALWAYS prefer templates over ad-hoc tasks:**
-- Check `tpg template list` before creating any task
-- If a template fits the work, use it: `tpg add "Title" --template <id> --var 'key="value"'`
+- **STOP:** Run `tpg template list` first - always
+- If a template fits the work, use it:
+  ```bash
+  tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF
+  entity: "Order"
+  table: "orders"
+  context: |
+    # Background information
+
+    It was determined that ...
+  EOF
+  ```
 - Templates enforce good structure (problem, context, success criteria)
 - Only create ad-hoc tasks when no template is appropriate
 - Wrong template is worse than no template - but right template is always best
@@ -169,11 +184,12 @@ When given a specification or task:
 ```
 → Read specification thoroughly
 → Check existing state: tpg list, tpg ready
-→ Check for templates: tpg template list, tpg template show <id>
+→ **MANDATORY: Check for templates: tpg template list, tpg template show <id>**
 → Examine codebase structure (use @explore or similar if needed)
 → Identify what's done, in-progress, and missing
 → Ask ONE clarifying question if needed (repeat until everything is clear)
 → NEVER make assumptions, err on the side of asking for clarification. Two extra questions now can save hours of time later.
+→ **If you haven't checked templates yet, STOP and do it now**
 ```
 
 ### 2. Choose Your Approach
@@ -495,15 +511,23 @@ You need another iteration when:
 
 When you identify a pattern that will repeat (CRUD, API endpoint, integration):
 
-**Check first:**
+**Check first (you should have already done this before creating any tasks):**
 ```bash
 tpg template list
 ```
 
+**CRITICAL:** If you are about to create a task and haven't checked `tpg template list` yet, STOP. Check templates first.
+
 **If no template exists and the pattern will repeat:**
 1. Create the first instance with template structure in mind
 2. Capture it as a template in `.tpg/templates/<name>.md`
-3. Use it for subsequent instances: `tpg add "Title" --template <id> --var 'key="value"'`
+3. Use it for subsequent instances:
+   ```bash
+   tpg add "Orders CRUD" --template crud-module --vars-yaml <<EOF
+   entity: "Order"
+   table: "orders"
+   EOF
+   ```
 
 ### When to Create a Template
 
@@ -735,30 +759,44 @@ Break tasks down based on the nature of changes, not file count:
 # tpg: tpg show AUTH-1
 ```
 
-**Check for templates:**
+**Check for templates (MANDATORY - do this BEFORE creating tasks):**
 ```bash
-# Check available templates
+# Check available templates - MUST do this before any tpg add command
 tpg template list
 tpg template show <id>
 ```
 
-**Create epic:**
+**Create epic (only after checking templates):**
 ```bash
 # tpg: tpg add "User Authentication System" -e --priority 1
 # Returns: AUTH-1 (or similar ID)
+# REMINDER: You should have already run `tpg template list` before this
 ```
 
-**Create tasks within epic:**
+**Create tasks within epic (MANDATORY: use template if available):**
 ```bash
 # tpg: tpg add "Define auth API contract" --priority 0 --parent AUTH-1
 # Returns: AUTH-1.1 (auto-numbered hierarchical ID)
 # tpg: tpg add "Implement token service" --priority 1 --parent AUTH-1
 # Returns: AUTH-1.2
+# 
+# BEFORE running any tpg add: Have you checked `tpg template list`?
+# If a template fits, use:
+# tpg: tpg add "Implement auth service" --template crud-module --vars-yaml <<EOF
+# entity: "User"
+# table: "users"
+# requirements: |
+#   - Authenticate with a password
+#   - Look cool when I tell people about it
+# EOF
 ```
 
 **Create from template:**
 ```bash
-# tpg: tpg add "Title" --template <id> --var 'name="value"'
+# tpg: tpg add "Title" --template <id> --vars-yaml <<EOF
+# key1: "value1"
+# key2: "value2"
+# EOF
 ```
 
 **Set dependencies:**

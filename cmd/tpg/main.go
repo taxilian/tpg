@@ -87,6 +87,14 @@ var (
 	flagPrimeRender      string
 	flagVerbose          bool
 	flagMergeConfirm     bool
+	flagType             string
+	flagPrefix           string
+
+	flagShowWithChildren bool
+	flagShowWithDeps     bool
+	flagShowWithParent   bool
+	flagShowFormat       string
+	flagDryRun           bool
 )
 
 func openDB() (*db.DB, error) {
@@ -190,6 +198,10 @@ Examples:
   # Task with metadata
   tpg add "Critical fix" --priority 1 --parent ep-abc123 -l bug
 
+  # Custom type and prefix
+  tpg add "Bug fix" --type bug
+  tpg add "Story" --type story --prefix st
+
   # From template (see 'tpg template list')
   tpg add "Feature X" --template tdd --vars-yaml <<EOF
   feature_name: user authentication
@@ -213,8 +225,8 @@ Examples:
 
 		// Handle template instantiation
 		if flagTemplateID != "" {
-			if flagParent != "" || flagBlocks != "" || flagAfter != "" || flagEpic {
-				return fmt.Errorf("--template cannot be combined with --parent, --blocks, --after, or --epic")
+			if flagParent != "" || flagBlocks != "" || flagAfter != "" {
+				return fmt.Errorf("--template cannot be combined with --parent, --blocks, or --after")
 			}
 
 			// Handle template vars from stdin (YAML)
@@ -233,7 +245,16 @@ Examples:
 				}
 			}
 
-			parentID, err := instantiateTemplate(database, project, strings.Join(args, " "), flagTemplateID, varPairs, flagPriority)
+			// Determine item type for template parent
+			parentType := model.ItemTypeTask
+			if flagEpic {
+				parentType = model.ItemTypeEpic
+			}
+			if flagType != "" {
+				parentType = model.ItemType(flagType)
+			}
+
+			parentID, err := instantiateTemplate(database, project, strings.Join(args, " "), flagTemplateID, varPairs, flagPriority, parentType)
 			if err != nil {
 				return err
 			}
@@ -251,10 +272,19 @@ Examples:
 		if flagEpic {
 			itemType = model.ItemTypeEpic
 		}
+		if flagType != "" {
+			itemType = model.ItemType(flagType)
+		}
 
-		itemID, err := database.GenerateItemID(itemType)
-		if err != nil {
-			return err
+		// Generate ID with custom prefix if provided
+		var itemID string
+		if flagPrefix != "" {
+			itemID = model.GenerateIDWithPrefixN(flagPrefix, itemType, model.DefaultIDLength)
+		} else {
+			itemID, err = database.GenerateItemID(itemType)
+			if err != nil {
+				return err
+			}
 		}
 
 		// Handle description from stdin or flag
@@ -279,6 +309,36 @@ Examples:
 			UpdatedAt:   time.Now(),
 		}
 
+		// Handle dry-run mode: preview what would be created
+		if flagDryRun {
+			fmt.Println("DRY RUN: The following task would be created:")
+			fmt.Printf("  ID:          %s\n", item.ID)
+			fmt.Printf("  Title:       %s\n", item.Title)
+			fmt.Printf("  Type:        %s\n", item.Type)
+			fmt.Printf("  Project:     %s\n", item.Project)
+			fmt.Printf("  Priority:    %d\n", item.Priority)
+			if flagParent != "" {
+				fmt.Printf("  Parent:      %s\n", flagParent)
+			}
+			if flagBlocks != "" {
+				fmt.Printf("  Blocks:      %s (this task would block %s)\n", flagBlocks, flagBlocks)
+			}
+			if flagAfter != "" {
+				fmt.Printf("  Depends on:  %s (this task would be blocked by %s)\n", flagAfter, flagAfter)
+			}
+			if len(flagAddLabels) > 0 {
+				fmt.Printf("  Labels:      %s\n", strings.Join(flagAddLabels, ", "))
+			}
+			if item.Description != "" {
+				desc := item.Description
+				if len(desc) > 100 {
+					desc = desc[:97] + "..."
+				}
+				fmt.Printf("  Description: %s\n", desc)
+			}
+			fmt.Println("\nNo task was created (dry-run mode).")
+			return nil
+		}
 		if err := database.CreateItem(item); err != nil {
 			return err
 		}
@@ -538,8 +598,63 @@ Example:
 
 		latestProgress := latestProgressLog(logs)
 		blockers := filterBlockers(depStatuses)
-		printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice)
-		return nil
+
+		// Gather additional data based on flags
+		var children []model.Item
+		var parentChain []model.Item
+		var depChain []db.DepEdge
+
+		if flagShowWithChildren {
+			children, err = database.GetDescendants(args[0])
+			if err != nil {
+				return err
+			}
+		}
+
+		if flagShowWithParent {
+			parentChain, err = database.GetParentChain(args[0])
+			if err != nil {
+				return err
+			}
+		}
+
+		if flagShowWithDeps {
+			depChain, err = database.GetDependencyChain(args[0])
+			if err != nil {
+				return err
+			}
+		}
+
+		// Output based on format
+		switch flagShowFormat {
+		case "json":
+			return printItemJSON(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain)
+		case "yaml":
+			return printItemYAML(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain)
+		case "markdown":
+			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain)
+		default:
+			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice)
+			if flagShowWithParent && len(parentChain) > 0 {
+				fmt.Printf("\nParent Chain:\n")
+				for _, parent := range parentChain {
+					fmt.Printf("  %s [%s] %s\n", parent.ID, parent.Status, parent.Title)
+				}
+			}
+			if flagShowWithChildren && len(children) > 0 {
+				fmt.Printf("\nChildren:\n")
+				for _, child := range children {
+					fmt.Printf("  %s [%s] %s\n", child.ID, child.Status, child.Title)
+				}
+			}
+			if flagShowWithDeps && len(depChain) > 0 {
+				fmt.Printf("\nDependency Chain:\n")
+				for _, edge := range depChain {
+					fmt.Printf("  %s depends on %s [%s]\n", edge.ItemID, edge.DependsOnID, edge.DependsOnStatus)
+				}
+			}
+			return nil
+		}
 	},
 }
 
@@ -886,10 +1001,14 @@ normal commands won't get you where you need to be.
 Valid statuses: open, in_progress, blocked, done, canceled
 
 Example:
-  tpg set-status ts-a1b2c3 open
-  tpg set-status ts-a1b2c3 in_progress`,
+  tpg set-status ts-a1b2c3 open --force
+  tpg set-status ts-a1b2c3 in_progress --force`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if !flagForce {
+			return fmt.Errorf(`set-status is for fixing mistakes only. Use: tpg start, tpg done, or tpg cancel instead. Use --force if you really need this.`)
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1144,6 +1263,480 @@ Examples:
 		printDepGraph(edges)
 		return nil
 	},
+}
+
+var treeCmd = &cobra.Command{
+	Use:   "tree [epic-id]",
+	Short: "Show epic/task hierarchy",
+	Long: "Show epic→task hierarchy with status.\n\n" +
+		"Without argument: Shows all epics with task counts.\n" +
+		"With argument: Shows that epic and all its children recursively.\n\n" +
+		"Format:\n" +
+		"  ep-abc [in_progress] Epic Title\n" +
+		"  ├── ts-a1 [open] Task 1\n" +
+		"  └── ts-a2 [done] Task 2\n\n" +
+		"Examples:\n" +
+		"  tpg tree              # All epics with counts\n" +
+		"  tpg tree ep-abc123    # Specific epic with children",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		project, err := resolveProject()
+		if err != nil {
+			return err
+		}
+
+		if len(args) == 0 {
+			// Show all epics with counts
+			epics, err := database.GetEpics(project)
+			if err != nil {
+				return err
+			}
+
+			if len(epics) == 0 {
+				fmt.Println("No epics found")
+				return nil
+			}
+
+			// Get task counts for each epic
+			for _, epic := range epics {
+				children, err := database.GetChildren(epic.ID)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("%s [%s] %s (%d tasks)\n", epic.ID, epic.Status, epic.Title, len(children))
+			}
+		} else {
+			// Show specific epic with tree
+			epicID := args[0]
+			epic, err := database.GetItem(epicID)
+			if err != nil {
+				return err
+			}
+
+			if epic.Type != model.ItemTypeEpic {
+				return fmt.Errorf("%s is not an epic (type: %s)", epicID, epic.Type)
+			}
+
+			// Print the epic as root
+			fmt.Printf("%s [%s] %s\n", epic.ID, epic.Status, epic.Title)
+
+			// Recursively print children
+			if err := printTreeRecursive(database, epic.ID, ""); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	},
+}
+
+// printTreeRecursive prints children of a parent with proper tree indentation.
+func printTreeRecursive(database *db.DB, parentID string, prefix string) error {
+	children, err := database.GetChildren(parentID)
+	if err != nil {
+		return err
+	}
+
+	if len(children) == 0 {
+		return nil
+	}
+
+	for i, child := range children {
+		isLast := i == len(children)-1
+
+		// Determine the branch character
+		branch := "├──"
+		if isLast {
+			branch = "└──"
+		}
+
+		// Print the current child
+		fmt.Printf("%s%s %s [%s] %s\n", prefix, branch, child.ID, child.Status, child.Title)
+
+		// Prepare prefix for children of this node
+		childPrefix := prefix
+		if isLast {
+			childPrefix += "    "
+		} else {
+			childPrefix += "│   "
+		}
+
+		// Recursively print this child's children
+		if err := printTreeRecursive(database, child.ID, childPrefix); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+var planCmd = &cobra.Command{
+	Use:   "plan <epic-id>",
+	Short: "Show full epic plan with status and dependencies",
+	Long: `Show comprehensive epic overview with all tasks, status, ready tasks, and blockers.
+
+Displays:
+  - Epic details (title, status, description)
+  - Progress summary (counts by status, completion %)
+  - All child tasks with status in tree format
+  - Ready tasks highlighted (unblocked and can be started)
+  - Dependency chains and blockers
+
+Examples:
+  tpg plan ep-abc123      # Show full plan for epic
+  tpg plan ep-abc123 --json  # Output as JSON`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		epicID := args[0]
+		epic, err := database.GetItem(epicID)
+		if err != nil {
+			return err
+		}
+
+		if epic.Type != model.ItemTypeEpic {
+			return fmt.Errorf("%s is not an epic (type: %s)", epicID, epic.Type)
+		}
+
+		// Get all descendants (children at all levels)
+		descendants, err := database.GetDescendants(epicID)
+		if err != nil {
+			return err
+		}
+
+		// Populate labels for all items
+		allItems := append([]model.Item{*epic}, descendants...)
+		if err := database.PopulateItemLabels(allItems); err != nil {
+			return err
+		}
+
+		// Get dependency info for all descendants
+		depInfo := make(map[string][]db.DepStatus)
+		blockedBy := make(map[string][]db.DepStatus)
+		for _, item := range descendants {
+			deps, err := database.GetDepStatuses(item.ID)
+			if err != nil {
+				return err
+			}
+			depInfo[item.ID] = deps
+
+			blocked, err := database.GetBlockedBy(item.ID)
+			if err != nil {
+				return err
+			}
+			blockedBy[item.ID] = blocked
+		}
+
+		// Determine which tasks are ready (open + no unmet deps)
+		readyTasks := make(map[string]bool)
+		for _, item := range descendants {
+			if item.Status != model.StatusOpen {
+				continue
+			}
+			hasUnmet := false
+			for _, dep := range depInfo[item.ID] {
+				if dep.Status != string(model.StatusDone) {
+					hasUnmet = true
+					break
+				}
+			}
+			if !hasUnmet {
+				readyTasks[item.ID] = true
+			}
+		}
+
+		// Build parent-child relationships for tree display
+		childrenMap := make(map[string][]model.Item)
+		for _, child := range descendants {
+			if child.ParentID != nil {
+				childrenMap[*child.ParentID] = append(childrenMap[*child.ParentID], child)
+			}
+		}
+
+		// Calculate statistics
+		stats := calculateEpicStats(descendants)
+
+		if flagContextJSON {
+			return printPlanJSON(epic, descendants, childrenMap, depInfo, blockedBy, readyTasks, stats)
+		}
+
+		// Print epic header
+		fmt.Printf("\n%s [%s] %s\n", epic.ID, epic.Status, epic.Title)
+		fmt.Println(strings.Repeat("=", len(epic.ID)+len(epic.Status)+len(epic.Title)+6))
+		if epic.Description != "" {
+			fmt.Printf("\n%s\n", epic.Description)
+		}
+
+		// Print progress summary
+		fmt.Printf("\n📊 Progress: %d/%d tasks complete (%.0f%%)\n",
+			stats.Done, stats.Total, stats.CompletionPct)
+		fmt.Printf("   Open: %d | In Progress: %d | Blocked: %d | Done: %d | Canceled: %d\n",
+			stats.Open, stats.InProgress, stats.Blocked, stats.Done, stats.Canceled)
+
+		// Print tree view of all tasks
+		fmt.Println("\n📋 Task Tree:")
+		if len(descendants) == 0 {
+			fmt.Println("   (no tasks)")
+		} else {
+			printPlanTree(database, epicID, "", childrenMap, depInfo, readyTasks, true)
+		}
+
+		// Print ready tasks section
+		readyList := []model.Item{}
+		for _, item := range descendants {
+			if readyTasks[item.ID] {
+				readyList = append(readyList, item)
+			}
+		}
+		if len(readyList) > 0 {
+			fmt.Println("\n✅ Ready to Start:")
+			for _, item := range readyList {
+				labels := ""
+				if len(item.Labels) > 0 {
+					labels = formatLabels(item.Labels) + " "
+				}
+				fmt.Printf("   %s [pri %d] %s%s\n", item.ID, item.Priority, labels, item.Title)
+			}
+		}
+
+		// Print dependency chains / blockers
+		blockersFound := false
+		for _, item := range descendants {
+			if item.Status == model.StatusDone || item.Status == model.StatusCanceled {
+				continue
+			}
+			unmetDeps := []db.DepStatus{}
+			for _, dep := range depInfo[item.ID] {
+				if dep.Status != string(model.StatusDone) {
+					unmetDeps = append(unmetDeps, dep)
+				}
+			}
+			if len(unmetDeps) > 0 && !blockersFound {
+				fmt.Println("\n⛔ Blocked Tasks:")
+				blockersFound = true
+			}
+			for _, dep := range unmetDeps {
+				fmt.Printf("   %s blocked by %s [%s] %s\n", item.ID, dep.ID, dep.Status, dep.Title)
+			}
+		}
+
+		fmt.Println()
+		return nil
+	},
+}
+
+// epicStats holds statistics for an epic
+type epicStats struct {
+	Total         int
+	Open          int
+	InProgress    int
+	Blocked       int
+	Done          int
+	Canceled      int
+	CompletionPct float64
+}
+
+// calculateEpicStats calculates statistics for an epic's tasks
+func calculateEpicStats(tasks []model.Item) epicStats {
+	s := epicStats{Total: len(tasks)}
+	for _, t := range tasks {
+		switch t.Status {
+		case model.StatusOpen:
+			s.Open++
+		case model.StatusInProgress:
+			s.InProgress++
+		case model.StatusBlocked:
+			s.Blocked++
+		case model.StatusDone:
+			s.Done++
+		case model.StatusCanceled:
+			s.Canceled++
+		}
+	}
+	if s.Total > 0 {
+		s.CompletionPct = float64(s.Done) / float64(s.Total) * 100
+	}
+	return s
+}
+
+// printPlanTree prints the epic tree with dependency indicators
+func printPlanTree(database *db.DB, parentID string, prefix string, childrenMap map[string][]model.Item, depInfo map[string][]db.DepStatus, readyTasks map[string]bool, isRoot bool) error {
+	children := childrenMap[parentID]
+	if len(children) == 0 {
+		return nil
+	}
+
+	for i, child := range children {
+		isLast := i == len(children)-1
+		branch := "├──"
+		if isLast {
+			branch = "└──"
+		}
+
+		// Build status indicator
+		statusIndicator := ""
+		if readyTasks[child.ID] {
+			statusIndicator = "✅ "
+		} else if child.Status == model.StatusDone {
+			statusIndicator = "✓ "
+		} else if child.Status == model.StatusBlocked {
+			statusIndicator = "⛔ "
+		} else if child.Status == model.StatusInProgress {
+			statusIndicator = "▶ "
+		}
+
+		// Check if this task has unmet dependencies
+		hasDeps := len(depInfo[child.ID]) > 0
+		depIndicator := ""
+		if hasDeps {
+			unmetCount := 0
+			for _, dep := range depInfo[child.ID] {
+				if dep.Status != string(model.StatusDone) {
+					unmetCount++
+				}
+			}
+			if unmetCount > 0 {
+				depIndicator = fmt.Sprintf(" (%d deps)", unmetCount)
+			}
+		}
+
+		fmt.Printf("%s%s %s%s [%s] %s%s\n", prefix, branch, statusIndicator, child.ID, child.Status, child.Title, depIndicator)
+
+		// Recurse into children
+		childPrefix := prefix
+		if isLast {
+			childPrefix += "    "
+		} else {
+			childPrefix += "│   "
+		}
+
+		if err := printPlanTree(database, child.ID, childPrefix, childrenMap, depInfo, readyTasks, false); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// PlanJSON is the JSON output format for the plan command
+type PlanJSON struct {
+	Epic          EpicSummaryJSON    `json:"epic"`
+	Stats         epicStats          `json:"stats"`
+	Tasks         []PlanTaskJSON     `json:"tasks"`
+	ReadyTasks    []string           `json:"ready_tasks"`
+	BlockedChains []BlockedChainJSON `json:"blocked_chains,omitempty"`
+}
+
+// EpicSummaryJSON is a minimal epic representation
+type EpicSummaryJSON struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Status      string `json:"status"`
+	Description string `json:"description,omitempty"`
+}
+
+// PlanTaskJSON represents a task in the plan output
+type PlanTaskJSON struct {
+	ID           string           `json:"id"`
+	Title        string           `json:"title"`
+	Status       string           `json:"status"`
+	Priority     int              `json:"priority"`
+	ParentID     *string          `json:"parent_id,omitempty"`
+	Labels       []string         `json:"labels,omitempty"`
+	IsReady      bool             `json:"is_ready"`
+	Dependencies []DepBlockerJSON `json:"dependencies,omitempty"`
+}
+
+// DepBlockerJSON represents a dependency that blocks a task
+type DepBlockerJSON struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// BlockedChainJSON represents a chain of blocked tasks
+type BlockedChainJSON struct {
+	TaskID    string           `json:"task_id"`
+	TaskTitle string           `json:"task_title"`
+	BlockedBy []DepBlockerJSON `json:"blocked_by"`
+}
+
+// printPlanJSON outputs the plan as JSON
+func printPlanJSON(epic *model.Item, descendants []model.Item, childrenMap map[string][]model.Item, depInfo map[string][]db.DepStatus, blockedBy map[string][]db.DepStatus, readyTasks map[string]bool, stats epicStats) error {
+	output := PlanJSON{
+		Epic: EpicSummaryJSON{
+			ID:          epic.ID,
+			Title:       epic.Title,
+			Status:      string(epic.Status),
+			Description: epic.Description,
+		},
+		Stats:      stats,
+		ReadyTasks: []string{},
+	}
+
+	// Build task list
+	for _, item := range descendants {
+		isReady := readyTasks[item.ID]
+		if isReady {
+			output.ReadyTasks = append(output.ReadyTasks, item.ID)
+		}
+
+		task := PlanTaskJSON{
+			ID:       item.ID,
+			Title:    item.Title,
+			Status:   string(item.Status),
+			Priority: item.Priority,
+			ParentID: item.ParentID,
+			Labels:   item.Labels,
+			IsReady:  isReady,
+		}
+
+		// Add dependencies
+		for _, dep := range depInfo[item.ID] {
+			task.Dependencies = append(task.Dependencies, DepBlockerJSON{
+				ID:     dep.ID,
+				Title:  dep.Title,
+				Status: dep.Status,
+			})
+		}
+
+		output.Tasks = append(output.Tasks, task)
+
+		// Add to blocked chains if has unmet deps and not done/canceled
+		if item.Status != model.StatusDone && item.Status != model.StatusCanceled {
+			unmetDeps := []DepBlockerJSON{}
+			for _, dep := range depInfo[item.ID] {
+				if dep.Status != string(model.StatusDone) {
+					unmetDeps = append(unmetDeps, DepBlockerJSON{
+						ID:     dep.ID,
+						Title:  dep.Title,
+						Status: dep.Status,
+					})
+				}
+			}
+			if len(unmetDeps) > 0 {
+				output.BlockedChains = append(output.BlockedChains, BlockedChainJSON{
+					TaskID:    item.ID,
+					TaskTitle: item.Title,
+					BlockedBy: unmetDeps,
+				})
+			}
+		}
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(output)
 }
 
 var projectsCmd = &cobra.Command{
@@ -3088,6 +3681,50 @@ Press q to quit.`,
 	},
 }
 
+var impactCmd = &cobra.Command{
+	Use:   "impact <id>",
+	Short: "Show what tasks would become ready if this task is completed",
+	Long: `Show the impact of completing a task — what tasks would become ready.
+
+This command shows both direct and transitive effects. When task X is completed,
+any task that depends only on X (and other tasks that would also become ready)
+will be listed.
+
+The output shows tasks organized by depth (distance from the original task):
+  Depth 1: Tasks directly blocked by this task
+  Depth 2+: Tasks blocked by those tasks, and so on
+
+Examples:
+  tpg impact ts-a1b2c3          # Show what completing ts-a1b2c3 would unblock
+  tpg impact ts-a1b2c3 --json   # Output as JSON`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		itemID := args[0]
+		impact, err := database.GetImpact(itemID)
+		if err != nil {
+			return err
+		}
+
+		if len(impact) == 0 {
+			fmt.Println("No tasks would become ready")
+			return nil
+		}
+
+		if flagContextJSON {
+			return printImpactJSON(impact)
+		}
+
+		printImpact(impact, itemID)
+		return nil
+	},
+}
+
 var mergeCmd = &cobra.Command{
 	Use:   "merge <source-id> <target-id>",
 	Short: "Merge duplicate tasks (source into target)",
@@ -3170,6 +3807,9 @@ func init() {
 	addCmd.Flags().StringArrayVar(&flagTemplateVars, "var", nil, "Template variable value (name=json-string)")
 	addCmd.Flags().BoolVar(&flagTemplateVarsYAML, "vars-yaml", false, "Read template variables from stdin as YAML")
 	addCmd.Flags().StringVar(&flagDescription, "desc", "", "Description (use '-' for stdin)")
+	addCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview what would be created without actually creating")
+	addCmd.Flags().StringVar(&flagType, "type", "", "Item type (default: task, or epic if -e flag used)")
+	addCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
 
 	// init flags
 	initCmd.Flags().StringVar(&flagInitTaskPrefix, "prefix", "", "Task ID prefix (default: ts)")
@@ -3207,6 +3847,12 @@ func init() {
 	// status flags
 	statusCmd.Flags().BoolVar(&flagStatusAll, "all", false, "Show all ready tasks (default: limit to 10)")
 	statusCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
+
+	// show flags
+	showCmd.Flags().BoolVar(&flagShowWithChildren, "with-children", false, "Show task and all descendants")
+	showCmd.Flags().BoolVar(&flagShowWithDeps, "with-deps", false, "Show full dependency chain (transitive)")
+	showCmd.Flags().BoolVar(&flagShowWithParent, "with-parent", false, "Show parent chain up to root")
+	showCmd.Flags().StringVar(&flagShowFormat, "format", "", "Output format (json, yaml, markdown)")
 
 	// learn flags
 	learnCmd.Flags().StringArrayVarP(&flagLearnConcept, "concept", "c", nil, "Concept to tag this learning with (can be repeated)")
@@ -3251,6 +3897,12 @@ func init() {
 	// backup flags
 	backupCmd.Flags().BoolVarP(&flagBackupQuiet, "quiet", "q", false, "Silent backup (no output)")
 
+	// impact flags
+	impactCmd.Flags().BoolVar(&flagContextJSON, "json", false, "Output as JSON")
+
+	// plan flags
+	planCmd.Flags().BoolVar(&flagContextJSON, "json", false, "Output as JSON")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
@@ -3261,6 +3913,7 @@ func init() {
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(reopenCmd)
+	setStatusCmd.Flags().BoolVar(&flagForce, "force", false, "Force status change (required for set-status)")
 	rootCmd.AddCommand(setStatusCmd)
 	blockCmd.Flags().BoolVar(&flagBlockForce, "force", false, "Force manual block (prefer dependencies instead)")
 	rootCmd.AddCommand(blockCmd)
@@ -3270,6 +3923,8 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(projectsCmd)
 	rootCmd.AddCommand(graphCmd)
+	rootCmd.AddCommand(treeCmd)
+	rootCmd.AddCommand(planCmd)
 	rootCmd.AddCommand(appendCmd)
 	rootCmd.AddCommand(descCmd)
 	rootCmd.AddCommand(editCmd)
@@ -3291,6 +3946,11 @@ func init() {
 	rootCmd.AddCommand(backupCmd)
 	rootCmd.AddCommand(backupsCmd)
 	rootCmd.AddCommand(restoreCmd)
+	rootCmd.AddCommand(impactCmd)
+
+	// Import subcommands
+	importCmd.AddCommand(importBeadsCmd)
+	rootCmd.AddCommand(importCmd)
 
 	// Template subcommands and flags
 	templateListCmd.Flags().BoolVar(&flagTemplateListDetail, "detail", false, "Show full variable details")
@@ -3400,6 +4060,63 @@ func indentLines(text, indent string) string {
 	return strings.Join(lines, "\n")
 }
 
+// ItemJSON is the JSON serialization format for items.
+type ItemJSON struct {
+	ID             string            `json:"id"`
+	Type           string            `json:"type"`
+	Project        string            `json:"project"`
+	Title          string            `json:"title"`
+	Description    string            `json:"description,omitempty"`
+	Status         string            `json:"status"`
+	Priority       int               `json:"priority"`
+	ParentID       *string           `json:"parent_id,omitempty"`
+	Labels         []string          `json:"labels,omitempty"`
+	TemplateID     string            `json:"template_id,omitempty"`
+	StepIndex      *int              `json:"step_index,omitempty"`
+	TemplateVars   map[string]string `json:"template_vars,omitempty"`
+	Results        string            `json:"results,omitempty"`
+	CreatedAt      string            `json:"created_at"`
+	UpdatedAt      string            `json:"updated_at"`
+	AgentID        *string           `json:"agent_id,omitempty"`
+	Logs           []LogJSON         `json:"logs,omitempty"`
+	Dependencies   []string          `json:"dependencies,omitempty"`
+	Blockers       []BlockerJSON     `json:"blockers,omitempty"`
+	LatestProgress *LogJSON          `json:"latest_progress,omitempty"`
+	Concepts       []string          `json:"suggested_concepts,omitempty"`
+	Children       []ItemSummaryJSON `json:"children,omitempty"`
+	ParentChain    []ItemSummaryJSON `json:"parent_chain,omitempty"`
+	DepChain       []DepEdgeJSON     `json:"dependency_chain,omitempty"`
+}
+
+// LogJSON represents a log entry in JSON format.
+type LogJSON struct {
+	ID        string `json:"id"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"created_at"`
+}
+
+// BlockerJSON represents a blocker in JSON format.
+type BlockerJSON struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// ItemSummaryJSON is a minimal item representation for chains.
+type ItemSummaryJSON struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// DepEdgeJSON represents a dependency edge in JSON format.
+type DepEdgeJSON struct {
+	ItemID          string `json:"item_id"`
+	ItemStatus      string `json:"item_status"`
+	DependsOnID     string `json:"depends_on_id"`
+	DependsOnStatus string `json:"depends_on_status"`
+}
+
 func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
@@ -3495,6 +4212,194 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 		}
 		fmt.Printf("\nLoad with: tpg context %s -p %s --summary\n", strings.Join(conceptFlags, " "), item.Project)
 	}
+}
+
+// ShowData represents all data for structured output formats
+type ShowData struct {
+	Item           *model.Item     `json:"item" yaml:"item"`
+	Logs           []model.Log     `json:"logs" yaml:"logs"`
+	Dependencies   []string        `json:"dependencies" yaml:"dependencies"`
+	Blockers       []db.DepStatus  `json:"blockers" yaml:"blockers"`
+	LatestProgress *model.Log      `json:"latest_progress,omitempty" yaml:"latest_progress,omitempty"`
+	Concepts       []model.Concept `json:"concepts,omitempty" yaml:"concepts,omitempty"`
+	TemplateNotice string          `json:"template_notice,omitempty" yaml:"template_notice,omitempty"`
+	Children       []model.Item    `json:"children,omitempty" yaml:"children,omitempty"`
+	ParentChain    []model.Item    `json:"parent_chain,omitempty" yaml:"parent_chain,omitempty"`
+	DepChain       []db.DepEdge    `json:"dependency_chain,omitempty" yaml:"dependency_chain,omitempty"`
+}
+
+func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge) error {
+	data := ShowData{
+		Item:           item,
+		Logs:           logs,
+		Dependencies:   deps,
+		Blockers:       blockers,
+		LatestProgress: latestProgress,
+		Concepts:       concepts,
+		TemplateNotice: templateNotice,
+		Children:       children,
+		ParentChain:    parentChain,
+		DepChain:       depChain,
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(data)
+}
+
+func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge) error {
+	data := ShowData{
+		Item:           item,
+		Logs:           logs,
+		Dependencies:   deps,
+		Blockers:       blockers,
+		LatestProgress: latestProgress,
+		Concepts:       concepts,
+		TemplateNotice: templateNotice,
+		Children:       children,
+		ParentChain:    parentChain,
+		DepChain:       depChain,
+	}
+	// Simple YAML output - in production would use a YAML library
+	fmt.Printf("item:\n")
+	fmt.Printf("  id: %s\n", item.ID)
+	fmt.Printf("  type: %s\n", item.Type)
+	fmt.Printf("  project: %s\n", item.Project)
+	fmt.Printf("  title: %q\n", item.Title)
+	fmt.Printf("  status: %s\n", item.Status)
+	fmt.Printf("  priority: %d\n", item.Priority)
+	if item.ParentID != nil {
+		fmt.Printf("  parent_id: %s\n", *item.ParentID)
+	}
+	if len(item.Labels) > 0 {
+		fmt.Printf("  labels: [%s]\n", strings.Join(item.Labels, ", "))
+	}
+	if item.Description != "" {
+		fmt.Printf("  description: |\n%s\n", indentLines(item.Description, "    "))
+	}
+	if len(deps) > 0 {
+		fmt.Printf("dependencies:\n")
+		for _, d := range deps {
+			fmt.Printf("  - %s\n", d)
+		}
+	}
+	if len(logs) > 0 {
+		fmt.Printf("logs:\n")
+		for _, log := range logs {
+			fmt.Printf("  - time: %s\n", log.CreatedAt.Format(time.RFC3339))
+			fmt.Printf("    message: %q\n", log.Message)
+		}
+	}
+	if len(children) > 0 {
+		fmt.Printf("children:\n")
+		for _, child := range children {
+			fmt.Printf("  - id: %s\n    title: %q\n    status: %s\n", child.ID, child.Title, child.Status)
+		}
+	}
+	if len(parentChain) > 0 {
+		fmt.Printf("parent_chain:\n")
+		for _, parent := range parentChain {
+			fmt.Printf("  - id: %s\n    title: %q\n    status: %s\n", parent.ID, parent.Title, parent.Status)
+		}
+	}
+	if len(depChain) > 0 {
+		fmt.Printf("dependency_chain:\n")
+		for _, edge := range depChain {
+			fmt.Printf("  - item: %s\n    depends_on: %s\n    status: %s\n", edge.ItemID, edge.DependsOnID, edge.DependsOnStatus)
+		}
+	}
+	_ = data // Use data to avoid unused variable warning
+	return nil
+}
+
+func printItemMarkdown(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge) error {
+	fmt.Printf("# %s\n\n", item.Title)
+	fmt.Printf("**ID:** %s  \n", item.ID)
+	fmt.Printf("**Type:** %s  \n", item.Type)
+	fmt.Printf("**Project:** %s  \n", item.Project)
+	fmt.Printf("**Status:** %s  \n", item.Status)
+	fmt.Printf("**Priority:** %d  \n", item.Priority)
+	if item.ParentID != nil {
+		fmt.Printf("**Parent:** %s  \n", *item.ParentID)
+	}
+	if len(item.Labels) > 0 {
+		fmt.Printf("**Labels:** %s  \n", strings.Join(item.Labels, ", "))
+	}
+	fmt.Println()
+
+	if item.Description != "" {
+		fmt.Printf("## Description\n\n%s\n\n", item.Description)
+	}
+
+	if latestProgress != nil {
+		fmt.Printf("## Latest Progress\n\n")
+		fmt.Printf("**[%s]** %s\n\n", latestProgress.CreatedAt.Format("2006-01-02 15:04"), latestProgress.Message)
+	}
+
+	if len(blockers) > 0 {
+		fmt.Printf("## Blockers\n\n")
+		for _, b := range blockers {
+			fmt.Printf("- **%s** [%s] %s\n", b.ID, b.Status, b.Title)
+		}
+		fmt.Println()
+	}
+
+	if len(deps) > 0 {
+		fmt.Printf("## Dependencies\n\n")
+		for _, d := range deps {
+			fmt.Printf("- %s\n", d)
+		}
+		fmt.Println()
+	}
+
+	if len(parentChain) > 0 {
+		fmt.Printf("## Parent Chain\n\n")
+		for _, parent := range parentChain {
+			fmt.Printf("- **%s** [%s] %s\n", parent.ID, parent.Status, parent.Title)
+		}
+		fmt.Println()
+	}
+
+	if len(children) > 0 {
+		fmt.Printf("## Children\n\n")
+		for _, child := range children {
+			fmt.Printf("- **%s** [%s] %s\n", child.ID, child.Status, child.Title)
+		}
+		fmt.Println()
+	}
+
+	if len(depChain) > 0 {
+		fmt.Printf("## Dependency Chain\n\n")
+		for _, edge := range depChain {
+			fmt.Printf("- %s → %s [%s]\n", edge.ItemID, edge.DependsOnID, edge.DependsOnStatus)
+		}
+		fmt.Println()
+	}
+
+	if len(logs) > 0 {
+		fmt.Printf("## Logs\n\n")
+		for _, log := range logs {
+			fmt.Printf("- **%s** %s\n", log.CreatedAt.Format("2006-01-02 15:04"), log.Message)
+		}
+		fmt.Println()
+	}
+
+	if len(concepts) > 0 {
+		fmt.Printf("## Suggested Context\n\n")
+		for _, c := range concepts {
+			summary := c.Summary
+			if summary == "" {
+				summary = "(no summary)"
+			}
+			fmt.Printf("- **%s** (%d learnings) - %s\n", c.Name, c.LearningCount, summary)
+		}
+		fmt.Println()
+	}
+
+	if templateNotice != "" {
+		fmt.Printf("> **Note:** %s\n\n", templateNotice)
+	}
+
+	return nil
 }
 
 func printStatusReport(report *db.StatusReport, showAll bool) {
@@ -4094,6 +4999,46 @@ func handlePrimeRender(templatePath string, database *db.DB, config *db.Config, 
 	}
 
 	fmt.Print(output)
+	return nil
+}
+
+// printImpact displays the impact analysis in a human-readable format.
+func printImpact(items []db.ImpactItem, sourceID string) {
+	fmt.Printf("Completing %s would make %d task(s) ready:\n\n", sourceID, len(items))
+
+	currentDepth := 0
+	for _, item := range items {
+		if item.Depth != currentDepth {
+			currentDepth = item.Depth
+			fmt.Printf("\nDepth %d (via chain of %d completed task(s)):\n", currentDepth, currentDepth)
+		}
+		fmt.Printf("  %s [pri %d] %s\n", item.ID, item.Priority, item.Title)
+	}
+}
+
+// ImpactJSON is the JSON serialization format for impact items.
+type ImpactJSON struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Priority int    `json:"priority"`
+	Depth    int    `json:"depth"`
+}
+
+func printImpactJSON(items []db.ImpactItem) error {
+	output := make([]ImpactJSON, 0, len(items))
+	for _, item := range items {
+		output = append(output, ImpactJSON{
+			ID:       item.ID,
+			Title:    item.Title,
+			Priority: item.Priority,
+			Depth:    item.Depth,
+		})
+	}
+	b, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+	fmt.Println(string(b))
 	return nil
 }
 

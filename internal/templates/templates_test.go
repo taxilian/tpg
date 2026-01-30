@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -679,6 +680,232 @@ func TestRenderStep(t *testing.T) {
 		}
 		if result.Description != "" {
 			t.Errorf("expected empty Description, got %q", result.Description)
+		}
+	})
+}
+
+func TestLoadTemplatesWithWorktreeSupport(t *testing.T) {
+	// Helper to create a template file
+	createTemplate := func(t *testing.T, dir, name, title string) {
+		t.Helper()
+		content := fmt.Sprintf(`title: %s
+steps:
+  - id: step1
+    title: Step
+    description: Description
+`, title)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write template: %v", err)
+		}
+	}
+
+	t.Run("loads from local templates only", func(t *testing.T) {
+		// Arrange: Create local templates dir with templates
+		tmpDir := t.TempDir()
+		localTemplatesDir := filepath.Join(tmpDir, ".tpg", "templates")
+		if err := os.MkdirAll(localTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create local templates dir: %v", err)
+		}
+		createTemplate(t, localTemplatesDir, "local-only.yaml", "Local Template")
+
+		// Act: Load templates with worktree support
+		templates, err := LoadTemplatesWithWorktree(tmpDir, "")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(templates) != 1 {
+			t.Errorf("expected 1 template, got %d", len(templates))
+		}
+		if len(templates) > 0 && templates[0].ID != "local-only" {
+			t.Errorf("expected template ID 'local-only', got %q", templates[0].ID)
+		}
+	})
+
+	t.Run("loads from worktree root only", func(t *testing.T) {
+		// Arrange: Create worktree root templates dir
+		tmpDir := t.TempDir()
+		rootTemplatesDir := filepath.Join(tmpDir, ".tpg", "templates")
+		if err := os.MkdirAll(rootTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create root templates dir: %v", err)
+		}
+		createTemplate(t, rootTemplatesDir, "root-only.yaml", "Root Template")
+
+		// Act: Load templates with worktree support (no local templates)
+		worktreeDir := filepath.Join(tmpDir, "worktree", "subdir")
+		if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+			t.Fatalf("failed to create worktree dir: %v", err)
+		}
+		templates, err := LoadTemplatesWithWorktree(worktreeDir, tmpDir)
+
+		// Assert
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(templates) != 1 {
+			t.Errorf("expected 1 template, got %d", len(templates))
+		}
+		if len(templates) > 0 && templates[0].ID != "root-only" {
+			t.Errorf("expected template ID 'root-only', got %q", templates[0].ID)
+		}
+	})
+
+	t.Run("merges local and worktree root templates without duplicates", func(t *testing.T) {
+		// Arrange: Create both local and root templates
+		tmpDir := t.TempDir()
+
+		// Root templates
+		rootTemplatesDir := filepath.Join(tmpDir, ".tpg", "templates")
+		if err := os.MkdirAll(rootTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create root templates dir: %v", err)
+		}
+		createTemplate(t, rootTemplatesDir, "shared.yaml", "Root Shared")
+		createTemplate(t, rootTemplatesDir, "root-unique.yaml", "Root Unique")
+
+		// Local templates (in a worktree subdirectory)
+		worktreeDir := filepath.Join(tmpDir, "worktree")
+		localTemplatesDir := filepath.Join(worktreeDir, ".tpg", "templates")
+		if err := os.MkdirAll(localTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create local templates dir: %v", err)
+		}
+		createTemplate(t, localTemplatesDir, "shared.yaml", "Local Shared") // Same ID as root
+		createTemplate(t, localTemplatesDir, "local-unique.yaml", "Local Unique")
+
+		// Act
+		templates, err := LoadTemplatesWithWorktree(worktreeDir, tmpDir)
+
+		// Assert
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(templates) != 3 {
+			t.Errorf("expected 3 templates (merged without duplicates), got %d", len(templates))
+		}
+
+		// Check that local overrides root for shared template
+		var sharedTemplate *Template
+		for _, tmpl := range templates {
+			if tmpl.ID == "shared" {
+				sharedTemplate = tmpl
+				break
+			}
+		}
+		if sharedTemplate == nil {
+			t.Error("expected to find 'shared' template")
+		} else if sharedTemplate.Title != "Local Shared" {
+			t.Errorf("expected local template to override root, got title %q", sharedTemplate.Title)
+		}
+	})
+
+	t.Run("local templates take priority over worktree root", func(t *testing.T) {
+		// Arrange
+		tmpDir := t.TempDir()
+
+		// Root template
+		rootTemplatesDir := filepath.Join(tmpDir, ".tpg", "templates")
+		if err := os.MkdirAll(rootTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create root templates dir: %v", err)
+		}
+		createTemplate(t, rootTemplatesDir, "priority.yaml", "Root Priority")
+
+		// Local template with same ID
+		worktreeDir := filepath.Join(tmpDir, "worktree")
+		localTemplatesDir := filepath.Join(worktreeDir, ".tpg", "templates")
+		if err := os.MkdirAll(localTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create local templates dir: %v", err)
+		}
+		createTemplate(t, localTemplatesDir, "priority.yaml", "Local Priority")
+
+		// Act
+		templates, err := LoadTemplatesWithWorktree(worktreeDir, tmpDir)
+
+		// Assert
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var priorityTemplate *Template
+		for _, tmpl := range templates {
+			if tmpl.ID == "priority" {
+				priorityTemplate = tmpl
+				break
+			}
+		}
+		if priorityTemplate == nil {
+			t.Fatal("expected to find 'priority' template")
+		}
+		if priorityTemplate.Title != "Local Priority" {
+			t.Errorf("expected local template to take priority, got title %q", priorityTemplate.Title)
+		}
+	})
+
+	t.Run("works in regular repo without worktree", func(t *testing.T) {
+		// Arrange: Create regular repo structure (no worktree)
+		tmpDir := t.TempDir()
+		templatesDir := filepath.Join(tmpDir, ".tpg", "templates")
+		if err := os.MkdirAll(templatesDir, 0755); err != nil {
+			t.Fatalf("failed to create templates dir: %v", err)
+		}
+		createTemplate(t, templatesDir, "regular.yaml", "Regular Template")
+
+		// Act: Pass empty worktree root (simulating regular repo)
+		templates, err := LoadTemplatesWithWorktree(tmpDir, "")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(templates) != 1 {
+			t.Errorf("expected 1 template, got %d", len(templates))
+		}
+	})
+
+	t.Run("returns empty list when no templates found", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		worktreeDir := filepath.Join(tmpDir, "worktree")
+		if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+			t.Fatalf("failed to create worktree dir: %v", err)
+		}
+
+		templates, err := LoadTemplatesWithWorktree(worktreeDir, tmpDir)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(templates) != 0 {
+			t.Errorf("expected 0 templates, got %d", len(templates))
+		}
+	})
+
+	t.Run("handles nested subdirectories in both locations", func(t *testing.T) {
+		// Arrange
+		tmpDir := t.TempDir()
+
+		// Root templates in nested dir
+		rootTemplatesDir := filepath.Join(tmpDir, ".tpg", "templates", "category")
+		if err := os.MkdirAll(rootTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create root templates dir: %v", err)
+		}
+		createTemplate(t, rootTemplatesDir, "nested-root.yaml", "Nested Root")
+
+		// Local templates in nested dir
+		worktreeDir := filepath.Join(tmpDir, "worktree")
+		localTemplatesDir := filepath.Join(worktreeDir, ".tpg", "templates", "category")
+		if err := os.MkdirAll(localTemplatesDir, 0755); err != nil {
+			t.Fatalf("failed to create local templates dir: %v", err)
+		}
+		createTemplate(t, localTemplatesDir, "nested-local.yaml", "Nested Local")
+
+		// Act
+		templates, err := LoadTemplatesWithWorktree(worktreeDir, tmpDir)
+
+		// Assert
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(templates) != 2 {
+			t.Errorf("expected 2 templates, got %d", len(templates))
 		}
 	})
 }

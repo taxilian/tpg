@@ -276,9 +276,30 @@ func TestListItemsFiltered_Type(t *testing.T) {
 func TestListItemsFiltered_InvalidType(t *testing.T) {
 	db := setupTestDB(t)
 
-	_, err := db.ListItemsFiltered(ListFilter{Type: "invalid"})
-	if err == nil {
-		t.Error("expected error for invalid type")
+	// Create a test item first so we have data to filter
+	item := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Test Task",
+		Status:    model.StatusOpen,
+		Priority:  2,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	// Empty type filter should not error - it just means "don't filter by type"
+	// The filter is only applied when Type is non-empty
+	items, err := db.ListItemsFiltered(ListFilter{Type: ""})
+	if err != nil {
+		t.Errorf("unexpected error for empty type filter: %v", err)
+	}
+	// Should return all items (no type filter applied)
+	if len(items) != 1 {
+		t.Errorf("expected 1 item with no type filter, got %d", len(items))
 	}
 }
 
