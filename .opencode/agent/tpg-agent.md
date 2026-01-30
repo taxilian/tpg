@@ -65,6 +65,20 @@ Tasks describe **problems to solve**, not **steps to follow**:
 - Other agents will read your work from tpg, not from conversation history
 - **Never assume someone will read your chat messages** - if it matters, it goes in tpg
 
+### You MUST Log As You Work
+Run `tpg log <id> "msg"` immediately when any of these happen — not later, not at the end, RIGHT WHEN IT HAPPENS:
+
+- **You create a dependency or follow-up task** → log what you created and why
+- **You choose between alternatives** → log what you picked and why
+- **You discover existing code that changes your plan** → log what you found and how it changes things
+- **You answer a key unknown** → if you had to search, test, or experiment to find an answer, log what you learned
+- **You hit something unexpected** → log what went wrong and what you did about it
+- **You finish a key milestone** → log what's working now
+
+`tpg done` will warn you if you complete a task with zero logs. A task with no logs means you either did trivial work or you failed to communicate what happened. Most tasks should have at least one log entry.
+
+Do NOT log routine actions (opened a file, read docs, ran a test command).
+
 ### Template-First For Follow-Up Tasks
 When creating follow-up tasks:
 1. **FIRST: Check available templates** with `tpg template list`.
@@ -179,26 +193,32 @@ If a task references a template:
 tpg start <id>
 ```
 
-### 3. Execute and Log Progress
+### 3. Execute — Log Discoveries and Decisions As They Happen
 
-Implement the task. As you work, **log meaningful milestones** with `tpg log`:
+Implement the task. Logging is not optional — see "You MUST Log As You Work" above.
 
 ```bash
-tpg log <id> "Discovered existing retry logic in http.go:45 - will extend rather than replace"
+# You found existing code that changes your approach — log it NOW
+tpg log <id> "Found existing retry logic in http.go:45 — extending it instead of building new"
+
+# You chose between options — log it NOW
+tpg log <id> "Using table-driven tests to match pattern in user_test.go"
+
+# Key milestone reached — log it NOW
 tpg log <id> "Core validation complete, all 12 edge cases passing"
-tpg log <id> "Decided to use table-driven tests - matches pattern in user_test.go"
+
+# You created a blocker/follow-up task — log it NOW
+tpg log <id> "Created ts-xyz: need to replace mock before integration test"
+
+# For multi-line logs (answering a key unknown, complex decision), use heredoc:
+tpg log <id> - <<EOF
+Investigated token expiry behavior:
+- Tokens expire server-side after 1hr, but client caches for 2hr
+- Found race condition in refresh logic (auth/refresh.go:45)
+- Root cause: mutex protects write but not the staleness check
+Decision: extend mutex scope rather than add retry logic
+EOF
 ```
-
-**Log these** - things that would matter if someone else picks up this task:
-- Discoveries that answer key questions or change approach
-- Design decisions with rationale (chose X because Y)
-- Finishing key parts (core logic done, tests passing, integration verified)
-
-**Don't log** routine actions (started file, read docs, ran tests).
-
-**Why:** Two audiences read these logs:
-1. **The next developer** - if you're pulled off mid-task, they need to know what you learned
-2. **Management** - they use logs to understand how the project went
 
 ### 4. Handle Temporary Work
 
@@ -245,8 +265,8 @@ tpg show <id>                          # Read task details
 tpg start <id>                         # Claim work
 tpg log <id> "msg"                     # Log milestone/discovery
 tpg done <id> "results"                # Mark complete with results
-tpg add "title" --desc "desc" --blocks <id>  # Follow-up task with dependency
-tpg dep <id> blocks <other-id>             # Add dependency separately
+tpg add "title" --desc "desc" --blocks <id>  # Follow-up task with dependency (preferred)
+tpg dep <id> blocks <other-id>             # Add dependency to existing tasks
 tpg dep <id> list                          # Show dependencies
 tpg label <id> needs-review            # Quality gates
 tpg template list                      # Check available templates
@@ -271,21 +291,21 @@ Investigate, fix if related to your changes, or create follow-up task.
 When something blocks you that's outside your task scope:
 
 ```bash
-# 1. Create a task for the blocker
+# Create the blocker task with --blocks to set the dependency in one step
 tpg add "Blocker: [description]" \
-  --priority 1 \
+  -p 1 \
+  --blocks <your-task> \
   --desc "[What's blocking and why]"
 
-# 2. Link your task as blocked by it
-tpg dep <blocker-task> blocks <your-task>
-
-# 3. Update your task status
-tpg block <your-task> "Blocked by <blocker-task>: [reason]"
-
-# 4. Exit - orchestrator will see the blocked status
+# That's it — exit. The system automatically:
+# - Reverts your task to open (it was in_progress with an unmet dep)
+# - Logs the reason on your task
+# - The orchestrator sees the new blocker in tpg ready
 ```
 
-The orchestrator checks `tpg list --status blocked` and will handle routing the blocker work.
+Do NOT use `tpg block` — use `--blocks` when creating tasks, or `tpg dep`
+when linking existing tasks. The dependency system handles everything
+automatically; your task reappears in `tpg ready` once the blocker is done.
 
 ## Quality Checklist
 
@@ -316,8 +336,8 @@ If you can't address a quality gate, create a follow-up task for it.
 - Orchestrator launches you with a task ID
 - You work independently - no back-and-forth communication
 - You signal completion by completing the task (`tpg done`)
-- You signal blockers by creating blocker tasks and updating status (`tpg block`)
-- Orchestrator monitors `tpg ready` and `tpg list --status blocked` to see results
+- You signal blockers by creating a blocker task with `--blocks`: `tpg add "Blocker: ..." -p 1 --blocks <your-task>` — do NOT use `tpg block`
+- Orchestrator monitors `tpg ready` to see results
 - You never need to "report back" - tpg state IS the communication
 
 **Task IDs are meaningless:** Don't infer order, relationships, or priority from ID patterns. Always query tpg for the truth.

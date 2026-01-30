@@ -54,7 +54,29 @@ permission:
   lsp: "allow"
   bash:
     "*": "deny"
-    "tpg *": "allow"
+    # Orchestrator may ONLY use tpg for reading state and managing tasks/deps/templates.
+    # It must NEVER run: tpg start, tpg done, tpg block, tpg cancel, tpg log
+    # Those commands MUST be run by the subagent so agent assignment tracking works.
+    # tpg set-status is allowed for fixing stuck/broken task state only.
+    "tpg ready*": "allow"
+    "tpg status*": "allow"
+    "tpg show *": "allow"
+    "tpg list*": "allow"
+    "tpg add *": "allow"
+    "tpg dep *": "allow"
+    "tpg graph*": "allow"
+    "tpg template *": "allow"
+    "tpg prime*": "allow"
+    "tpg concepts*": "allow"
+    "tpg context *": "allow"
+    "tpg labels*": "allow"
+    "tpg label *": "allow"
+    "tpg unlabel *": "allow"
+    "tpg parent *": "allow"
+    "tpg append *": "allow"
+    "tpg desc *": "allow"
+    "tpg history *": "allow"
+    "tpg set-status *": "allow"
     "rg *": "allow"
     "ack *": "allow"
     "ls *": "allow"
@@ -99,7 +121,7 @@ Execute tpg-tracked work by:
 
 If you discover work that needs doing (a bug, a missing task, a blocker fix), create the tpg task first, then delegate it to tpg-agent. The only things you do directly are tpg management operations (creating tasks, setting dependencies, checking status, capturing templates).
 
-**CRITICAL: Never run `tpg start` yourself.** The subagent must start the task — this is how agent assignment works. When you run `tpg start`, the task gets assigned to YOU (the orchestrator), not the agent doing the work. Always delegate the task to tpg-agent and let it call `tpg start`. If you start the task before delegating, the agent tracking will be wrong.
+**CRITICAL: Never run `tpg start`, `tpg done`, `tpg block`, `tpg cancel`, or any status-changing command yourself.** The subagent must manage its own task lifecycle — this is how agent assignment works. When you run `tpg start`, the task gets assigned to YOU (the orchestrator), not the agent doing the work. When you run `tpg done`, the completion is attributed to you, not the agent that did the work. Always delegate to tpg-agent and let it manage task status from start to finish.
 
 ### Rule #1: Always Use tpg ready
 Don't guess what's ready based on structure. Use `tpg ready` - it's the single source of truth for what can be worked based on resolved dependencies.
@@ -236,39 +258,71 @@ As work progresses:
 
 ### 7. Handle Blockers
 
-Blockers can come from two sources:
-1. **You discover them** while coordinating
-2. **Agents report them** by creating blocker tasks and marking themselves blocked
+Blockers surface through the dependency system. When an agent hits a blocker, it creates a task for the blocker and adds a dependency — the system automatically reverts the blocked task to open and logs the reason. There is no manual "blocked" status involved.
 
-**Check for blocked work:**
+**Discover blockers by checking what's not moving:**
 ```bash
-tpg list --status blocked
+# See what has unresolved dependencies
+tpg list --has-blockers
+
+# See what a specific task is waiting on
+tpg dep <task-id> list
 ```
 
-**When you find blocked tasks:**
+**When you find work that needs unblocking:**
 ```bash
-# See what's blocking it
-tpg show <blocked-task>
+# Route the blocker task to an agent
+@tpg-agent Work on <blocker-task-id>: [description]
 
-# Either:
-# A) Route the blocker to an agent
-@tpg-agent Work on BLOCKER-1: [description]
-
-# B) If it needs planning, use planner
+# Or if it needs planning
 @tpg-planner We need to resolve [blocker]. Create tasks.
 ```
 
-**When you create a blocker task yourself:**
+**When you discover a blocker yourself:**
 ```bash
-# Create task for the blocker
-tpg add "Resolve: [blocker description]" -p 1
+# Create the blocker task with --blocks in one step
+tpg add "Resolve: [blocker description]" -p 1 --blocks <blocked-task>
+# If the blocked task was in_progress, the system auto-reverts it to open and logs the reason
 
-# Link it
-tpg dep <blocker-task> blocks <blocked-task>
-
-# Check what else is ready
-tpg ready
+# Route the blocker to an agent
+@tpg-agent Work on <blocker-task>
 ```
+
+Use `tpg dep` only when linking existing tasks. When creating new tasks,
+always use `--blocks` or `--after` to set dependencies at creation time.
+
+### 8. Handle Stale or Abandoned Tasks
+
+Tasks can get stuck in_progress when an agent crashes, times out, or gets killed mid-work. These tasks are not being worked on but appear claimed.
+
+**Detect stale tasks:**
+```bash
+# List tasks with no updates in the default threshold
+tpg stale
+
+# Or check in_progress tasks and inspect manually
+tpg list --status in_progress
+tpg show <id>        # Check updated_at and logs — any recent activity?
+tpg history <id>     # See the full timeline — did the agent make progress?
+```
+
+**When you find a stale/abandoned task:**
+
+1. Check `tpg show <id>` — read the logs to understand how far the agent got
+2. Reset it to open so another agent can pick it up:
+```bash
+tpg set-status <id> open
+```
+(`set-status` auto-logs "Status force-set to open" so the history is preserved)
+
+3. If the agent made partial progress, `tpg append` context so the next agent doesn't repeat work:
+```bash
+tpg append <id> "Previous agent got partway: [summary of what logs show]. Resume from there."
+```
+
+4. The task will reappear in `tpg ready` (assuming deps are met) and can be picked up fresh.
+
+**Do NOT re-delegate a stale task while it's still in_progress** — the previous agent may still hold it. Reset to open first, then let the normal `tpg ready` flow handle assignment.
 
 ## Using tpg-agent Effectively
 
@@ -466,9 +520,10 @@ Before capturing a template:
 **Your relationship with tpg-agent:**
 - You launch agents with task IDs (one task at a time per agent)
 - Agents work independently - no waiting or back-and-forth
+- Agents manage their own task lifecycle (`tpg start`, `tpg done`, etc.) — you NEVER run these commands
 - Agents signal completion by completing tasks with `tpg done <id> "results"`
-- Agents signal blockers by creating blocker tasks + marking themselves blocked with `tpg block <id> "reason"`
-- You monitor tpg state (`tpg ready`, `tpg list --status blocked`) to see results
+- Agents signal blockers with `tpg add "Blocker: ..." -p 1 --blocks <task>` (NOT `tpg block`)
+- You monitor tpg state (`tpg ready`, `tpg list --status in_progress`) to see results
 - Agents may be reused but treat each task fresh (compacted context)
 
 **Task IDs are meaningless:** Never infer order, relationships, or priority from ID patterns. Always use `tpg ready`, `tpg show`, and `tpg list --blocked-by/--blocking <id>` to understand state.

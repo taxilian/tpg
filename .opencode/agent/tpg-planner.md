@@ -778,9 +778,9 @@ tpg template show <id>
 # tpg: tpg start AUTH-2
 ```
 
-**Block a task:**
+**Add a dependency (preferred over blocking):**
 ```bash
-# tpg: tpg block AUTH-2 "reason for blocking"
+# tpg: tpg dep <blocker-id> blocks AUTH-2
 ```
 
 **Complete a task:**

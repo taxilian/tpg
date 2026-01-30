@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -228,6 +229,109 @@ func TestGetAllDeps_FilterByProject(t *testing.T) {
 	}
 	if len(edges) != 1 {
 		t.Errorf("expected 1 edge for 'other' project, got %d", len(edges))
+	}
+}
+
+func TestAddDep_RevertsInProgressToOpen(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItem(t, db, "Blocker task")
+	worker := createTestItem(t, db, "Worker task")
+
+	// Start the worker task
+	if err := db.UpdateStatus(worker.ID, model.StatusInProgress, AgentContext{}); err != nil {
+		t.Fatalf("failed to start worker: %v", err)
+	}
+
+	// Add an unmet dep — blocker is still open
+	if err := db.AddDep(worker.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Worker should have been reverted to open
+	item, err := db.GetItem(worker.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+	if item.Status != model.StatusOpen {
+		t.Errorf("status = %s, want open", item.Status)
+	}
+	if item.AgentID != nil {
+		t.Errorf("agent_id should be nil after revert, got %v", item.AgentID)
+	}
+
+	// Should have a log entry about the revert
+	logs, err := db.GetLogs(worker.ID)
+	if err != nil {
+		t.Fatalf("failed to get logs: %v", err)
+	}
+	found := false
+	for _, l := range logs {
+		if l.Message == fmt.Sprintf("Reverted to open: dependency added on %s (not yet done)", blocker.ID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected log entry about revert, found none")
+	}
+}
+
+func TestAddDep_DoesNotRevertIfDepDone(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItem(t, db, "Blocker task")
+	worker := createTestItem(t, db, "Worker task")
+
+	// Complete the blocker first
+	if err := db.UpdateStatus(blocker.ID, model.StatusDone, AgentContext{}); err != nil {
+		t.Fatalf("failed to complete blocker: %v", err)
+	}
+
+	// Start the worker
+	if err := db.UpdateStatus(worker.ID, model.StatusInProgress, AgentContext{}); err != nil {
+		t.Fatalf("failed to start worker: %v", err)
+	}
+
+	// Add a dep on an already-done task — should NOT revert
+	if err := db.AddDep(worker.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	item, err := db.GetItem(worker.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+	if item.Status != model.StatusInProgress {
+		t.Errorf("status = %s, want in_progress (dep already done)", item.Status)
+	}
+}
+
+func TestAddDep_DoesNotRevertOpenTask(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItem(t, db, "Blocker task")
+	worker := createTestItem(t, db, "Worker task")
+
+	// Worker is open (default), add dep — should stay open, no log
+	if err := db.AddDep(worker.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	item, err := db.GetItem(worker.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+	if item.Status != model.StatusOpen {
+		t.Errorf("status = %s, want open", item.Status)
+	}
+
+	// Should have no revert log (only for in_progress → open transitions)
+	logs, err := db.GetLogs(worker.ID)
+	if err != nil {
+		t.Fatalf("failed to get logs: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Errorf("expected 0 logs for open task dep add, got %d", len(logs))
 	}
 }
 

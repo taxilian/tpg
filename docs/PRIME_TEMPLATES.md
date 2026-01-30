@@ -183,7 +183,7 @@ Use `tpg concepts` to explore, `tpg context -c <name>` to load.
 
 **Find work**: `tpg ready` | `tpg show <id>`
 **Start work**: `tpg start <id>` | `tpg log <id> "message"`
-**Complete**: `tpg done <id>` | `tpg block <id> "reason"`
+**Complete**: `tpg done <id>` | blocked? → `tpg dep <blocker> blocks <id>`
 **Context**: `tpg context -c <concept>` | `tpg learn "..." -c <concept>`
 
 {{end}}
@@ -314,7 +314,7 @@ Your work:
 
 **Start:** 'tpg ready' → 'tpg show <id>' → 'tpg start <id>'
 **During:** 'tpg log <id> "progress"'
-**Finish:** 'tpg done <id>' or 'tpg block <id> "reason"'
+**Finish:** 'tpg done <id>' | blocked? → 'tpg dep <blocker> blocks <id>'
 **Context:** 'tpg concepts' → 'tpg context -c <name>'
 
 ## Key Commands

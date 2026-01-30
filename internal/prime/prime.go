@@ -194,15 +194,18 @@ You have {{.SubagentTaskCount}} tasks assigned to this session:
 
 **Start:** 'tpg ready' → 'tpg show <id>' → 'tpg start <id>'
 **During:** 'tpg log <id> "msg"' — log significant milestones as you work
-**Finish:** 'tpg done <id>' or 'tpg block <id> "reason"'
+**Finish:** 'tpg done <id>' | blocked? → 'tpg dep <blocker> blocks <id>'
 **Context:** 'tpg concepts' → 'tpg context -c <name>'
 
-**Logging:** Log things that would matter if someone else picks up this task,
-or that management would want to know about how the work went:
-- Discoveries (answered key questions, found existing code, unexpected constraints)
-- Design decisions with rationale (chose X because Y)
-- Finishing key parts (core logic done, tests passing, integration verified)
-Don't log routine actions (started file, read docs, ran tests).
+**Logging:** You MUST call 'tpg log <id> "msg"' when any of these happen:
+- You discover a blocker or create a dependency
+- You choose between alternatives (log what and why)
+- You find existing code/patterns that change your approach
+- You answer a key unknown that required searching or testing to resolve
+- You hit something unexpected (error, missing API, wrong assumption)
+- You finish a key milestone (core logic works, tests pass)
+Do NOT log routine actions (opened file, read docs, ran a command).
+If you complete a task with zero logs, 'tpg done' will warn you.
 
 ## Templates
 

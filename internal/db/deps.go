@@ -2,9 +2,12 @@ package db
 
 import (
 	"fmt"
+	"time"
 )
 
 // AddDep adds a dependency between items.
+// If itemID is in_progress and dependsOnID is not done, itemID is reverted
+// to open with a log entry — an in_progress task with unmet deps is invalid.
 func (db *DB) AddDep(itemID, dependsOnID string) error {
 	// Verify both items exist
 	var count int
@@ -13,7 +16,7 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 		return fmt.Errorf("failed to verify items: %w", err)
 	}
 	if count != 2 {
-		return fmt.Errorf("one or both items not found: %s, %s (use 'tasks list' to see available items)", itemID, dependsOnID)
+		return fmt.Errorf("one or both items not found: %s, %s (use 'tpg list' to see available items)", itemID, dependsOnID)
 	}
 
 	_, err = db.Exec(`
@@ -22,6 +25,19 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to add dependency: %w", err)
 	}
+
+	// If the dependent task is in_progress and the new dep is not done,
+	// revert to open — it can't proceed until the dep is resolved.
+	var itemStatus, depStatus string
+	_ = db.QueryRow(`SELECT status FROM items WHERE id = ?`, itemID).Scan(&itemStatus)
+	_ = db.QueryRow(`SELECT status FROM items WHERE id = ?`, dependsOnID).Scan(&depStatus)
+
+	if itemStatus == "in_progress" && depStatus != "done" {
+		_, _ = db.Exec(`UPDATE items SET status = 'open', agent_id = NULL, agent_last_active = NULL, updated_at = ? WHERE id = ?`,
+			sqlTime(time.Now()), itemID)
+		_ = db.AddLog(itemID, fmt.Sprintf("Reverted to open: dependency added on %s (not yet done)", dependsOnID))
+	}
+
 	return nil
 }
 

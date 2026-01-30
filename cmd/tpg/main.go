@@ -543,6 +543,86 @@ Example:
 	},
 }
 
+var historyCmd = &cobra.Command{
+	Use:   "history <id>",
+	Short: "Show full history timeline for a task",
+	Long: `Show a chronological timeline of everything that happened to a task.
+
+Includes:
+  - Creation timestamp with initial metadata
+  - All log entries (progress, blocks, cancels, reopens, merges)
+  - Completion results (if done)
+  - Current status and last update
+
+Example:
+  tpg history ts-a1b2c3`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		item, err := database.GetItem(args[0])
+		if err != nil {
+			return err
+		}
+
+		logs, err := database.GetLogs(args[0])
+		if err != nil {
+			return err
+		}
+
+		labels, err := database.GetItemLabels(args[0])
+		if err != nil {
+			return err
+		}
+		var labelNames []string
+		for _, l := range labels {
+			labelNames = append(labelNames, l.Name)
+		}
+
+		deps, err := database.GetDeps(args[0])
+		if err != nil {
+			return err
+		}
+
+		// Header
+		fmt.Printf("%s — %s\n", item.ID, item.Title)
+		fmt.Printf("Type: %s  Project: %s  Priority: %d\n", item.Type, item.Project, item.Priority)
+		if item.ParentID != nil {
+			fmt.Printf("Parent: %s\n", *item.ParentID)
+		}
+		if len(labelNames) > 0 {
+			fmt.Printf("Labels: %s\n", strings.Join(labelNames, ", "))
+		}
+		if len(deps) > 0 {
+			fmt.Printf("Dependencies: %s\n", strings.Join(deps, ", "))
+		}
+
+		// Timeline
+		fmt.Printf("\nTimeline:\n")
+		fmt.Printf("  [%s] Created\n", item.CreatedAt.Format("2006-01-02 15:04"))
+
+		for _, log := range logs {
+			fmt.Printf("  [%s] %s\n", log.CreatedAt.Format("2006-01-02 15:04"), log.Message)
+		}
+
+		if item.Status == model.StatusDone && item.Results != "" {
+			fmt.Printf("  [%s] Completed: %s\n", item.UpdatedAt.Format("2006-01-02 15:04"), item.Results)
+		}
+
+		// Current state
+		fmt.Printf("\nCurrent: %s (updated %s)\n", item.Status, item.UpdatedAt.Format("2006-01-02 15:04"))
+		if item.AgentID != nil {
+			fmt.Printf("Agent: %s\n", *item.AgentID)
+		}
+
+		return nil
+	},
+}
+
 var startCmd = &cobra.Command{
 	Use:   "start <id>",
 	Short: "Start working on a task",
@@ -577,6 +657,14 @@ Example:
 		if err := database.UpdateStatus(args[0], model.StatusInProgress, agentCtx); err != nil {
 			return err
 		}
+
+		// Auto-log the start event for timeline
+		logMsg := "Started"
+		if agentCtx.IsActive() {
+			logMsg = fmt.Sprintf("Started (agent: %s)", agentCtx.ID)
+		}
+		_ = database.AddLog(args[0], logMsg)
+
 		fmt.Printf("Started %s\n", args[0])
 		return nil
 	},
@@ -658,10 +746,34 @@ Examples:
 			}
 		}
 
+		// Warn if no logs were recorded during work
+		logs, err := database.GetLogs(id)
+		if err != nil {
+			return err
+		}
+		if len(logs) == 0 {
+			fmt.Fprintf(os.Stderr, `WARNING: Completing %s with zero log entries.
+
+If you discovered anything during this work, log it BEFORE completing:
+  tpg log %s "what you found, decided, or changed and why"
+
+Triggers that should always produce a log entry:
+  - Discovered a blocker or created a dependency
+  - Chose between alternatives (and why)
+  - Found existing code that changed your approach
+  - Hit something unexpected
+
+`, id, id)
+		}
+
 		agentCtx := db.GetAgentContext()
 		if err := database.CompleteItem(id, results, agentCtx); err != nil {
 			return err
 		}
+
+		// Auto-log completion for timeline
+		_ = database.AddLog(id, "Completed")
+
 		fmt.Printf("Completed %s\n", id)
 
 		// Prompt reflection
@@ -853,17 +965,38 @@ Example:
 	},
 }
 
+var flagBlockForce bool
+
 var blockCmd = &cobra.Command{
 	Use:   "block <id> <reason>",
-	Short: "Mark a task as blocked",
+	Short: "Mark a task as blocked (discouraged — use dependencies instead)",
 	Long: `Mark a task as blocked and log the reason.
 
-Use this when you can't proceed and need to hand off to another agent.
+WARNING: Using 'block' is almost never the right approach. Instead:
+  - Add a dependency: tpg dep <blocker-task> blocks <this-task>
+  - The task will automatically become unblocked when the blocker is done.
+  - 'tpg ready' respects dependencies, so agents only see unblocked work.
 
-Example:
-  tpg block ts-a1b2c3 "Need API spec from product team"`,
+'block' sets a manual status that requires manual unblocking. Dependencies
+are resolved automatically when prerequisite work completes.
+
+If you truly need a manual block (e.g., waiting on an external event with
+no corresponding tpg task), use --force:
+  tpg block --force ts-a1b2c3 "Waiting on client API credentials"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if !flagBlockForce {
+			return fmt.Errorf(`'tpg block' is discouraged — use dependencies instead:
+
+  tpg add "Blocker: <description>" -p 1    # Create a task for what's blocking
+  tpg dep <blocker-task> blocks %s          # Link the dependency
+
+The blocked task won't appear in 'tpg ready' until the blocker is done.
+Dependencies are resolved automatically; manual blocks require manual unblocking.
+
+If you must use block (e.g., external dependency with no tpg task), re-run with --force`, args[0])
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -3123,11 +3256,13 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(readyCmd)
 	rootCmd.AddCommand(showCmd)
+	rootCmd.AddCommand(historyCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(reopenCmd)
 	rootCmd.AddCommand(setStatusCmd)
+	blockCmd.Flags().BoolVar(&flagBlockForce, "force", false, "Force manual block (prefer dependencies instead)")
 	rootCmd.AddCommand(blockCmd)
 	rootCmd.AddCommand(staleCmd)
 	rootCmd.AddCommand(deleteCmd)
@@ -3324,7 +3459,9 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 		}
 	}
 
-	if len(logs) > 0 {
+	if len(logs) == 0 {
+		fmt.Printf("\nLogs: 0 entries\n")
+	} else {
 		logLimit := 50
 		displayLogs := logs
 		truncated := 0
@@ -3332,7 +3469,11 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 			displayLogs = logs[len(logs)-logLimit:]
 			truncated = len(logs) - logLimit
 		}
-		fmt.Printf("\nLogs:\n")
+		if len(logs) == 1 {
+			fmt.Printf("\nLogs: 1 entry\n")
+		} else {
+			fmt.Printf("\nLogs: %d entries\n", len(logs))
+		}
 		for _, log := range displayLogs {
 			fmt.Printf("  [%s] %s\n", log.CreatedAt.Format("2006-01-02 15:04"), log.Message)
 		}
