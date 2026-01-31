@@ -1301,11 +1301,11 @@ func (m Model) activeFiltersString() string {
 	var statuses []string
 	for s, active := range m.filterStatuses {
 		if active {
-			statuses = append(statuses, string(s)[:1]) // First char: o/i/b/d/c
+			statuses = append(statuses, statusText(s))
 		}
 	}
 	if len(statuses) < 5 {
-		parts = append(parts, "status:"+strings.Join(statuses, ""))
+		parts = append(parts, "status:"+strings.Join(statuses, ","))
 	}
 
 	if m.filterProject != "" {
