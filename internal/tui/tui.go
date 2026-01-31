@@ -210,6 +210,29 @@ func statusIcon(s model.Status) string {
 	}
 }
 
+// statusText returns a short readable text for a status.
+func statusText(s model.Status) string {
+	switch s {
+	case model.StatusOpen:
+		return "open"
+	case model.StatusInProgress:
+		return "prog"
+	case model.StatusDone:
+		return "done"
+	case model.StatusBlocked:
+		return "block"
+	case model.StatusCanceled:
+		return "cancel"
+	default:
+		return "?"
+	}
+}
+
+// formatStatus returns "icon text" format for a status (e.g., "○ open").
+func formatStatus(s model.Status) string {
+	return statusIcon(s) + " " + statusText(s)
+}
+
 // New creates a new TUI model with the given database connection and project.
 func New(database *db.DB, project string) Model {
 	// Default: show open, in_progress, blocked
@@ -1139,7 +1162,7 @@ func (m Model) listView() string {
 // formatItemLinePlain returns a plain text line without any ANSI styling.
 // Used for selected rows where we apply a single highlight style.
 func (m Model) formatItemLinePlain(item model.Item, width int) string {
-	icon := statusIcon(item.Status)
+	status := formatStatus(item.Status)
 
 	// Stale indicator
 	stale := ""
@@ -1164,7 +1187,10 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 	typeWidth := 5 // 4 chars + space
 
-	// Format: icon type id title [label1] [label2] [project]
+	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
+	statusWidth := 9
+
+	// Format: status type id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
@@ -1181,7 +1207,7 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth
+	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -1193,16 +1219,17 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	if agent != "" {
-		return fmt.Sprintf("%s%s %-4s %s %s %-*s%s %s", stale, icon, itemType, item.ID, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%-8s %-4s %s %s %-*s%s %s", stale, status, itemType, item.ID, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%s %-4s %s  %-*s%s %s", stale, icon, itemType, item.ID, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%-8s %-4s %s  %-*s%s %s", stale, status, itemType, item.ID, titleWidth, title, labels, project)
 }
 
 // formatItemLineStyled returns a styled line with colors for non-selected rows.
 func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	icon := statusIcon(item.Status)
+	text := statusText(item.Status)
 	color := statusColors[item.Status]
-	iconStyled := lipgloss.NewStyle().Foreground(color).Render(icon)
+	statusStyled := lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%-8s", icon+" "+text))
 
 	// Stale indicator
 	stale := ""
@@ -1230,7 +1257,10 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	typeStyled := dimStyle.Render(fmt.Sprintf("%-4s", itemType))
 	typeWidth := 5 // 4 chars + space
 
-	// Format: icon type id title [label1] [label2] [project]
+	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
+	statusWidth := 9
+
+	// Format: status type id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
@@ -1247,7 +1277,7 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 16 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth
+	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -1259,9 +1289,9 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	if agent != "" {
-		return fmt.Sprintf("%s%s %s %s %s %-*s%s %s", stale, iconStyled, typeStyled, id, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%s %s %s %s %-*s%s %s", stale, statusStyled, typeStyled, id, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%s %s %s  %-*s%s %s", stale, iconStyled, typeStyled, id, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s %s %s  %-*s%s %s", stale, statusStyled, typeStyled, id, titleWidth, title, labels, project)
 }
 
 func (m Model) activeFiltersString() string {
