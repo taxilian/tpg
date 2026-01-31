@@ -19,6 +19,7 @@ type ViewMode int
 const (
 	ViewList ViewMode = iota
 	ViewDetail
+	ViewGraph
 	ViewTemplateList
 	ViewTemplateDetail
 )
@@ -92,6 +93,20 @@ type Model struct {
 	templates        []*templates.Template
 	templateCursor   int
 	selectedTemplate *templates.Template
+
+	// Graph view state
+	graphNodes     []graphNode
+	graphCursor    int
+	graphCurrentID string // ID of the center task in graph view
+}
+
+// graphNode represents a task in the dependency graph view.
+type graphNode struct {
+	ID       string
+	Title    string
+	Status   string
+	Column   int // 0 = blockers, 1 = current, 2 = blocked
+	Position int // vertical position within column
 }
 
 // Styles
@@ -469,6 +484,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleListKey(msg)
 	case ViewDetail:
 		return m.handleDetailKey(msg)
+	case ViewGraph:
+		return m.handleGraphKey(msg)
 	case ViewTemplateList:
 		return m.handleTemplateListKey(msg)
 	case ViewTemplateDetail:
@@ -890,6 +907,12 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		return m, m.loadDetail()
+
+	case "g":
+		// Enter graph view
+		m.buildGraph()
+		m.viewMode = ViewGraph
+		return m, nil
 	}
 
 	return m, nil
@@ -901,6 +924,51 @@ func (m Model) currentDepSection() []db.DepStatus {
 		return m.detailDeps
 	}
 	return m.detailBlocks
+}
+
+// buildGraph constructs the graph nodes from the current item's dependencies.
+func (m *Model) buildGraph() {
+	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+		m.graphNodes = nil
+		return
+	}
+
+	item := m.filtered[m.cursor]
+	m.graphCurrentID = item.ID
+	m.graphNodes = nil
+
+	// Add blockers (column 0)
+	for i, dep := range m.detailDeps {
+		m.graphNodes = append(m.graphNodes, graphNode{
+			ID:       dep.ID,
+			Title:    dep.Title,
+			Status:   dep.Status,
+			Column:   0,
+			Position: i,
+		})
+	}
+
+	// Add current item (column 1)
+	m.graphNodes = append(m.graphNodes, graphNode{
+		ID:       item.ID,
+		Title:    item.Title,
+		Status:   string(item.Status),
+		Column:   1,
+		Position: 0,
+	})
+
+	// Add blocked items (column 2)
+	for i, dep := range m.detailBlocks {
+		m.graphNodes = append(m.graphNodes, graphNode{
+			ID:       dep.ID,
+			Title:    dep.Title,
+			Status:   dep.Status,
+			Column:   2,
+			Position: i,
+		})
+	}
+
+	m.graphCursor = len(m.detailDeps) // Start cursor on current item
 }
 
 func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -988,6 +1056,43 @@ func (m Model) handleTemplateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleGraphKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+
+	case "esc", "h", "backspace":
+		m.viewMode = ViewDetail
+		return m, nil
+
+	case "j", "down":
+		if m.graphCursor < len(m.graphNodes)-1 {
+			m.graphCursor++
+		}
+
+	case "k", "up":
+		if m.graphCursor > 0 {
+			m.graphCursor--
+		}
+
+	case "enter":
+		if m.graphCursor >= 0 && m.graphCursor < len(m.graphNodes) {
+			targetID := m.graphNodes[m.graphCursor].ID
+			// Find the target in filtered items
+			for i, item := range m.filtered {
+				if item.ID == targetID {
+					m.cursor = i
+					m.viewMode = ViewDetail
+					return m, m.loadDetail()
+				}
+			}
+			m.message = fmt.Sprintf("Item %s not in current filter", targetID)
+		}
+	}
+
+	return m, nil
+}
+
 func (m Model) startInput(mode InputMode, label string) (Model, tea.Cmd) {
 	m.inputMode = mode
 	m.inputLabel = label
@@ -1051,6 +1156,8 @@ func (m Model) View() string {
 		b.WriteString(m.listView())
 	case ViewDetail:
 		b.WriteString(m.detailView())
+	case ViewGraph:
+		b.WriteString(m.graphView())
 	case ViewTemplateList:
 		b.WriteString(m.templateListView())
 	case ViewTemplateDetail:
@@ -1445,11 +1552,193 @@ func (m Model) detailView() string {
 	}
 
 	b.WriteString("\n")
-	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep  v:logs  q:quit"
+	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep  v:logs  g:graph  q:quit"
 	if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
 		help += "  tab:deps enter:jump"
 	}
 	b.WriteString(helpStyle.Render(help))
+
+	return b.String()
+}
+
+func (m Model) graphView() string {
+	var b strings.Builder
+
+	// Header
+	b.WriteString(titleStyle.Render("Dependency Graph"))
+	b.WriteString("\n\n")
+
+	if len(m.graphNodes) == 0 {
+		b.WriteString("No dependencies to display\n")
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("esc:back  q:quit"))
+		return b.String()
+	}
+
+	// Column headers
+	b.WriteString(detailLabelStyle.Render("  Blockers"))
+	b.WriteString("              ")
+	b.WriteString(detailLabelStyle.Render("Current"))
+	b.WriteString("               ")
+	b.WriteString(detailLabelStyle.Render("Blocks"))
+	b.WriteString("\n")
+
+	// Collect nodes by column
+	var blockers, current, blocked []graphNode
+	for _, node := range m.graphNodes {
+		switch node.Column {
+		case 0:
+			blockers = append(blockers, node)
+		case 1:
+			current = append(current, node)
+		case 2:
+			blocked = append(blocked, node)
+		}
+	}
+
+	// Calculate max rows needed
+	maxRows := max(len(blockers), max(len(current), len(blocked)))
+	if maxRows == 0 {
+		maxRows = 1
+	}
+
+	// Render each row
+	colWidth := 20 // Width for each column
+	for row := 0; row < maxRows; row++ {
+		var leftPart, midPart, rightPart string
+		var leftSelected, midSelected, rightSelected bool
+
+		// Left column (blockers)
+		if row < len(blockers) {
+			node := blockers[row]
+			icon := depStatusIcon(node.Status)
+			title := node.ID
+			if len(node.Title) > 0 {
+				maxTitle := colWidth - len(node.ID) - 4
+				if maxTitle > 0 && len(node.Title) > maxTitle {
+					title = node.ID + " " + node.Title[:maxTitle-3] + "..."
+				} else if maxTitle > 0 {
+					title = node.ID + " " + node.Title
+				}
+			}
+			leftPart = fmt.Sprintf("%s %s", icon, title)
+			// Check if this node is selected
+			for i, n := range m.graphNodes {
+				if n.ID == node.ID && n.Column == 0 && i == m.graphCursor {
+					leftSelected = true
+					break
+				}
+			}
+		}
+
+		// Middle column (current)
+		if row < len(current) {
+			node := current[row]
+			icon := depStatusIcon(node.Status)
+			title := node.ID
+			if len(node.Title) > 0 {
+				maxTitle := colWidth - len(node.ID) - 4
+				if maxTitle > 0 && len(node.Title) > maxTitle {
+					title = node.ID + " " + node.Title[:maxTitle-3] + "..."
+				} else if maxTitle > 0 {
+					title = node.ID + " " + node.Title
+				}
+			}
+			midPart = fmt.Sprintf("%s %s", icon, title)
+			// Check if this node is selected
+			for i, n := range m.graphNodes {
+				if n.ID == node.ID && n.Column == 1 && i == m.graphCursor {
+					midSelected = true
+					break
+				}
+			}
+		}
+
+		// Right column (blocked)
+		if row < len(blocked) {
+			node := blocked[row]
+			icon := depStatusIcon(node.Status)
+			title := node.ID
+			if len(node.Title) > 0 {
+				maxTitle := colWidth - len(node.ID) - 4
+				if maxTitle > 0 && len(node.Title) > maxTitle {
+					title = node.ID + " " + node.Title[:maxTitle-3] + "..."
+				} else if maxTitle > 0 {
+					title = node.ID + " " + node.Title
+				}
+			}
+			rightPart = fmt.Sprintf("%s %s", icon, title)
+			// Check if this node is selected
+			for i, n := range m.graphNodes {
+				if n.ID == node.ID && n.Column == 2 && i == m.graphCursor {
+					rightSelected = true
+					break
+				}
+			}
+		}
+
+		// Render the row with connectors
+		// Left part
+		if leftSelected {
+			b.WriteString(selectedRowStyle.Render(fmt.Sprintf("%-*s", colWidth, leftPart)))
+		} else {
+			b.WriteString(fmt.Sprintf("%-*s", colWidth, leftPart))
+		}
+
+		// Left connector
+		if row < len(blockers) && len(current) > 0 {
+			if row == 0 {
+				b.WriteString(" ───▶ ")
+			} else {
+				b.WriteString(" ────┘")
+			}
+		} else {
+			b.WriteString("      ")
+		}
+
+		// Middle part
+		if midSelected {
+			b.WriteString(selectedRowStyle.Render(fmt.Sprintf("%-*s", colWidth, midPart)))
+		} else {
+			b.WriteString(fmt.Sprintf("%-*s", colWidth, midPart))
+		}
+
+		// Right connector
+		if row < len(blocked) && len(current) > 0 {
+			if row == 0 {
+				b.WriteString(" ───▶ ")
+			} else {
+				b.WriteString(" └────")
+			}
+		} else {
+			b.WriteString("      ")
+		}
+
+		// Right part
+		if rightSelected {
+			b.WriteString(selectedRowStyle.Render(fmt.Sprintf("%-*s", colWidth, rightPart)))
+		} else {
+			b.WriteString(fmt.Sprintf("%-*s", colWidth, rightPart))
+		}
+
+		b.WriteString("\n")
+	}
+
+	// Legend
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("Legend: "))
+	b.WriteString(lipgloss.NewStyle().Foreground(statusColors[model.StatusOpen]).Render(iconOpen + " open"))
+	b.WriteString("  ")
+	b.WriteString(lipgloss.NewStyle().Foreground(statusColors[model.StatusInProgress]).Render(iconInProgress + " in_progress"))
+	b.WriteString("  ")
+	b.WriteString(lipgloss.NewStyle().Foreground(statusColors[model.StatusDone]).Render(iconDone + " done"))
+	b.WriteString("  ")
+	b.WriteString(lipgloss.NewStyle().Foreground(statusColors[model.StatusBlocked]).Render(iconBlocked + " blocked"))
+	b.WriteString("\n")
+
+	// Help
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("j/k:nav  enter:jump to task  esc:back  q:quit"))
 
 	return b.String()
 }
