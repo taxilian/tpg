@@ -35,9 +35,9 @@ type InputMode int
 type DescViewMode int
 
 const (
-	DescViewStored   DescViewMode = iota // Show stored description (default)
-	DescViewRendered                     // Show freshly rendered template
-	DescViewDiff                         // Show diff between stored and rendered
+	DescViewRendered DescViewMode = iota // Show freshly rendered template (default)
+	DescViewStored                       // Show stored description
+	DescViewVars                         // Show raw variables (edit mode)
 )
 
 const (
@@ -196,13 +196,6 @@ var (
 			Foreground(lipgloss.Color("229")).
 			Background(lipgloss.Color("57")).
 			Bold(true)
-
-	// Diff styles
-	diffAddedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42")) // Green for added lines
-
-	diffRemovedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("196")) // Red for removed lines
 
 	// Content area padding
 	contentPadding = 2
@@ -952,8 +945,10 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc", "h", "backspace":
-		if m.varCursor >= 0 {
-			m.varCursor = -1 // Exit variable edit mode first
+		if m.descViewMode == DescViewVars {
+			// Exit variable edit mode, go back to rendered view
+			m.descViewMode = DescViewRendered
+			m.varCursor = -1
 			return m, nil
 		}
 		if m.depNavActive {
@@ -963,6 +958,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewMode = ViewList
 		m.logsVisible = false
 		m.varCursor = -1
+		m.descViewMode = DescViewRendered // Reset to default view mode
 
 	// Log toggle and scroll
 	case "v":
@@ -1066,14 +1062,18 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.startTextareaEdit("description", item.Description)
 		}
 	case "E":
-		// Enter variable edit mode (toggle)
+		// Toggle variable edit mode for templated items
 		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
 			item := m.filtered[m.cursor]
 			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
-				if m.varCursor < 0 {
-					m.varCursor = 0 // Enter variable edit mode
+				if m.descViewMode == DescViewVars {
+					// Exit variable edit mode, go back to rendered view
+					m.descViewMode = DescViewRendered
+					m.varCursor = -1
 				} else {
-					m.varCursor = -1 // Exit variable edit mode
+					// Enter variable edit mode
+					m.descViewMode = DescViewVars
+					m.varCursor = 0
 				}
 			}
 		}
@@ -1106,17 +1106,18 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	// Toggle description view mode (stored/rendered/diff)
+	// Toggle description view mode (rendered/stored/vars)
 	case "X":
 		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
 			item := m.filtered[m.cursor]
 			if item.TemplateID != "" {
-				// Cycle through view modes
+				// Cycle through view modes: rendered -> stored -> vars -> rendered
 				m.descViewMode = (m.descViewMode + 1) % 3
-				// Cache descriptions when switching to non-stored view
-				if m.descViewMode != DescViewStored {
-					m.storedDesc = item.Description
-					m.renderedDesc = renderTemplateForItem(item)
+				// Reset variable cursor when entering/exiting vars mode
+				if m.descViewMode == DescViewVars {
+					m.varCursor = 0
+				} else {
+					m.varCursor = -1
 				}
 			}
 		}
@@ -2079,7 +2080,124 @@ func (m Model) activeFiltersString() string {
 	return strings.Join(parts, " ")
 }
 
+// templateInfo holds information about a template for display purposes.
+type templateInfo struct {
+	name        string
+	stepNum     int                 // 1-based step number (0 if no step)
+	totalSteps  int                 // total number of steps
+	notFound    bool                // template doesn't exist
+	invalidStep bool                // step index is out of range
+	tmpl        *templates.Template // the loaded template (nil if not found)
+}
+
+// getTemplateInfo loads template information for an item.
+func getTemplateInfo(item model.Item) templateInfo {
+	info := templateInfo{
+		name: item.TemplateID,
+	}
+
+	if item.TemplateID == "" {
+		return info
+	}
+
+	tmpl, err := templates.LoadTemplate(item.TemplateID)
+	if err != nil {
+		info.notFound = true
+		return info
+	}
+
+	info.tmpl = tmpl
+	info.totalSteps = len(tmpl.Steps)
+
+	if item.StepIndex != nil {
+		stepIdx := *item.StepIndex
+		info.stepNum = stepIdx + 1 // Convert to 1-based
+		if stepIdx < 0 || stepIdx >= len(tmpl.Steps) {
+			info.invalidStep = true
+		}
+	}
+
+	return info
+}
+
+// getUnusedVariables returns variables that exist in item.TemplateVars but aren't used in the template.
+func getUnusedVariables(tmpl *templates.Template, vars map[string]string, stepIndex *int) map[string]string {
+	if tmpl == nil || vars == nil {
+		return nil
+	}
+
+	// Collect all variable references from the template
+	usedVars := make(map[string]bool)
+
+	// Parse the template description for {{.varname}} patterns
+	parseVarRefs := func(text string) {
+		// Match {{.varname}} and {{ .varname }} patterns
+		// Also match {{if .varname}}, {{with .varname}}, etc.
+		for i := 0; i < len(text); i++ {
+			if i+2 < len(text) && text[i:i+2] == "{{" {
+				// Find the closing }}
+				end := strings.Index(text[i:], "}}")
+				if end == -1 {
+					continue
+				}
+				content := text[i+2 : i+end]
+				// Look for .varname patterns
+				for j := 0; j < len(content); j++ {
+					if content[j] == '.' && j+1 < len(content) {
+						// Extract the variable name
+						start := j + 1
+						k := start
+						for k < len(content) && (content[k] == '_' || (content[k] >= 'a' && content[k] <= 'z') || (content[k] >= 'A' && content[k] <= 'Z') || (content[k] >= '0' && content[k] <= '9')) {
+							k++
+						}
+						if k > start {
+							varName := content[start:k]
+							usedVars[varName] = true
+						}
+					}
+				}
+				i += end + 1
+			}
+		}
+	}
+
+	// Parse template-level description
+	parseVarRefs(tmpl.Description)
+
+	// Parse the specific step if we have one
+	if stepIndex != nil && *stepIndex >= 0 && *stepIndex < len(tmpl.Steps) {
+		step := tmpl.Steps[*stepIndex]
+		parseVarRefs(step.Title)
+		parseVarRefs(step.Description)
+	} else {
+		// Parse all steps
+		for _, step := range tmpl.Steps {
+			parseVarRefs(step.Title)
+			parseVarRefs(step.Description)
+		}
+	}
+
+	// Also consider variables defined in the template as "used"
+	for name := range tmpl.Variables {
+		usedVars[name] = true
+	}
+
+	// Find unused variables
+	unused := make(map[string]string)
+	for name, value := range vars {
+		if !usedVars[name] {
+			unused[name] = value
+		}
+	}
+
+	if len(unused) == 0 {
+		return nil
+	}
+	return unused
+}
+
 // renderTemplateForItem renders the template description for an item using its stored variables.
+// Returns the rendered description and a boolean indicating if rendering was successful.
 func renderTemplateForItem(item model.Item) string {
 	if item.TemplateID == "" {
 		return item.Description
@@ -2098,53 +2216,6 @@ func renderTemplateForItem(item model.Item) string {
 
 	// No step index, render the template description
 	return templates.RenderText(tmpl.Description, item.TemplateVars)
-}
-
-// computeDescriptionDiff computes a simple line-by-line diff between stored and rendered descriptions.
-func computeDescriptionDiff(stored, rendered string) string {
-	storedLines := strings.Split(stored, "\n")
-	renderedLines := strings.Split(rendered, "\n")
-
-	var result strings.Builder
-
-	// Simple diff: show removed lines (from stored) and added lines (from rendered)
-	// This is a basic implementation - not a full diff algorithm
-	storedSet := make(map[string]bool)
-	renderedSet := make(map[string]bool)
-
-	for _, line := range storedLines {
-		storedSet[line] = true
-	}
-	for _, line := range renderedLines {
-		renderedSet[line] = true
-	}
-
-	// Show lines only in stored (removed)
-	for _, line := range storedLines {
-		if !renderedSet[line] {
-			result.WriteString(diffRemovedStyle.Render("- "+line) + "\n")
-		}
-	}
-
-	// Show lines only in rendered (added)
-	for _, line := range renderedLines {
-		if !storedSet[line] {
-			result.WriteString(diffAddedStyle.Render("+ "+line) + "\n")
-		}
-	}
-
-	// Show common lines
-	for _, line := range renderedLines {
-		if storedSet[line] {
-			result.WriteString("  " + line + "\n")
-		}
-	}
-
-	if result.Len() == 0 {
-		return dimStyle.Render("(no differences)")
-	}
-
-	return result.String()
 }
 
 func (m Model) detailView() string {
@@ -2204,79 +2275,31 @@ func (m Model) detailView() string {
 		b.WriteString(detailLabelStyle.Render("Labels:   ") + labelsStr + "\n")
 	}
 
-	// Template information
+	// Template information - always show if item has a template
+	var tmplInfo templateInfo
 	if item.TemplateID != "" {
-		b.WriteString("\n" + detailLabelStyle.Render("Template:") + "\n")
-		b.WriteString("  " + detailLabelStyle.Render("ID:     ") + item.TemplateID + "\n")
+		tmplInfo = getTemplateInfo(item)
 
-		// Load template to get source and check hash
-		if tmpl, err := templates.LoadTemplate(item.TemplateID); err == nil {
-			b.WriteString("  " + detailLabelStyle.Render("Source: ") + tmpl.Source + "\n")
-			// Check for hash mismatch
-			if item.TemplateHash != "" && item.TemplateHash != tmpl.Hash {
-				b.WriteString("  " + errorStyle.Render("[Template has changed since instantiation]") + "\n")
-			}
+		// Format: "Template: <name>" or "Template: <name>, step <n>"
+		tmplLine := "Template: " + tmplInfo.name
+		if tmplInfo.notFound {
+			tmplLine += " " + errorStyle.Render("[NOT FOUND]")
+		} else if tmplInfo.invalidStep {
+			tmplLine += fmt.Sprintf(", step %d", tmplInfo.stepNum) + " " + errorStyle.Render("[INVALID STEP]")
+		} else if tmplInfo.totalSteps > 1 && tmplInfo.stepNum > 0 {
+			tmplLine += fmt.Sprintf(", step %d", tmplInfo.stepNum)
 		}
+		b.WriteString(detailLabelStyle.Render("Template: ") + tmplLine[10:] + "\n") // Skip "Template: " prefix since we use detailLabelStyle
 
-		// Show template variables
-		if len(item.TemplateVars) > 0 {
-			// Check if any variables need expansion hint
-			hasExpandable := false
-			for _, v := range item.TemplateVars {
-				if strings.Contains(v, "\n") || len(v) > 60 {
-					hasExpandable = true
-					break
-				}
-			}
-
-			varsHeader := "  Variables:"
-			if m.varCursor >= 0 {
-				varsHeader = "  ▸ Variables:" + " " + dimStyle.Render("[j/k:nav e:edit E:exit]")
-			} else if hasExpandable {
-				varsHeader += " " + dimStyle.Render("[x:expand E:edit]")
-			} else {
-				varsHeader += " " + dimStyle.Render("[E:edit]")
-			}
-			b.WriteString(varsHeader + "\n")
-
-			// Sort variable names for consistent display
-			varNames := m.getSortedVarNames(item)
-
-			for i, name := range varNames {
-				value := item.TemplateVars[name]
-				displayValue := value
-
-				// Check if value needs truncation
-				if m.varExpanded[name] {
-					// Show full value, indented for multi-line
-					if strings.Contains(value, "\n") {
-						lines := strings.Split(value, "\n")
-						displayValue = lines[0]
-						for j := 1; j < len(lines); j++ {
-							displayValue += "\n      " + lines[j]
-						}
-					}
-				} else {
-					// Truncate if needed
-					if strings.Contains(value, "\n") {
-						// Show first line only with indicator
-						firstLine := strings.Split(value, "\n")[0]
-						if len(firstLine) > 60 {
-							firstLine = firstLine[:57] + "..."
-						}
-						displayValue = firstLine + " " + dimStyle.Render("(...)")
-					} else if len(value) > 60 {
-						displayValue = value[:57] + dimStyle.Render("(...)")
-					}
-				}
-
-				// Highlight selected variable
-				if m.varCursor == i {
-					line := fmt.Sprintf("  ▸ %s: %s", name, displayValue)
-					b.WriteString(selectedRowStyle.Render(line) + "\n")
-				} else {
-					b.WriteString("    " + labelStyle.Render(name) + ": " + displayValue + "\n")
-				}
+		// Show warning messages for error cases
+		if tmplInfo.notFound {
+			b.WriteString(errorStyle.Render("  ⚠ Template not found - showing raw variables") + "\n")
+		} else if tmplInfo.invalidStep {
+			b.WriteString(errorStyle.Render(fmt.Sprintf("  ⚠ Step %d is out of range (template has %d steps) - showing raw variables", tmplInfo.stepNum, tmplInfo.totalSteps)) + "\n")
+		} else if tmplInfo.tmpl != nil {
+			// Check for hash mismatch
+			if item.TemplateHash != "" && item.TemplateHash != tmplInfo.tmpl.Hash {
+				b.WriteString("  " + errorStyle.Render("[Template has changed since instantiation]") + "\n")
 			}
 		}
 	}
@@ -2289,9 +2312,9 @@ func (m Model) detailView() string {
 		}
 		b.WriteString("\n" + detailLabelStyle.Render(header) + "\n")
 		for i, dep := range m.detailDeps {
-			icon := depStatusIcon(dep.Status)
+			depIcon := depStatusIcon(dep.Status)
 			selected := m.depNavActive && m.depSection == 0 && i == m.depCursor
-			line := fmt.Sprintf("  %s %s %s", icon, dep.ID, dep.Title)
+			line := fmt.Sprintf("  %s %s %s", depIcon, dep.ID, dep.Title)
 			if selected {
 				b.WriteString(selectedRowStyle.Render(line) + "\n")
 			} else {
@@ -2308,9 +2331,9 @@ func (m Model) detailView() string {
 		}
 		b.WriteString("\n" + detailLabelStyle.Render(header) + "\n")
 		for i, dep := range m.detailBlocks {
-			icon := depStatusIcon(dep.Status)
+			depIcon := depStatusIcon(dep.Status)
 			selected := m.depNavActive && m.depSection == 1 && i == m.depCursor
-			line := fmt.Sprintf("  %s %s %s", icon, dep.ID, dep.Title)
+			line := fmt.Sprintf("  %s %s %s", depIcon, dep.ID, dep.Title)
 			if selected {
 				b.WriteString(selectedRowStyle.Render(line) + "\n")
 			} else {
@@ -2319,42 +2342,122 @@ func (m Model) detailView() string {
 		}
 	}
 
-	// Description (with view mode toggle for templated items)
-	if item.Description != "" || (item.TemplateID != "" && m.descViewMode != DescViewStored) {
-		descLabel := "Description:"
-		if item.TemplateID != "" {
-			switch m.descViewMode {
-			case DescViewStored:
-				descLabel = "Description " + dimStyle.Render("[stored]") + ":"
-			case DescViewRendered:
-				descLabel = "Description " + labelStyle.Render("[rendered]") + ":"
-			case DescViewDiff:
-				descLabel = "Description " + labelStyle.Render("[diff]") + ":"
-			}
-		}
-		b.WriteString("\n" + detailLabelStyle.Render(descLabel) + "\n")
+	// Description section - behavior depends on whether this is a templated item
+	if item.TemplateID != "" {
+		// Templated item: show based on view mode and template validity
+		showVars := m.descViewMode == DescViewVars || tmplInfo.notFound || tmplInfo.invalidStep
 
-		// Show appropriate content based on view mode
-		if item.TemplateID != "" && m.descViewMode != DescViewStored {
-			switch m.descViewMode {
-			case DescViewRendered:
-				rendered := m.renderedDesc
-				if rendered == "" {
-					rendered = renderTemplateForItem(item)
+		if showVars {
+			// Show raw variables (either user requested via E key, or fallback due to error)
+			if len(item.TemplateVars) > 0 {
+				// Check if any variables need expansion hint
+				hasExpandable := false
+				for _, v := range item.TemplateVars {
+					if strings.Contains(v, "\n") || len(v) > 60 {
+						hasExpandable = true
+						break
+					}
 				}
-				b.WriteString(rendered + "\n")
-			case DescViewDiff:
-				stored := m.storedDesc
-				if stored == "" {
-					stored = item.Description
+
+				varsHeader := "\nVariables:"
+				if m.varCursor >= 0 {
+					varsHeader = "\n▸ Variables:" + " " + dimStyle.Render("[j/k:nav e:edit esc:exit]")
+				} else if hasExpandable {
+					varsHeader += " " + dimStyle.Render("[x:expand E:exit]")
+				} else {
+					varsHeader += " " + dimStyle.Render("[E:exit]")
 				}
-				rendered := m.renderedDesc
-				if rendered == "" {
-					rendered = renderTemplateForItem(item)
+				b.WriteString(detailLabelStyle.Render(varsHeader) + "\n")
+
+				// Sort variable names for consistent display
+				varNames := m.getSortedVarNames(item)
+
+				for i, name := range varNames {
+					value := item.TemplateVars[name]
+					displayValue := value
+
+					// Check if value needs truncation
+					if m.varExpanded[name] {
+						// Show full value, indented for multi-line
+						if strings.Contains(value, "\n") {
+							lines := strings.Split(value, "\n")
+							displayValue = lines[0]
+							for j := 1; j < len(lines); j++ {
+								displayValue += "\n      " + lines[j]
+							}
+						}
+					} else {
+						// Truncate if needed
+						if strings.Contains(value, "\n") {
+							// Show first line only with indicator
+							firstLine := strings.Split(value, "\n")[0]
+							if len(firstLine) > 60 {
+								firstLine = firstLine[:57] + "..."
+							}
+							displayValue = firstLine + " " + dimStyle.Render("(...)")
+						} else if len(value) > 60 {
+							displayValue = value[:57] + dimStyle.Render("(...)")
+						}
+					}
+
+					// Highlight selected variable
+					if m.varCursor == i {
+						line := fmt.Sprintf("  ▸ %s: %s", name, displayValue)
+						b.WriteString(selectedRowStyle.Render(line) + "\n")
+					} else {
+						b.WriteString("    " + labelStyle.Render(name) + ": " + displayValue + "\n")
+					}
 				}
-				b.WriteString(computeDescriptionDiff(stored, rendered))
 			}
 		} else {
+			// Show rendered or stored description
+			descLabel := "\nDescription"
+			switch m.descViewMode {
+			case DescViewRendered:
+				descLabel += " " + dimStyle.Render("[rendered]")
+			case DescViewStored:
+				descLabel += " " + dimStyle.Render("[stored]")
+			}
+			descLabel += ":"
+			b.WriteString(detailLabelStyle.Render(descLabel) + "\n")
+
+			if m.descViewMode == DescViewStored {
+				b.WriteString(item.Description + "\n")
+			} else {
+				// Default: show rendered description
+				rendered := renderTemplateForItem(item)
+				b.WriteString(rendered + "\n")
+			}
+
+			// Show unused variables at the end (only when showing rendered description)
+			if m.descViewMode == DescViewRendered && tmplInfo.tmpl != nil {
+				unused := getUnusedVariables(tmplInfo.tmpl, item.TemplateVars, item.StepIndex)
+				if len(unused) > 0 {
+					b.WriteString("\n" + detailLabelStyle.Render("Unused Variables:") + "\n")
+					// Sort for consistent display
+					unusedNames := make([]string, 0, len(unused))
+					for name := range unused {
+						unusedNames = append(unusedNames, name)
+					}
+					sort.Strings(unusedNames)
+					for _, name := range unusedNames {
+						value := unused[name]
+						displayValue := value
+						if len(displayValue) > 50 {
+							displayValue = displayValue[:47] + "..."
+						}
+						if strings.Contains(displayValue, "\n") {
+							displayValue = strings.Split(displayValue, "\n")[0] + "..."
+						}
+						b.WriteString("    " + dimStyle.Render(name+": "+displayValue) + "\n")
+					}
+				}
+			}
+		}
+	} else {
+		// Non-templated item: just show description
+		if item.Description != "" {
+			b.WriteString("\n" + detailLabelStyle.Render("Description:") + "\n")
 			b.WriteString(item.Description + "\n")
 		}
 	}
@@ -2386,9 +2489,9 @@ func (m Model) detailView() string {
 	}
 	if item.TemplateID != "" {
 		if len(item.TemplateVars) > 0 {
-			help += "  x:expand vars"
+			help += "  x:expand"
 		}
-		help += "  X:view mode R:refresh"
+		help += "  E:vars X:view R:refresh"
 	}
 	b.WriteString(helpStyle.Render(help))
 
