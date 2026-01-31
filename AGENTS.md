@@ -43,6 +43,19 @@ tpg add "Title" --template <id> --var 'key="value"'  # Create from template
 
 **Rule:** If a template exists that fits the work, use it. Only create ad-hoc tasks when no template is appropriate.
 
+## Git Safety
+
+**NEVER** run destructive git commands that discard uncommitted work:
+- `git restore` — discards working tree changes
+- `git reset --hard` — resets working tree and index
+- `git checkout -- <file>` — reverts file to last commit
+- `git clean` — removes untracked files
+- `git stash drop` / `git stash clear` — destroys stash entries
+
+If you made an error, **stop and inform the user.** Let them decide how to recover.
+
+Allowed: `git add`, `git commit`, `git diff`, `git status`, `git log`, `git show`, `git blame`, `git branch`, `git switch`, `git push`, etc.
+
 ## Agents
 
 Agent definitions are in `.opencode/agent/`:

@@ -29,6 +29,16 @@ description: >-
     </example>
 temperature: 0.2
 mode: subagent
+permission:
+  bash:
+    "*": "allow"
+    "git restore*": "deny"
+    "git reset --hard*": "deny"
+    "git checkout -- *": "deny"
+    "git checkout .*": "deny"
+    "git clean*": "deny"
+    "git stash drop*": "deny"
+    "git stash clear*": "deny"
 ---
 
 You are a TPG Task Executor with template awareness - a focused implementation agent that completes individual tpg issues. You work on ONE task at a time. If reused for multiple tasks, compact your context and treat each task as completely fresh.

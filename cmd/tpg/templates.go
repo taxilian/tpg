@@ -286,7 +286,7 @@ func sanitizeTitle(title string) string {
 }
 
 func renderItemTemplate(cache *templateCache, item *model.Item) (bool, error) {
-	if item.TemplateID == "" || item.StepIndex == nil {
+	if item.TemplateID == "" {
 		return false, nil
 	}
 	tmpl, err := cache.get(item.TemplateID)
@@ -295,12 +295,25 @@ func renderItemTemplate(cache *templateCache, item *model.Item) (bool, error) {
 		fmt.Fprintf(os.Stderr, "Warning: template not found: %s (item: %s)\n", item.TemplateID, item.ID)
 		return false, nil
 	}
-	if *item.StepIndex < 0 || *item.StepIndex >= len(tmpl.Steps) {
-		return false, fmt.Errorf("template step index out of range")
-	}
+
 	vars := item.TemplateVars
 	if vars == nil {
 		vars = map[string]string{}
+	}
+
+	// For parent items (no StepIndex), only render if template has exactly one step
+	if item.StepIndex == nil {
+		if len(tmpl.Steps) == 1 {
+			step := templates.RenderStep(tmpl.Steps[0], vars)
+			item.Description = step.Description
+		}
+		hashMismatch := item.TemplateHash != "" && tmpl.Hash != "" && item.TemplateHash != tmpl.Hash
+		return hashMismatch, nil
+	}
+
+	// For child items with StepIndex, render the specific step
+	if *item.StepIndex < 0 || *item.StepIndex >= len(tmpl.Steps) {
+		return false, fmt.Errorf("template step index out of range")
 	}
 	step := templates.RenderStep(tmpl.Steps[*item.StepIndex], vars)
 	if step.Title != "" {

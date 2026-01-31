@@ -328,6 +328,91 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string, agentID str
 	return report, nil
 }
 
+// SummaryStats contains aggregated statistics for the summary command.
+type SummaryStats struct {
+	Project         string
+	Total           int
+	Open            int
+	InProgress      int
+	Blocked         int
+	Done            int
+	Canceled        int
+	Ready           int
+	EpicsInProgress int
+	Stale           int
+}
+
+// GetSummaryStats returns aggregated project health statistics.
+func (db *DB) GetSummaryStats(project string) (*SummaryStats, error) {
+	stats := &SummaryStats{Project: project}
+
+	// Count by status
+	query := `SELECT status, COUNT(*) FROM items WHERE 1=1`
+	args := []any{}
+	if project != "" {
+		query += ` AND project = ?`
+		args = append(args, project)
+	}
+	query += ` GROUP BY status`
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count statuses: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan status count: %w", err)
+		}
+		stats.Total += count
+		switch model.Status(status) {
+		case model.StatusOpen:
+			stats.Open = count
+		case model.StatusInProgress:
+			stats.InProgress = count
+		case model.StatusBlocked:
+			stats.Blocked = count
+		case model.StatusDone:
+			stats.Done = count
+		case model.StatusCanceled:
+			stats.Canceled = count
+		}
+	}
+
+	// Get ready count
+	readyItems, err := db.ReadyItemsFiltered(project, nil)
+	if err != nil {
+		return nil, err
+	}
+	stats.Ready = len(readyItems)
+
+	// Get epics in progress count
+	epicQuery := `SELECT COUNT(*) FROM items WHERE type = 'epic' AND status = 'in_progress'`
+	epicArgs := []any{}
+	if project != "" {
+		epicQuery += ` AND project = ?`
+		epicArgs = append(args, project)
+	}
+	var epicCount int
+	if err := db.QueryRow(epicQuery, epicArgs...).Scan(&epicCount); err != nil {
+		return nil, fmt.Errorf("failed to count epics in progress: %w", err)
+	}
+	stats.EpicsInProgress = epicCount
+
+	// Get stale count (in-progress with no updates > 5 minutes)
+	staleCutoff := time.Now().Add(-5 * time.Minute)
+	staleItems, err := db.StaleItems(project, staleCutoff)
+	if err != nil {
+		return nil, err
+	}
+	stats.Stale = len(staleItems)
+
+	return stats, nil
+}
+
 // ListProjects returns all project names from the projects table.
 func (db *DB) ListProjects() ([]string, error) {
 	rows, err := db.Query(`SELECT name FROM projects ORDER BY name`)

@@ -28,6 +28,33 @@ description: >-
     </example>
 mode: subagent
 temperature: 0.1
+permission:
+  read:
+    "*": "allow"
+  edit:
+    "*": "deny"
+  write:
+    "*": "deny"
+  glob: "allow"
+  grep: "allow"
+  lsp: "allow"
+  bash:
+    "*": "deny"
+    "ls *": "allow"
+    "rg *": "allow"
+    "ack *": "allow"
+    "grep *": "allow"
+    "find *": "allow"
+    "cat *": "allow"
+    "head *": "allow"
+    "tail *": "allow"
+    "git status*": "allow"
+    "git diff*": "allow"
+    "git log*": "allow"
+    "git show*": "allow"
+    "git blame*": "allow"
+    "git ls-files*": "allow"
+    "git grep*": "allow"
 ---
 
 You are a code-aware exploration specialist. You find code by following actual code

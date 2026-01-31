@@ -51,6 +51,7 @@ const (
 // Model is the main Bubble Tea model for the TUI.
 type Model struct {
 	db       *db.DB
+	project  string       // current project (for default filtering)
 	items    []model.Item // all items from db
 	filtered []model.Item // items after filtering
 	cursor   int
@@ -162,6 +163,26 @@ func max(a, b int) int {
 	return b
 }
 
+// listVisibleHeight returns the number of items that can be displayed in the list view.
+func (m Model) listVisibleHeight() int {
+	// Header: 2 lines (title + blank), Footer: 3 lines (blank + 2 help lines), Padding: 1 line top
+	visibleHeight := m.height - 6
+	if visibleHeight < 3 {
+		visibleHeight = 3
+	}
+	return visibleHeight
+}
+
+// templateVisibleHeight returns the number of templates that can be displayed in the template list view.
+func (m Model) templateVisibleHeight() int {
+	// Header: 2 lines (title + blank), Footer: 2 lines (blank + help), Padding: varies
+	visibleHeight := m.height - 8
+	if visibleHeight < 5 {
+		visibleHeight = 5
+	}
+	return visibleHeight
+}
+
 // depStatusIcon returns a colored icon for a dependency's status string.
 func depStatusIcon(status string) string {
 	s := model.Status(status)
@@ -189,8 +210,8 @@ func statusIcon(s model.Status) string {
 	}
 }
 
-// New creates a new TUI model with the given database connection.
-func New(database *db.DB) Model {
+// New creates a new TUI model with the given database connection and project.
+func New(database *db.DB, project string) Model {
 	// Default: show open, in_progress, blocked
 	statuses := map[model.Status]bool{
 		model.StatusOpen:       true,
@@ -201,6 +222,7 @@ func New(database *db.DB) Model {
 	}
 	return Model{
 		db:             database,
+		project:        project,
 		viewMode:       ViewList,
 		filterStatuses: statuses,
 		staleItems:     make(map[string]bool),
@@ -237,10 +259,10 @@ type staleMsg struct {
 	err   error
 }
 
-// loadItems loads items from the database.
+// loadItems loads items from the database, filtered by the current project.
 func (m Model) loadItems() tea.Cmd {
 	return func() tea.Msg {
-		items, err := m.db.ListItemsFiltered(db.ListFilter{})
+		items, err := m.db.ListItemsFiltered(db.ListFilter{Project: m.project})
 		if err != nil {
 			return itemsMsg{items: items, err: err}
 		}
@@ -256,7 +278,7 @@ func (m Model) loadItems() tea.Cmd {
 func (m Model) loadStaleItems() tea.Cmd {
 	return func() tea.Msg {
 		cutoff := time.Now().Add(-5 * time.Minute)
-		stale, err := m.db.StaleItems("", cutoff)
+		stale, err := m.db.StaleItems(m.project, cutoff)
 		if err != nil {
 			return staleMsg{err: err}
 		}
@@ -633,6 +655,44 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		m.cursor = max(0, len(m.filtered)-1)
 
+	case "pgup", "ctrl+b":
+		// Page up - move cursor up by visible height
+		pageSize := m.listVisibleHeight()
+		m.cursor -= pageSize
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+
+	case "pgdown", "ctrl+f":
+		// Page down - move cursor down by visible height
+		pageSize := m.listVisibleHeight()
+		m.cursor += pageSize
+		if m.cursor >= len(m.filtered) {
+			m.cursor = max(0, len(m.filtered)-1)
+		}
+
+	case "ctrl+u":
+		// Half page up
+		pageSize := m.listVisibleHeight() / 2
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		m.cursor -= pageSize
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+
+	case "ctrl+d":
+		// Half page down
+		pageSize := m.listVisibleHeight() / 2
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		m.cursor += pageSize
+		if m.cursor >= len(m.filtered) {
+			m.cursor = max(0, len(m.filtered)-1)
+		}
+
 	case "enter", "l":
 		if len(m.filtered) > 0 {
 			m.viewMode = ViewDetail
@@ -746,8 +806,13 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.depCursor < 0 {
 				m.depCursor = 0
 			}
-		} else if m.logsVisible && m.logScroll < len(m.detailLogs)-1 {
-			m.logScroll++
+		} else if m.logsVisible {
+			// maxVisible matches the display constant in detailView
+			maxVisible := 20
+			maxScroll := max(0, len(m.detailLogs)-maxVisible)
+			if m.logScroll < maxScroll {
+				m.logScroll++
+			}
 		}
 	case "k", "up":
 		if m.depNavActive {
@@ -835,6 +900,40 @@ func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "G", "end":
 		m.templateCursor = max(0, len(m.templates)-1)
+
+	case "pgup", "ctrl+b":
+		pageSize := m.templateVisibleHeight()
+		m.templateCursor -= pageSize
+		if m.templateCursor < 0 {
+			m.templateCursor = 0
+		}
+
+	case "pgdown", "ctrl+f":
+		pageSize := m.templateVisibleHeight()
+		m.templateCursor += pageSize
+		if m.templateCursor >= len(m.templates) {
+			m.templateCursor = max(0, len(m.templates)-1)
+		}
+
+	case "ctrl+u":
+		pageSize := m.templateVisibleHeight() / 2
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		m.templateCursor -= pageSize
+		if m.templateCursor < 0 {
+			m.templateCursor = 0
+		}
+
+	case "ctrl+d":
+		pageSize := m.templateVisibleHeight() / 2
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		m.templateCursor += pageSize
+		if m.templateCursor >= len(m.templates) {
+			m.templateCursor = max(0, len(m.templates)-1)
+		}
 
 	case "enter", "l":
 		if len(m.templates) > 0 && m.templateCursor < len(m.templates) {
@@ -979,14 +1078,31 @@ func (m Model) listView() string {
 	if len(m.filtered) == 0 {
 		b.WriteString("No items match filters\n")
 	} else {
-		visibleHeight := m.height - 8
-		if visibleHeight < 5 {
-			visibleHeight = 15
+		// Calculate visible height accounting for header, footer, and padding
+		// Header: 3 lines (title + filters + blank), Footer: 3 lines (blank + 2 help lines)
+		visibleHeight := m.height - 6
+		if visibleHeight < 3 {
+			visibleHeight = 3 // Minimum visible items
 		}
+		if visibleHeight > len(m.filtered) {
+			visibleHeight = len(m.filtered)
+		}
+
+		// Calculate start position to keep cursor visible
+		// When cursor is near the bottom, scroll up
+		// When cursor is near the top, scroll down
 		start := 0
 		if m.cursor >= visibleHeight {
 			start = m.cursor - visibleHeight + 1
 		}
+		// Ensure start doesn't go beyond valid range
+		if start < 0 {
+			start = 0
+		}
+		if start > len(m.filtered)-visibleHeight && len(m.filtered) >= visibleHeight {
+			start = len(m.filtered) - visibleHeight
+		}
+
 		end := min(start+visibleHeight, len(m.filtered))
 
 		rowWidth := m.width - (contentPadding * 2)
@@ -1013,9 +1129,9 @@ func (m Model) listView() string {
 
 	// Footer
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel n:new T:templates"))
+	b.WriteString(helpStyle.Render("j/k:nav  ^u/^d:½pg  pgup/dn:pg  g/G:top/end  enter:detail  s:start d:done n:new"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  a:add-dep  r:refresh q:quit"))
+	b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  b:block L:log c:cancel  r:refresh q:quit"))
 
 	return b.String()
 }
@@ -1430,9 +1546,9 @@ func (m Model) templateDetailView() string {
 	return b.String()
 }
 
-// Run starts the TUI.
-func Run(database *db.DB) error {
-	m := New(database)
+// Run starts the TUI with the given project filter.
+func Run(database *db.DB, project string) error {
+	m := New(database, project)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

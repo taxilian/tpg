@@ -94,7 +94,9 @@ var (
 	flagShowWithDeps     bool
 	flagShowWithParent   bool
 	flagShowFormat       string
+	flagShowVars         bool
 	flagDryRun           bool
+	flagListAll          bool
 )
 
 func openDB() (*db.DB, error) {
@@ -387,12 +389,17 @@ Examples:
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List tasks",
-	Long: `List all tasks, optionally filtered by various criteria.
+	Long: `List tasks, optionally filtered by various criteria.
+
+By default, excludes done and canceled items. Use --all to show everything.
 
 Examples:
-  tpg list
+  tpg list                        # Active items only (excludes done/canceled)
+  tpg list --all                  # All items including done/canceled
+  tpg list -a                     # Same as --all
   tpg list -p myproject
   tpg list --status open
+  tpg list --status done          # Explicitly show done items
   tpg list -p myproject --status blocked
   tpg list --parent ep-abc123
   tpg list --type epic
@@ -414,6 +421,7 @@ Examples:
 		}
 
 		var status *model.Status
+		statusExplicitlySet := flagStatus != ""
 		if flagStatus != "" {
 			s := model.Status(flagStatus)
 			if !s.IsValid() {
@@ -437,6 +445,17 @@ Examples:
 		items, err := database.ListItemsFiltered(filter)
 		if err != nil {
 			return err
+		}
+
+		// Filter out done/canceled items by default (unless --all or --status is set)
+		if !flagListAll && !statusExplicitlySet {
+			filtered := make([]model.Item, 0, len(items))
+			for _, item := range items {
+				if item.Status != model.StatusDone && item.Status != model.StatusCanceled {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
 		}
 
 		// Populate labels for display
@@ -634,7 +653,7 @@ Example:
 		case "markdown":
 			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain)
 		default:
-			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice)
+			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars)
 			if flagShowWithParent && len(parentChain) > 0 {
 				fmt.Printf("\nParent Chain:\n")
 				for _, parent := range parentChain {
@@ -1835,6 +1854,43 @@ Examples:
 	},
 }
 
+var summaryCmd = &cobra.Command{
+	Use:   "summary",
+	Short: "Show project health overview",
+	Long: `Show a high-level health overview of the project.
+
+Displays:
+  - Total task count
+  - Tasks by status (open, in_progress, blocked, done, canceled)
+  - Ready count (tasks available to work on)
+  - Epics in progress count
+  - Stale tasks count (in-progress with no updates >5min)
+
+Examples:
+  tpg summary
+  tpg summary -p myproject`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		project, err := resolveProject()
+		if err != nil {
+			return err
+		}
+
+		stats, err := database.GetSummaryStats(project)
+		if err != nil {
+			return err
+		}
+
+		printSummaryStats(stats)
+		return nil
+	},
+}
+
 var appendCmd = &cobra.Command{
 	Use:   "append <id> <text>",
 	Short: "Append text to a task's description",
@@ -2852,11 +2908,23 @@ Run ` + "`tpg prime`" + ` for workflow context, or configure hooks for auto-inje
 
 **Quick reference:**
 ` + "```" + `
-tpg ready              # Find unblocked work
-tpg add "Title" -p X   # Create task
-tpg start <id>         # Claim work
-tpg log <id> "msg"     # Log progress
-tpg done <id>          # Complete work
+tpg ready                        # Find unblocked work
+tpg start <id>                   # Claim work
+tpg done <id>                    # Complete work
+tpg dep <id> blocks <other-id>   # Set dependency
+tpg dep <id> list                # Show dependencies
+
+# Creating tasks — always use heredoc for full context:
+tpg add "Title" -p 1 --desc - <<EOF
+What to do, why it matters, constraints, acceptance criteria.
+Future agents won't have your current context—be thorough.
+EOF
+
+# Logging progress — always use heredoc for detail:
+tpg log <id> - <<EOF
+Decisions made, alternatives considered, blockers found,
+milestones reached. Skip routine actions (opened file, ran cmd).
+EOF
 ` + "```" + `
 
 For full workflow: ` + "`tpg prime`" + `
@@ -3677,7 +3745,12 @@ Press q to quit.`,
 		}
 		defer func() { _ = database.Close() }()
 
-		return tui.Run(database)
+		project, err := resolveProject()
+		if err != nil {
+			return err
+		}
+
+		return tui.Run(database, project)
 	},
 }
 
@@ -3817,6 +3890,7 @@ func init() {
 	initCmd.Flags().StringVar(&flagInitEpicPrefix, "epic-prefix", "", "Epic ID prefix (default: ep)")
 
 	// list flags
+	listCmd.Flags().BoolVarP(&flagListAll, "all", "a", false, "Show all items including done and canceled (default: hide done/canceled)")
 	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done, canceled)")
 	listCmd.Flags().StringVar(&flagListParent, "parent", "", "Filter by parent epic ID")
 	listCmd.Flags().StringVar(&flagListType, "type", "", "Filter by item type (task, epic)")
@@ -3853,6 +3927,7 @@ func init() {
 	showCmd.Flags().BoolVar(&flagShowWithDeps, "with-deps", false, "Show full dependency chain (transitive)")
 	showCmd.Flags().BoolVar(&flagShowWithParent, "with-parent", false, "Show parent chain up to root")
 	showCmd.Flags().StringVar(&flagShowFormat, "format", "", "Output format (json, yaml, markdown)")
+	showCmd.Flags().BoolVar(&flagShowVars, "vars", false, "Show raw template variables instead of rendered description")
 
 	// learn flags
 	learnCmd.Flags().StringArrayVarP(&flagLearnConcept, "concept", "c", nil, "Concept to tag this learning with (can be repeated)")
@@ -3921,6 +3996,7 @@ func init() {
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(summaryCmd)
 	rootCmd.AddCommand(projectsCmd)
 	rootCmd.AddCommand(graphCmd)
 	rootCmd.AddCommand(treeCmd)
@@ -4117,7 +4193,7 @@ type DepEdgeJSON struct {
 	DependsOnStatus string `json:"depends_on_status"`
 }
 
-func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string) {
+func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
@@ -4158,15 +4234,14 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 		fmt.Printf("  Template: %s\n", templateNotice)
 	}
 
-	if item.Description != "" {
-		fmt.Printf("\nDescription:\n%s\n", item.Description)
-	}
-
-	if item.TemplateID != "" && item.StepIndex == nil && len(item.TemplateVars) > 0 {
-		fmt.Printf("\nTemplate Context:\n")
+	// Show template variables only with --vars flag, otherwise show description
+	if showVars && item.TemplateID != "" && len(item.TemplateVars) > 0 {
+		fmt.Printf("\nTemplate Variables:\n")
 		for key, value := range item.TemplateVars {
 			fmt.Printf("  %s:\n%s\n", key, indentLines(value, "    "))
 		}
+	} else if item.Description != "" {
+		fmt.Printf("\nDescription:\n%s\n", item.Description)
 	}
 
 	if len(deps) > 0 {
@@ -4487,6 +4562,32 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 		if remaining > 0 {
 			fmt.Printf("  (+%d more, use --all to see all)\n", remaining)
 		}
+	}
+}
+
+func printSummaryStats(stats *db.SummaryStats) {
+	project := stats.Project
+	if project == "" {
+		project = "(all)"
+	}
+	fmt.Printf("Project: %s\n\n", project)
+
+	fmt.Printf("Total tasks: %d\n\n", stats.Total)
+
+	fmt.Println("By status:")
+	fmt.Printf("  Open:        %d\n", stats.Open)
+	fmt.Printf("  In Progress: %d\n", stats.InProgress)
+	fmt.Printf("  Blocked:     %d\n", stats.Blocked)
+	fmt.Printf("  Done:        %d\n", stats.Done)
+	fmt.Printf("  Canceled:    %d\n", stats.Canceled)
+	fmt.Println()
+
+	fmt.Printf("Ready to work: %d\n", stats.Ready)
+	fmt.Printf("Epics in progress: %d\n", stats.EpicsInProgress)
+	if stats.Stale > 0 {
+		fmt.Printf("⚠️  Stale tasks: %d\n", stats.Stale)
+	} else {
+		fmt.Printf("Stale tasks: %d\n", stats.Stale)
 	}
 }
 
