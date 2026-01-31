@@ -9,10 +9,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// MaxRetries is the maximum number of retries for transient database errors.
+const MaxRetries = 5
+
+// RetryBaseDelay is the base delay for exponential backoff.
+const RetryBaseDelay = 50 * time.Millisecond
 
 // sqlTime formats a time.Time as a SQLite-compatible UTC string.
 // This ensures consistent timestamp format across inserts and queries,
@@ -174,6 +181,26 @@ type DB struct {
 	*sql.DB
 }
 
+// ExecRetry executes a statement with retry logic for transient errors.
+func (db *DB) ExecRetry(query string, args ...any) (sql.Result, error) {
+	return withRetry(func() (sql.Result, error) {
+		return db.Exec(query, args...)
+	})
+}
+
+// QueryRowRetry executes a query that returns a single row with retry logic.
+func (db *DB) QueryRowRetry(query string, args ...any) *sql.Row {
+	// sql.Row doesn't support retry directly, but the busy_timeout handles it
+	return db.QueryRow(query, args...)
+}
+
+// QueryRetry executes a query with retry logic for transient errors.
+func (db *DB) QueryRetry(query string, args ...any) (*sql.Rows, error) {
+	return withRetry(func() (*sql.Rows, error) {
+		return db.Query(query, args...)
+	})
+}
+
 // Open opens or creates the database at the given path
 func Open(path string) (*DB, error) {
 	// Ensure directory exists
@@ -182,30 +209,88 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	var sqlDB *sql.DB
+	var err error
+
+	// Retry opening the database with exponential backoff
+	err = withRetryNoResult(func() error {
+		sqlDB, err = sql.Open("sqlite", path)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+
+		// Set busy timeout FIRST before any other operations
+		// This ensures retries work for subsequent PRAGMA calls
+		if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000"); err != nil {
+			_ = sqlDB.Close()
+			return fmt.Errorf("failed to set busy timeout: %w", err)
+		}
+
+		// Enable foreign keys
+		if _, err := sqlDB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			_ = sqlDB.Close()
+			return fmt.Errorf("failed to enable foreign keys: %w", err)
+		}
+
+		// Enable WAL mode for better concurrency (allows concurrent readers during writes)
+		// This may fail if another process has the database open in non-WAL mode,
+		// but will succeed on retry once that process closes or switches to WAL
+		if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+			_ = sqlDB.Close()
+			return fmt.Errorf("failed to enable WAL mode: %w", err)
+		}
+
+		return nil
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, err
 	}
 
-	// Enable foreign keys
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+	return &DB{sqlDB}, nil
+}
+
+// isRetryableError checks if an error is a transient SQLite error that can be retried.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// SQLITE_BUSY (5), SQLITE_LOCKED (6)
+	return strings.Contains(errStr, "database is locked") ||
+		strings.Contains(errStr, "SQLITE_BUSY") ||
+		strings.Contains(errStr, "SQLITE_LOCKED")
+}
+
+// withRetry executes a function with exponential backoff retry on transient errors.
+func withRetry[T any](fn func() (T, error)) (T, error) {
+	var result T
+	var err error
+	delay := RetryBaseDelay
+
+	for attempt := 0; attempt < MaxRetries; attempt++ {
+		result, err = fn()
+		if err == nil || !isRetryableError(err) {
+			return result, err
+		}
+
+		// Exponential backoff with jitter
+		time.Sleep(delay)
+		delay *= 2
+		if delay > 2*time.Second {
+			delay = 2 * time.Second
+		}
 	}
 
-	// Enable WAL mode for better concurrency (allows concurrent readers during writes)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
+	return result, fmt.Errorf("failed after %d retries: %w", MaxRetries, err)
+}
 
-	// Wait up to 500ms on lock contention before returning SQLITE_BUSY
-	if _, err := db.Exec("PRAGMA busy_timeout=500"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
-	}
-
-	return &DB{db}, nil
+// withRetryNoResult executes a function with retry that returns only an error.
+func withRetryNoResult(fn func() error) error {
+	_, err := withRetry(func() (struct{}, error) {
+		return struct{}{}, fn()
+	})
+	return err
 }
 
 // Init creates the schema for a fresh database.
