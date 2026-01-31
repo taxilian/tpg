@@ -284,6 +284,51 @@ func (db *DB) SetTitle(id string, title string) error {
 	return nil
 }
 
+// SetTemplateVar updates a single template variable for an item.
+// It reads the current variables, updates the specified one, and writes back.
+func (db *DB) SetTemplateVar(id string, varName string, value string) error {
+	// First, get the current template variables
+	var varsJSON sql.NullString
+	err := db.QueryRow(`SELECT template_variables FROM items WHERE id = ?`, id).Scan(&varsJSON)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get template variables: %w", err)
+	}
+
+	// Parse existing variables
+	vars, err := unmarshalTemplateVars(varsJSON.String)
+	if err != nil {
+		return fmt.Errorf("failed to parse template variables: %w", err)
+	}
+	if vars == nil {
+		vars = make(map[string]string)
+	}
+
+	// Update the variable
+	vars[varName] = value
+
+	// Marshal back to JSON
+	newVarsJSON, err := marshalTemplateVars(vars)
+	if err != nil {
+		return fmt.Errorf("failed to encode template variables: %w", err)
+	}
+
+	// Update the database
+	_, err = db.Exec(`
+		UPDATE items
+		SET template_variables = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		newVarsJSON, sqlTime(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("failed to update template variable: %w", err)
+	}
+
+	return nil
+}
+
 // UpdatePriority changes an item's priority.
 func (db *DB) UpdatePriority(id string, priority int) error {
 	if priority < 1 || priority > 5 {

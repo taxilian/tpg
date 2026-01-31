@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/taxilian/tpg/internal/db"
@@ -52,6 +53,7 @@ const (
 	InputCreateType              // Entering type for new item
 	InputBatchStatus             // Entering status for batch change
 	InputBatchPriority           // Entering priority for batch change
+	InputTextarea                // Multi-line textarea editing
 )
 
 // Status icons
@@ -119,11 +121,17 @@ type Model struct {
 
 	// Template variable expansion state (for detail view)
 	varExpanded map[string]bool
+	varCursor   int // which variable is selected for editing (-1 = none)
 
 	// Template description view state
 	descViewMode DescViewMode
 	storedDesc   string // Cached stored description
 	renderedDesc string // Cached rendered description
+
+	// Textarea editing state
+	textarea         textarea.Model
+	textareaTarget   string // what we're editing: "description" or "var:<name>"
+	textareaOriginal string // original value for cancel
 }
 
 // graphNode represents a task in the dependency graph view.
@@ -296,6 +304,14 @@ func New(database *db.DB, project string) Model {
 		model.StatusDone:       false,
 		model.StatusCanceled:   false,
 	}
+
+	// Initialize textarea for multi-line editing
+	ta := textarea.New()
+	ta.Placeholder = "Enter text..."
+	ta.ShowLineNumbers = false
+	ta.SetWidth(80)
+	ta.SetHeight(10)
+
 	return Model{
 		db:             database,
 		project:        project,
@@ -304,6 +320,7 @@ func New(database *db.DB, project string) Model {
 		staleItems:     make(map[string]bool),
 		selectedItems:  make(map[string]bool),
 		varExpanded:    make(map[string]bool),
+		textarea:       ta,
 	}
 }
 
@@ -340,6 +357,7 @@ type staleMsg struct {
 // editorFinishedMsg is sent when the external editor closes.
 type editorFinishedMsg struct {
 	itemID   string
+	target   string // "description" or "var:<name>"
 	tmpPath  string
 	origTime time.Time
 	err      error
@@ -525,7 +543,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Handle input mode first
+	// Handle textarea mode separately (it needs special key handling)
+	if m.inputMode == InputTextarea {
+		return m.handleTextareaKey(msg)
+	}
+
+	// Handle other input modes
 	if m.inputMode != InputNone {
 		return m.handleInputKey(msg)
 	}
@@ -920,12 +943,17 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc", "h", "backspace":
+		if m.varCursor >= 0 {
+			m.varCursor = -1 // Exit variable edit mode first
+			return m, nil
+		}
 		if m.depNavActive {
 			m.depNavActive = false
 			return m, nil
 		}
 		m.viewMode = ViewList
 		m.logsVisible = false
+		m.varCursor = -1
 
 	// Log toggle and scroll
 	case "v":
@@ -941,6 +969,15 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.depCursor < 0 {
 				m.depCursor = 0
 			}
+		} else if m.varCursor >= 0 {
+			// Navigate variables
+			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+				item := m.filtered[m.cursor]
+				varNames := m.getSortedVarNames(item)
+				if m.varCursor < len(varNames)-1 {
+					m.varCursor++
+				}
+			}
 		} else if m.logsVisible {
 			// maxVisible matches the display constant in detailView
 			maxVisible := 20
@@ -953,6 +990,11 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.depNavActive {
 			if m.depCursor > 0 {
 				m.depCursor--
+			}
+		} else if m.varCursor >= 0 {
+			// Navigate variables
+			if m.varCursor > 0 {
+				m.varCursor--
 			}
 		} else if m.logsVisible && m.logScroll > 0 {
 			m.logScroll--
@@ -1000,7 +1042,32 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		return m.startInput(InputAddDep, "Add blocker ID: ")
 	case "e":
-		return m.editDescription()
+		// Open built-in textarea editor for description or selected variable
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			item := m.filtered[m.cursor]
+			// If variable cursor is active, edit that variable
+			if m.varCursor >= 0 && item.TemplateID != "" && len(item.TemplateVars) > 0 {
+				varNames := m.getSortedVarNames(item)
+				if m.varCursor < len(varNames) {
+					varName := varNames[m.varCursor]
+					return m.startTextareaEdit("var:"+varName, item.TemplateVars[varName])
+				}
+			}
+			// Otherwise edit description
+			return m.startTextareaEdit("description", item.Description)
+		}
+	case "E":
+		// Enter variable edit mode (toggle)
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			item := m.filtered[m.cursor]
+			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
+				if m.varCursor < 0 {
+					m.varCursor = 0 // Enter variable edit mode
+				} else {
+					m.varCursor = -1 // Exit variable edit mode
+				}
+			}
+		}
 
 	case "r":
 		return m, m.loadDetail()
@@ -1246,6 +1313,154 @@ func (m Model) startInput(mode InputMode, label string) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// startTextareaEdit initializes the textarea for multi-line editing.
+func (m Model) startTextareaEdit(target, content string) (Model, tea.Cmd) {
+	m.textarea.SetValue(content)
+	m.textarea.Focus()
+	m.textareaTarget = target
+	m.textareaOriginal = content
+	m.inputMode = InputTextarea
+	// Resize textarea to fit available space
+	width := m.width - (contentPadding * 2) - 4
+	if width < 40 {
+		width = 80
+	}
+	height := m.height - 10 // Leave room for header and help
+	if height < 5 {
+		height = 10
+	}
+	m.textarea.SetWidth(width)
+	m.textarea.SetHeight(height)
+	return m, textarea.Blink
+}
+
+// handleTextareaKey handles key events when in textarea editing mode.
+func (m Model) handleTextareaKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Cancel editing, restore original
+		m.inputMode = InputNone
+		m.textarea.Blur()
+		m.message = "Edit canceled"
+		return m, nil
+	case "ctrl+s":
+		// Save changes
+		return m.saveTextareaEdit()
+	case "ctrl+e":
+		// Switch to external editor
+		return m.switchToExternalEditor()
+	}
+	// Pass all other keys to textarea
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	return m, cmd
+}
+
+// saveTextareaEdit saves the textarea content to the database.
+func (m Model) saveTextareaEdit() (Model, tea.Cmd) {
+	content := m.textarea.Value()
+	target := m.textareaTarget
+
+	// Exit textarea mode
+	m.inputMode = InputNone
+	m.textarea.Blur()
+
+	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+		return m, nil
+	}
+	item := m.filtered[m.cursor]
+
+	if target == "description" {
+		return m, func() tea.Msg {
+			if err := m.db.SetDescription(item.ID, content); err != nil {
+				return actionMsg{err: fmt.Errorf("failed to save description: %w", err)}
+			}
+			return actionMsg{message: fmt.Sprintf("Updated description for %s", item.ID)}
+		}
+	}
+
+	// Handle template variable editing (var:<name>)
+	if strings.HasPrefix(target, "var:") {
+		varName := strings.TrimPrefix(target, "var:")
+		return m, func() tea.Msg {
+			if err := m.db.SetTemplateVar(item.ID, varName, content); err != nil {
+				return actionMsg{err: fmt.Errorf("failed to save variable %s: %w", varName, err)}
+			}
+			return actionMsg{message: fmt.Sprintf("Updated variable '%s' for %s", varName, item.ID)}
+		}
+	}
+
+	return m, nil
+}
+
+// getSortedVarNames returns the template variable names sorted alphabetically.
+func (m Model) getSortedVarNames(item model.Item) []string {
+	varNames := make([]string, 0, len(item.TemplateVars))
+	for k := range item.TemplateVars {
+		varNames = append(varNames, k)
+	}
+	sort.Strings(varNames)
+	return varNames
+}
+
+// switchToExternalEditor switches from textarea to external editor.
+func (m Model) switchToExternalEditor() (Model, tea.Cmd) {
+	// Get current textarea content
+	content := m.textarea.Value()
+	target := m.textareaTarget
+
+	// Exit textarea mode
+	m.inputMode = InputNone
+	m.textarea.Blur()
+
+	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+		return m, nil
+	}
+	item := m.filtered[m.cursor]
+
+	// Create temp file with current content
+	tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
+	if err != nil {
+		m.err = fmt.Errorf("failed to create temp file: %w", err)
+		return m, nil
+	}
+	tmpPath := tmpfile.Name()
+
+	// Write current textarea content (not original)
+	if _, err := tmpfile.WriteString(content); err != nil {
+		_ = tmpfile.Close()
+		_ = os.Remove(tmpPath)
+		m.err = fmt.Errorf("failed to write temp file: %w", err)
+		return m, nil
+	}
+	if err := tmpfile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		m.err = fmt.Errorf("failed to close temp file: %w", err)
+		return m, nil
+	}
+
+	// Get original mod time for comparison
+	origStat, err := os.Stat(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		m.err = fmt.Errorf("failed to stat temp file: %w", err)
+		return m, nil
+	}
+
+	editor := getEditor()
+	c := exec.Command(editor, tmpPath)
+
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{
+			itemID:   item.ID,
+			target:   target,
+			tmpPath:  tmpPath,
+			origTime: origStat.ModTime(),
+			err:      err,
+		}
+	})
+}
+
 func (m Model) doStart() (Model, tea.Cmd) {
 	if len(m.filtered) == 0 {
 		return m, nil
@@ -1447,6 +1662,7 @@ func (m Model) editDescription() (Model, tea.Cmd) {
 	return m, tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{
 			itemID:   item.ID,
+			target:   "description",
 			tmpPath:  tmpPath,
 			origTime: origStat.ModTime(),
 			err:      err,
@@ -1498,23 +1714,28 @@ func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
 func (m Model) View() string {
 	var b strings.Builder
 
-	switch m.viewMode {
-	case ViewList:
-		b.WriteString(m.listView())
-	case ViewDetail:
-		b.WriteString(m.detailView())
-	case ViewGraph:
-		b.WriteString(m.graphView())
-	case ViewTemplateList:
-		b.WriteString(m.templateListView())
-	case ViewTemplateDetail:
-		b.WriteString(m.templateDetailView())
-	}
+	// Show textarea view when in textarea editing mode
+	if m.inputMode == InputTextarea {
+		b.WriteString(m.textareaView())
+	} else {
+		switch m.viewMode {
+		case ViewList:
+			b.WriteString(m.listView())
+		case ViewDetail:
+			b.WriteString(m.detailView())
+		case ViewGraph:
+			b.WriteString(m.graphView())
+		case ViewTemplateList:
+			b.WriteString(m.templateListView())
+		case ViewTemplateDetail:
+			b.WriteString(m.templateDetailView())
+		}
 
-	// Input line
-	if m.inputMode != InputNone {
-		b.WriteString("\n")
-		b.WriteString(inputStyle.Render(m.inputLabel + m.inputText + "█"))
+		// Input line (for non-textarea input modes)
+		if m.inputMode != InputNone {
+			b.WriteString("\n")
+			b.WriteString(inputStyle.Render(m.inputLabel + m.inputText + "█"))
+		}
 	}
 
 	// Status message
@@ -1533,6 +1754,42 @@ func (m Model) View() string {
 		PaddingTop(1)
 
 	return padStyle.Render(b.String())
+}
+
+// textareaView renders the textarea editing view.
+func (m Model) textareaView() string {
+	var b strings.Builder
+
+	// Header showing what we're editing
+	var title string
+	if m.textareaTarget == "description" {
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			item := m.filtered[m.cursor]
+			title = fmt.Sprintf("Editing description for %s", item.ID)
+		} else {
+			title = "Editing description"
+		}
+	} else if strings.HasPrefix(m.textareaTarget, "var:") {
+		varName := strings.TrimPrefix(m.textareaTarget, "var:")
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			item := m.filtered[m.cursor]
+			title = fmt.Sprintf("Editing variable '%s' for %s", varName, item.ID)
+		} else {
+			title = fmt.Sprintf("Editing variable '%s'", varName)
+		}
+	}
+
+	b.WriteString(titleStyle.Render(title))
+	b.WriteString("\n\n")
+
+	// Textarea
+	b.WriteString(m.textarea.View())
+	b.WriteString("\n\n")
+
+	// Help text
+	b.WriteString(helpStyle.Render("ctrl+s:save  esc:cancel  ctrl+e:external editor"))
+
+	return b.String()
 }
 
 func (m Model) listView() string {
@@ -1964,19 +2221,19 @@ func (m Model) detailView() string {
 			}
 
 			varsHeader := "  Variables:"
-			if hasExpandable {
-				varsHeader += " " + dimStyle.Render("[x:expand]")
+			if m.varCursor >= 0 {
+				varsHeader = "  ▸ Variables:" + " " + dimStyle.Render("[j/k:nav e:edit E:exit]")
+			} else if hasExpandable {
+				varsHeader += " " + dimStyle.Render("[x:expand E:edit]")
+			} else {
+				varsHeader += " " + dimStyle.Render("[E:edit]")
 			}
 			b.WriteString(varsHeader + "\n")
 
 			// Sort variable names for consistent display
-			varNames := make([]string, 0, len(item.TemplateVars))
-			for k := range item.TemplateVars {
-				varNames = append(varNames, k)
-			}
-			sort.Strings(varNames)
+			varNames := m.getSortedVarNames(item)
 
-			for _, name := range varNames {
+			for i, name := range varNames {
 				value := item.TemplateVars[name]
 				displayValue := value
 
@@ -1986,8 +2243,8 @@ func (m Model) detailView() string {
 					if strings.Contains(value, "\n") {
 						lines := strings.Split(value, "\n")
 						displayValue = lines[0]
-						for i := 1; i < len(lines); i++ {
-							displayValue += "\n      " + lines[i]
+						for j := 1; j < len(lines); j++ {
+							displayValue += "\n      " + lines[j]
 						}
 					}
 				} else {
@@ -2004,7 +2261,13 @@ func (m Model) detailView() string {
 					}
 				}
 
-				b.WriteString("    " + labelStyle.Render(name) + ": " + displayValue + "\n")
+				// Highlight selected variable
+				if m.varCursor == i {
+					line := fmt.Sprintf("  ▸ %s: %s", name, displayValue)
+					b.WriteString(selectedRowStyle.Render(line) + "\n")
+				} else {
+					b.WriteString("    " + labelStyle.Render(name) + ": " + displayValue + "\n")
+				}
 			}
 		}
 	}
