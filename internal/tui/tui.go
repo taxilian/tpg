@@ -40,16 +40,18 @@ const (
 )
 
 const (
-	InputNone       InputMode = iota
-	InputBlock                // Entering block reason
-	InputLog                  // Entering log message
-	InputCancel               // Entering cancel reason
-	InputSearch               // Entering search text
-	InputProject              // Entering project filter
-	InputLabel                // Entering label filter
-	InputAddDep               // Entering dependency ID to add
-	InputCreate               // Entering new item title
-	InputCreateType           // Entering type for new item
+	InputNone          InputMode = iota
+	InputBlock                   // Entering block reason
+	InputLog                     // Entering log message
+	InputCancel                  // Entering cancel reason
+	InputSearch                  // Entering search text
+	InputProject                 // Entering project filter
+	InputLabel                   // Entering label filter
+	InputAddDep                  // Entering dependency ID to add
+	InputCreate                  // Entering new item title
+	InputCreateType              // Entering type for new item
+	InputBatchStatus             // Entering status for batch change
+	InputBatchPriority           // Entering priority for batch change
 )
 
 // Status icons
@@ -105,6 +107,10 @@ type Model struct {
 	templates        []*templates.Template
 	templateCursor   int
 	selectedTemplate *templates.Template
+
+	// Selection mode state
+	selectMode    bool
+	selectedItems map[string]bool // item ID -> selected
 
 	// Graph view state
 	graphNodes     []graphNode
@@ -176,6 +182,11 @@ var (
 
 	staleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("208")).
+			Bold(true)
+
+	selectModeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("229")).
+			Background(lipgloss.Color("57")).
 			Bold(true)
 
 	// Diff styles
@@ -291,6 +302,7 @@ func New(database *db.DB, project string) Model {
 		viewMode:       ViewList,
 		filterStatuses: statuses,
 		staleItems:     make(map[string]bool),
+		selectedItems:  make(map[string]bool),
 		varExpanded:    make(map[string]bool),
 	}
 }
@@ -708,6 +720,20 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			}
 			return actionMsg{message: fmt.Sprintf("%s now blocks %s", text, item.ID)}
 		}
+
+	case InputBatchStatus:
+		result, cmd := m.doBatchStatus(text)
+		// Exit select mode after batch operation
+		result.selectMode = false
+		result.selectedItems = make(map[string]bool)
+		return result, cmd
+
+	case InputBatchPriority:
+		result, cmd := m.doBatchPriority(text)
+		// Exit select mode after batch operation
+		result.selectMode = false
+		result.selectedItems = make(map[string]bool)
+		return result, cmd
 	}
 
 	return m, nil
@@ -717,6 +743,27 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+
+	case "ctrl+v":
+		// Toggle selection mode
+		m.selectMode = !m.selectMode
+		if !m.selectMode {
+			// Clear selections when exiting select mode
+			m.selectedItems = make(map[string]bool)
+		}
+		return m, nil
+
+	case " ":
+		// Space: toggle selection of current item (only in select mode)
+		if m.selectMode && len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			id := m.filtered[m.cursor].ID
+			if m.selectedItems[id] {
+				delete(m.selectedItems, id)
+			} else {
+				m.selectedItems[id] = true
+			}
+		}
+		return m, nil
 
 	case "up", "k":
 		if m.cursor > 0 {
@@ -780,8 +827,19 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Actions
 	case "s":
+		if m.selectMode && len(m.selectedItems) > 0 {
+			return m.startInput(InputBatchStatus, "Batch status (o=open, i=in_progress, b=blocked, d=done, c=canceled): ")
+		}
 		return m.doStart()
+	case "p":
+		if m.selectMode && len(m.selectedItems) > 0 {
+			return m.startInput(InputBatchPriority, "Batch priority (1-5): ")
+		}
+		return m.startInput(InputProject, "Project: ")
 	case "d":
+		if m.selectMode && len(m.selectedItems) > 0 {
+			return m.doBatchDone()
+		}
 		return m.doDone()
 	case "b":
 		return m.startInput(InputBlock, "Block reason: ")
@@ -795,8 +853,6 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Filtering
 	case "/":
 		return m.startInput(InputSearch, "Search: ")
-	case "p":
-		return m.startInput(InputProject, "Project: ")
 	case "t":
 		return m.startInput(InputLabel, "Label: ")
 	case "1":
@@ -1237,6 +1293,98 @@ func (m Model) doDelete() (Model, tea.Cmd) {
 	}
 }
 
+func (m Model) doBatchDone() (Model, tea.Cmd) {
+	if len(m.selectedItems) == 0 {
+		return m, nil
+	}
+	selectedIDs := make([]string, 0, len(m.selectedItems))
+	for id := range m.selectedItems {
+		selectedIDs = append(selectedIDs, id)
+	}
+	return m, func() tea.Msg {
+		count := 0
+		for _, id := range selectedIDs {
+			if err := m.db.UpdateStatus(id, model.StatusDone, db.AgentContext{}); err != nil {
+				return actionMsg{err: fmt.Errorf("failed to complete %s: %w", id, err)}
+			}
+			count++
+		}
+		return actionMsg{message: fmt.Sprintf("Completed %d items", count)}
+	}
+}
+
+func (m Model) doBatchStatus(statusChar string) (Model, tea.Cmd) {
+	if len(m.selectedItems) == 0 {
+		return m, nil
+	}
+	var status model.Status
+	switch statusChar {
+	case "o":
+		status = model.StatusOpen
+	case "i":
+		status = model.StatusInProgress
+	case "b":
+		status = model.StatusBlocked
+	case "d":
+		status = model.StatusDone
+	case "c":
+		status = model.StatusCanceled
+	default:
+		m.message = "Invalid status: use o/i/b/d/c"
+		return m, nil
+	}
+	selectedIDs := make([]string, 0, len(m.selectedItems))
+	for id := range m.selectedItems {
+		selectedIDs = append(selectedIDs, id)
+	}
+	return m, func() tea.Msg {
+		count := 0
+		for _, id := range selectedIDs {
+			if err := m.db.UpdateStatus(id, status, db.AgentContext{}); err != nil {
+				return actionMsg{err: fmt.Errorf("failed to update %s: %w", id, err)}
+			}
+			count++
+		}
+		return actionMsg{message: fmt.Sprintf("Updated %d items to %s", count, status)}
+	}
+}
+
+func (m Model) doBatchPriority(priorityStr string) (Model, tea.Cmd) {
+	if len(m.selectedItems) == 0 {
+		return m, nil
+	}
+	var priority int
+	switch priorityStr {
+	case "1":
+		priority = 1
+	case "2":
+		priority = 2
+	case "3":
+		priority = 3
+	case "4":
+		priority = 4
+	case "5":
+		priority = 5
+	default:
+		m.message = "Invalid priority: use 1-5"
+		return m, nil
+	}
+	selectedIDs := make([]string, 0, len(m.selectedItems))
+	for id := range m.selectedItems {
+		selectedIDs = append(selectedIDs, id)
+	}
+	return m, func() tea.Msg {
+		count := 0
+		for _, id := range selectedIDs {
+			if err := m.db.UpdatePriority(id, priority); err != nil {
+				return actionMsg{err: fmt.Errorf("failed to update %s: %w", id, err)}
+			}
+			count++
+		}
+		return actionMsg{message: fmt.Sprintf("Set priority %d on %d items", priority, count)}
+	}
+}
+
 // getEditor returns the editor command to use.
 // Prefers $TPG_EDITOR, then $EDITOR, then nvim, nano, vi.
 func getEditor() string {
@@ -1395,6 +1543,12 @@ func (m Model) listView() string {
 	b.WriteString(titleStyle.Render(title))
 	b.WriteString(fmt.Sprintf("  %d/%d items", len(m.filtered), len(m.items)))
 
+	// Selection mode indicator
+	if m.selectMode {
+		b.WriteString("  ")
+		b.WriteString(selectModeStyle.Render(fmt.Sprintf("[SELECT MODE] (%d selected)", len(m.selectedItems))))
+	}
+
 	// Active filters
 	filters := m.activeFiltersString()
 	if filters != "" {
@@ -1458,9 +1612,15 @@ func (m Model) listView() string {
 
 	// Footer
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k:nav  ^u/^d:½pg  pgup/dn:pg  g/G:top/end  enter:detail  s:start d:done n:new"))
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  b:block L:log c:cancel  r:refresh q:quit"))
+	if m.selectMode {
+		b.WriteString(helpStyle.Render("j/k:nav  space:toggle  s:batch-status  p:batch-priority  d:batch-done"))
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("ctrl+v:exit-select  esc:clear-filters  q:quit"))
+	} else {
+		b.WriteString(helpStyle.Render("j/k:nav  ^u/^d:½pg  pgup/dn:pg  g/G:top/end  enter:detail  s:start d:done n:new"))
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  b:block L:log c:cancel  ctrl+v:select  r:refresh q:quit"))
+	}
 
 	return b.String()
 }
@@ -1469,6 +1629,18 @@ func (m Model) listView() string {
 // Used for selected rows where we apply a single highlight style.
 func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	status := formatStatus(item.Status)
+
+	// Selection indicator
+	selectPrefix := ""
+	selectWidth := 0
+	if m.selectMode {
+		if m.selectedItems[item.ID] {
+			selectPrefix = "✓ "
+		} else {
+			selectPrefix = "  "
+		}
+		selectWidth = 2
+	}
 
 	// Stale indicator
 	stale := ""
@@ -1513,7 +1685,7 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth
+	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -1525,9 +1697,9 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	}
 
 	if agent != "" {
-		return fmt.Sprintf("%s%-8s %-4s %s %s %-*s%s %s", stale, status, itemType, item.ID, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%s%-8s %-4s %s %s %-*s%s %s", selectPrefix, stale, status, itemType, item.ID, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%-8s %-4s %s  %-*s%s %s", stale, status, itemType, item.ID, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s%-8s %-4s %s  %-*s%s %s", selectPrefix, stale, status, itemType, item.ID, titleWidth, title, labels, project)
 }
 
 // formatItemLineStyled returns a styled line with colors for non-selected rows.
@@ -1536,6 +1708,18 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	text := statusText(item.Status)
 	color := statusColors[item.Status]
 	statusStyled := lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%-8s", icon+" "+text))
+
+	// Selection indicator
+	selectPrefix := ""
+	selectWidth := 0
+	if m.selectMode {
+		if m.selectedItems[item.ID] {
+			selectPrefix = selectModeStyle.Render("✓") + " "
+		} else {
+			selectPrefix = "  "
+		}
+		selectWidth = 2
+	}
 
 	// Stale indicator
 	stale := ""
@@ -1583,7 +1767,7 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth
+	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -1595,9 +1779,9 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	}
 
 	if agent != "" {
-		return fmt.Sprintf("%s%s %s %s %s %-*s%s %s", stale, statusStyled, typeStyled, id, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%s%s %s %s %s %-*s%s %s", selectPrefix, stale, statusStyled, typeStyled, id, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%s %s %s  %-*s%s %s", stale, statusStyled, typeStyled, id, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s%s %s %s  %-*s%s %s", selectPrefix, stale, statusStyled, typeStyled, id, titleWidth, title, labels, project)
 }
 
 func (m Model) activeFiltersString() string {

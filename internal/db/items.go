@@ -284,6 +284,29 @@ func (db *DB) SetTitle(id string, title string) error {
 	return nil
 }
 
+// UpdatePriority changes an item's priority.
+func (db *DB) UpdatePriority(id string, priority int) error {
+	if priority < 1 || priority > 5 {
+		return fmt.Errorf("invalid priority: %d (must be 1-5)", priority)
+	}
+
+	result, err := db.Exec(`
+		UPDATE items
+		SET priority = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		priority, sqlTime(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("failed to update priority: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	return nil
+}
+
 // DeleteItem removes an item and its associated logs and dependencies.
 func (db *DB) DeleteItem(id string) error {
 	// Check if item exists first
