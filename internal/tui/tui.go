@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,15 @@ const (
 
 // InputMode represents what kind of text input is active.
 type InputMode int
+
+// DescViewMode represents which description view is active for templated items.
+type DescViewMode int
+
+const (
+	DescViewStored   DescViewMode = iota // Show stored description (default)
+	DescViewRendered                     // Show freshly rendered template
+	DescViewDiff                         // Show diff between stored and rendered
+)
 
 const (
 	InputNone       InputMode = iota
@@ -100,6 +110,14 @@ type Model struct {
 	graphNodes     []graphNode
 	graphCursor    int
 	graphCurrentID string // ID of the center task in graph view
+
+	// Template variable expansion state (for detail view)
+	varExpanded map[string]bool
+
+	// Template description view state
+	descViewMode DescViewMode
+	storedDesc   string // Cached stored description
+	renderedDesc string // Cached rendered description
 }
 
 // graphNode represents a task in the dependency graph view.
@@ -159,6 +177,13 @@ var (
 	staleStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("208")).
 			Bold(true)
+
+	// Diff styles
+	diffAddedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("42")) // Green for added lines
+
+	diffRemovedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("196")) // Red for removed lines
 
 	// Content area padding
 	contentPadding = 2
@@ -266,6 +291,7 @@ func New(database *db.DB, project string) Model {
 		viewMode:       ViewList,
 		filterStatuses: statuses,
 		staleItems:     make(map[string]bool),
+		varExpanded:    make(map[string]bool),
 	}
 }
 
@@ -928,6 +954,55 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.buildGraph()
 		m.viewMode = ViewGraph
 		return m, nil
+
+	// Toggle template variable expansion
+	case "x":
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			item := m.filtered[m.cursor]
+			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
+				// Toggle all variables
+				allExpanded := true
+				for k := range item.TemplateVars {
+					if !m.varExpanded[k] {
+						allExpanded = false
+						break
+					}
+				}
+				for k := range item.TemplateVars {
+					m.varExpanded[k] = !allExpanded
+				}
+			}
+		}
+
+	// Toggle description view mode (stored/rendered/diff)
+	case "X":
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			item := m.filtered[m.cursor]
+			if item.TemplateID != "" {
+				// Cycle through view modes
+				m.descViewMode = (m.descViewMode + 1) % 3
+				// Cache descriptions when switching to non-stored view
+				if m.descViewMode != DescViewStored {
+					m.storedDesc = item.Description
+					m.renderedDesc = renderTemplateForItem(item)
+				}
+			}
+		}
+
+	// Refresh stored description from rendered template
+	case "R":
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			item := m.filtered[m.cursor]
+			if item.TemplateID != "" {
+				rendered := renderTemplateForItem(item)
+				return m, func() tea.Msg {
+					if err := m.db.SetDescription(item.ID, rendered); err != nil {
+						return actionMsg{err: err}
+					}
+					return actionMsg{message: fmt.Sprintf("Updated description for %s from template", item.ID)}
+				}
+			}
+		}
 	}
 
 	return m, nil
@@ -1554,6 +1629,74 @@ func (m Model) activeFiltersString() string {
 	return strings.Join(parts, " ")
 }
 
+// renderTemplateForItem renders the template description for an item using its stored variables.
+func renderTemplateForItem(item model.Item) string {
+	if item.TemplateID == "" {
+		return item.Description
+	}
+
+	tmpl, err := templates.LoadTemplate(item.TemplateID)
+	if err != nil {
+		return item.Description
+	}
+
+	// Find the step for this item (if it has a step index)
+	if item.StepIndex != nil && *item.StepIndex >= 0 && *item.StepIndex < len(tmpl.Steps) {
+		step := tmpl.Steps[*item.StepIndex]
+		return templates.RenderText(step.Description, item.TemplateVars)
+	}
+
+	// No step index, render the template description
+	return templates.RenderText(tmpl.Description, item.TemplateVars)
+}
+
+// computeDescriptionDiff computes a simple line-by-line diff between stored and rendered descriptions.
+func computeDescriptionDiff(stored, rendered string) string {
+	storedLines := strings.Split(stored, "\n")
+	renderedLines := strings.Split(rendered, "\n")
+
+	var result strings.Builder
+
+	// Simple diff: show removed lines (from stored) and added lines (from rendered)
+	// This is a basic implementation - not a full diff algorithm
+	storedSet := make(map[string]bool)
+	renderedSet := make(map[string]bool)
+
+	for _, line := range storedLines {
+		storedSet[line] = true
+	}
+	for _, line := range renderedLines {
+		renderedSet[line] = true
+	}
+
+	// Show lines only in stored (removed)
+	for _, line := range storedLines {
+		if !renderedSet[line] {
+			result.WriteString(diffRemovedStyle.Render("- "+line) + "\n")
+		}
+	}
+
+	// Show lines only in rendered (added)
+	for _, line := range renderedLines {
+		if !storedSet[line] {
+			result.WriteString(diffAddedStyle.Render("+ "+line) + "\n")
+		}
+	}
+
+	// Show common lines
+	for _, line := range renderedLines {
+		if storedSet[line] {
+			result.WriteString("  " + line + "\n")
+		}
+	}
+
+	if result.Len() == 0 {
+		return dimStyle.Render("(no differences)")
+	}
+
+	return result.String()
+}
+
 func (m Model) detailView() string {
 	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
 		return "No item selected"
@@ -1611,6 +1754,77 @@ func (m Model) detailView() string {
 		b.WriteString(detailLabelStyle.Render("Labels:   ") + labelsStr + "\n")
 	}
 
+	// Template information
+	if item.TemplateID != "" {
+		b.WriteString("\n" + detailLabelStyle.Render("Template:") + "\n")
+		b.WriteString("  " + detailLabelStyle.Render("ID:     ") + item.TemplateID + "\n")
+
+		// Load template to get source and check hash
+		if tmpl, err := templates.LoadTemplate(item.TemplateID); err == nil {
+			b.WriteString("  " + detailLabelStyle.Render("Source: ") + tmpl.Source + "\n")
+			// Check for hash mismatch
+			if item.TemplateHash != "" && item.TemplateHash != tmpl.Hash {
+				b.WriteString("  " + errorStyle.Render("[Template has changed since instantiation]") + "\n")
+			}
+		}
+
+		// Show template variables
+		if len(item.TemplateVars) > 0 {
+			// Check if any variables need expansion hint
+			hasExpandable := false
+			for _, v := range item.TemplateVars {
+				if strings.Contains(v, "\n") || len(v) > 60 {
+					hasExpandable = true
+					break
+				}
+			}
+
+			varsHeader := "  Variables:"
+			if hasExpandable {
+				varsHeader += " " + dimStyle.Render("[x:expand]")
+			}
+			b.WriteString(varsHeader + "\n")
+
+			// Sort variable names for consistent display
+			varNames := make([]string, 0, len(item.TemplateVars))
+			for k := range item.TemplateVars {
+				varNames = append(varNames, k)
+			}
+			sort.Strings(varNames)
+
+			for _, name := range varNames {
+				value := item.TemplateVars[name]
+				displayValue := value
+
+				// Check if value needs truncation
+				if m.varExpanded[name] {
+					// Show full value, indented for multi-line
+					if strings.Contains(value, "\n") {
+						lines := strings.Split(value, "\n")
+						displayValue = lines[0]
+						for i := 1; i < len(lines); i++ {
+							displayValue += "\n      " + lines[i]
+						}
+					}
+				} else {
+					// Truncate if needed
+					if strings.Contains(value, "\n") {
+						// Show first line only with indicator
+						firstLine := strings.Split(value, "\n")[0]
+						if len(firstLine) > 60 {
+							firstLine = firstLine[:57] + "..."
+						}
+						displayValue = firstLine + " " + dimStyle.Render("(...)")
+					} else if len(value) > 60 {
+						displayValue = value[:57] + dimStyle.Render("(...)")
+					}
+				}
+
+				b.WriteString("    " + labelStyle.Render(name) + ": " + displayValue + "\n")
+			}
+		}
+	}
+
 	// Dependencies — "Blocked by" (what this depends on)
 	if len(m.detailDeps) > 0 {
 		header := "Blocked by:"
@@ -1649,10 +1863,44 @@ func (m Model) detailView() string {
 		}
 	}
 
-	// Description
-	if item.Description != "" {
-		b.WriteString("\n" + detailLabelStyle.Render("Description:") + "\n")
-		b.WriteString(item.Description + "\n")
+	// Description (with view mode toggle for templated items)
+	if item.Description != "" || (item.TemplateID != "" && m.descViewMode != DescViewStored) {
+		descLabel := "Description:"
+		if item.TemplateID != "" {
+			switch m.descViewMode {
+			case DescViewStored:
+				descLabel = "Description " + dimStyle.Render("[stored]") + ":"
+			case DescViewRendered:
+				descLabel = "Description " + labelStyle.Render("[rendered]") + ":"
+			case DescViewDiff:
+				descLabel = "Description " + labelStyle.Render("[diff]") + ":"
+			}
+		}
+		b.WriteString("\n" + detailLabelStyle.Render(descLabel) + "\n")
+
+		// Show appropriate content based on view mode
+		if item.TemplateID != "" && m.descViewMode != DescViewStored {
+			switch m.descViewMode {
+			case DescViewRendered:
+				rendered := m.renderedDesc
+				if rendered == "" {
+					rendered = renderTemplateForItem(item)
+				}
+				b.WriteString(rendered + "\n")
+			case DescViewDiff:
+				stored := m.storedDesc
+				if stored == "" {
+					stored = item.Description
+				}
+				rendered := m.renderedDesc
+				if rendered == "" {
+					rendered = renderTemplateForItem(item)
+				}
+				b.WriteString(computeDescriptionDiff(stored, rendered))
+			}
+		} else {
+			b.WriteString(item.Description + "\n")
+		}
 	}
 
 	// Logs (toggle with v, scrollable)
@@ -1679,6 +1927,12 @@ func (m Model) detailView() string {
 	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep e:edit  v:logs  g:graph  q:quit"
 	if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
 		help += "  tab:deps enter:jump"
+	}
+	if item.TemplateID != "" {
+		if len(item.TemplateVars) > 0 {
+			help += "  x:expand vars"
+		}
+		help += "  X:view mode R:refresh"
 	}
 	b.WriteString(helpStyle.Render(help))
 
