@@ -21,6 +21,35 @@ type Config struct {
 	CustomPrefixes map[string]string `json:"custom_prefixes"`
 	DefaultProject string            `json:"default_project"`
 	IDLength       int               `json:"id_length,omitempty"`
+	Warnings       WarningsConfig    `json:"warnings,omitempty"`
+}
+
+// WarningsConfig controls which warnings are shown.
+type WarningsConfig struct {
+	// ShortDescription warns when description has fewer than MinDescriptionWords words.
+	// Set to false to disable. Default is true.
+	ShortDescription *bool `json:"short_description,omitempty"`
+	// MinDescriptionWords is the minimum word count before warning. Default is 15.
+	MinDescriptionWords int `json:"min_description_words,omitempty"`
+}
+
+// DefaultMinDescriptionWords is the default threshold for short description warnings.
+const DefaultMinDescriptionWords = 15
+
+// ShortDescriptionWarningEnabled returns whether short description warnings are enabled.
+func (c *Config) ShortDescriptionWarningEnabled() bool {
+	if c.Warnings.ShortDescription == nil {
+		return true // default to enabled
+	}
+	return *c.Warnings.ShortDescription
+}
+
+// GetMinDescriptionWords returns the minimum word count for descriptions.
+func (c *Config) GetMinDescriptionWords() int {
+	if c.Warnings.MinDescriptionWords <= 0 {
+		return DefaultMinDescriptionWords
+	}
+	return c.Warnings.MinDescriptionWords
 }
 
 // PrefixConfig holds ID prefixes for items.
@@ -205,6 +234,13 @@ func mergeConfigs(dataDir string, configs []*Config) *Config {
 			for k, v := range cfg.CustomPrefixes {
 				merged.CustomPrefixes[k] = v
 			}
+		}
+		// Merge warnings config - later configs override
+		if cfg.Warnings.ShortDescription != nil {
+			merged.Warnings.ShortDescription = cfg.Warnings.ShortDescription
+		}
+		if cfg.Warnings.MinDescriptionWords > 0 {
+			merged.Warnings.MinDescriptionWords = cfg.Warnings.MinDescriptionWords
 		}
 	}
 

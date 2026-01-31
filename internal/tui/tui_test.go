@@ -185,3 +185,73 @@ func TestGetTemplateInfo(t *testing.T) {
 		t.Errorf("getTemplateInfo() should preserve template name even when not found")
 	}
 }
+
+func TestShowStatusMenu(t *testing.T) {
+	// Test that showStatusMenu sets the correct state
+	m := Model{
+		filtered: []model.Item{{ID: "test-1", Title: "Test Item"}},
+	}
+
+	// Test showing menu with different cursor positions
+	tests := []struct {
+		cursor int
+		name   string
+	}{
+		{0, "start"},
+		{1, "done"},
+		{2, "block"},
+		{3, "cancel"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resultModel, _ := m.showStatusMenu(tt.cursor)
+
+			if resultModel.inputMode != InputStatusMenu {
+				t.Errorf("showStatusMenu(%d) should set inputMode to InputStatusMenu", tt.cursor)
+			}
+			if resultModel.statusMenuCursor != tt.cursor {
+				t.Errorf("showStatusMenu(%d) should set statusMenuCursor to %d, got %d", tt.cursor, tt.cursor, resultModel.statusMenuCursor)
+			}
+		})
+	}
+}
+
+func TestShowStatusMenuNoItems(t *testing.T) {
+	// Test that showStatusMenu does nothing when there are no items
+	m := Model{
+		filtered: []model.Item{},
+	}
+
+	resultModel, _ := m.showStatusMenu(0)
+
+	if resultModel.inputMode == InputStatusMenu {
+		t.Errorf("showStatusMenu() should not show menu when there are no items")
+	}
+}
+
+func TestStatusMenuView(t *testing.T) {
+	// Test that statusMenuView renders correctly
+	m := Model{
+		filtered:         []model.Item{{ID: "test-1", Title: "Test Item"}},
+		inputMode:        InputStatusMenu,
+		statusMenuCursor: 0,
+	}
+
+	view := m.statusMenuView()
+
+	// Check that the view contains expected elements
+	expectedStrings := []string{
+		"Change Status",
+		"[s] Start",
+		"[d] Done",
+		"[b] Block",
+		"[c] Cancel",
+	}
+
+	for _, expected := range expectedStrings {
+		if !containsString(view, expected) {
+			t.Errorf("statusMenuView() should contain %q", expected)
+		}
+	}
+}

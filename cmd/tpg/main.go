@@ -379,11 +379,25 @@ Examples:
 
 		fmt.Println(item.ID)
 
+		// Warn if description is very short (but not empty) - configurable
+		config, _ := db.LoadConfig()
+		if config != nil && config.ShortDescriptionWarningEnabled() {
+			minWords := config.GetMinDescriptionWords()
+			if description != "" && countWords(description) < minWords {
+				fmt.Fprintf(os.Stderr, "\nWARNING: This description is very short (%d words, recommend %d+). Does it include\nall context needed for someone not part of the main discussion to understand the task?\nConsider extending with: tpg edit %s --desc\n", countWords(description), minWords, item.ID)
+			}
+		}
+
 		// Backup after successful mutation
 		database.BackupQuiet()
 
 		return nil
 	},
+}
+
+// countWords returns the number of words in a string
+func countWords(s string) int {
+	return len(strings.Fields(s))
 }
 
 var listCmd = &cobra.Command{
@@ -1178,6 +1192,168 @@ Example:
 			return err
 		}
 		fmt.Printf("Deleted %s\n", args[0])
+		return nil
+	},
+}
+
+var (
+	flagCleanDone     bool
+	flagCleanCanceled bool
+	flagCleanLogs     bool
+	flagCleanVacuum   bool
+	flagCleanAll      bool
+	flagCleanDays     int
+)
+
+var cleanCmd = &cobra.Command{
+	Use:   "clean",
+	Short: "Clean up old tasks and compact database",
+	Long: `Remove old done/canceled tasks and compact the database.
+
+By default, requires confirmation before deleting. Use --dry-run to preview
+what would be deleted, or --force to skip confirmation.
+
+Examples:
+  tpg clean --done              # Remove done tasks older than 30 days
+  tpg clean --canceled          # Remove canceled tasks older than 30 days
+  tpg clean --all               # Remove old done+canceled and vacuum
+  tpg clean --all --days 7      # More aggressive: 7 day threshold
+  tpg clean --dry-run --all     # Preview what would be deleted
+  tpg clean --vacuum            # Just compact the database`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		// If --all is set, enable all cleanup operations
+		if flagCleanAll {
+			flagCleanDone = true
+			flagCleanCanceled = true
+			flagCleanVacuum = true
+		}
+
+		// Require at least one operation
+		if !flagCleanDone && !flagCleanCanceled && !flagCleanLogs && !flagCleanVacuum {
+			return fmt.Errorf("specify at least one of: --done, --canceled, --logs, --vacuum, or --all")
+		}
+
+		cutoff := time.Now().AddDate(0, 0, -flagCleanDays)
+
+		// Count what would be deleted
+		var doneCount, canceledCount, orphanedLogCount int
+		var err2 error
+
+		if flagCleanDone {
+			doneCount, err2 = database.CountOldItems(cutoff, model.StatusDone)
+			if err2 != nil {
+				return err2
+			}
+		}
+
+		if flagCleanCanceled {
+			canceledCount, err2 = database.CountOldItems(cutoff, model.StatusCanceled)
+			if err2 != nil {
+				return err2
+			}
+		}
+
+		if flagCleanLogs {
+			orphanedLogCount, err2 = database.CountOrphanedLogs()
+			if err2 != nil {
+				return err2
+			}
+		}
+
+		// Show what would be deleted
+		hasWork := doneCount > 0 || canceledCount > 0 || orphanedLogCount > 0 || flagCleanVacuum
+		if !hasWork {
+			fmt.Println("Nothing to clean up")
+			return nil
+		}
+
+		fmt.Println("Found:")
+		if flagCleanDone {
+			fmt.Printf("  %d done tasks older than %d days\n", doneCount, flagCleanDays)
+		}
+		if flagCleanCanceled {
+			fmt.Printf("  %d canceled tasks older than %d days\n", canceledCount, flagCleanDays)
+		}
+		if flagCleanLogs && orphanedLogCount > 0 {
+			fmt.Printf("  %d orphaned log entries\n", orphanedLogCount)
+		}
+		if flagCleanVacuum {
+			fmt.Println("  Database will be compacted")
+		}
+
+		// Dry run - just show what would happen
+		if flagDryRun {
+			fmt.Println("\nDry run - no changes made")
+			return nil
+		}
+
+		// Confirm unless --force
+		if !flagForce {
+			fmt.Print("\nDelete these items? [y/N]: ")
+			var response string
+			fmt.Scanln(&response)
+			if response != "y" && response != "Y" {
+				fmt.Println("Aborted")
+				return nil
+			}
+		}
+
+		fmt.Println()
+
+		// Get database size before vacuum
+		var sizeBefore int64
+		if flagCleanVacuum {
+			sizeBefore, _ = database.GetDatabaseSize()
+		}
+
+		// Perform deletions
+		if flagCleanDone && doneCount > 0 {
+			deleted, err := database.DeleteOldItems(cutoff, model.StatusDone)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Deleted %d done tasks\n", deleted)
+		}
+
+		if flagCleanCanceled && canceledCount > 0 {
+			deleted, err := database.DeleteOldItems(cutoff, model.StatusCanceled)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Deleted %d canceled tasks\n", deleted)
+		}
+
+		if flagCleanLogs && orphanedLogCount > 0 {
+			deleted, err := database.DeleteOrphanedLogs()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Deleted %d orphaned log entries\n", deleted)
+		}
+
+		if flagCleanVacuum {
+			fmt.Print("Running VACUUM...")
+			if err := database.Vacuum(); err != nil {
+				return err
+			}
+			sizeAfter, _ := database.GetDatabaseSize()
+			saved := sizeBefore - sizeAfter
+			if saved > 0 {
+				fmt.Printf(" done (saved %s)\n", formatSize(saved))
+			} else {
+				fmt.Println(" done")
+			}
+		}
+
+		// Backup after successful cleanup
+		database.BackupQuiet()
+
 		return nil
 	},
 }
@@ -3978,6 +4154,16 @@ func init() {
 	// plan flags
 	planCmd.Flags().BoolVar(&flagContextJSON, "json", false, "Output as JSON")
 
+	// clean flags
+	cleanCmd.Flags().BoolVar(&flagCleanDone, "done", false, "Remove done tasks older than N days")
+	cleanCmd.Flags().BoolVar(&flagCleanCanceled, "canceled", false, "Remove canceled tasks older than N days")
+	cleanCmd.Flags().BoolVar(&flagCleanLogs, "logs", false, "Remove orphaned logs")
+	cleanCmd.Flags().BoolVar(&flagCleanVacuum, "vacuum", false, "Run SQLite VACUUM to compact database")
+	cleanCmd.Flags().BoolVar(&flagCleanAll, "all", false, "Do all cleanup (done + canceled + vacuum)")
+	cleanCmd.Flags().IntVar(&flagCleanDays, "days", 30, "Age threshold in days")
+	cleanCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Show what would be deleted without actually deleting")
+	cleanCmd.Flags().BoolVar(&flagForce, "force", false, "Skip confirmation prompt")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
@@ -3994,6 +4180,7 @@ func init() {
 	rootCmd.AddCommand(blockCmd)
 	rootCmd.AddCommand(staleCmd)
 	rootCmd.AddCommand(deleteCmd)
+	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(summaryCmd)

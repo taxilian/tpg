@@ -261,3 +261,27 @@ func TestAddCmd_BothFlags(t *testing.T) {
 		t.Error("blocking relationship not set correctly")
 	}
 }
+
+func TestCountWords(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int
+	}{
+		{"", 0},
+		{"hello", 1},
+		{"hello world", 2},
+		{"  hello   world  ", 2},
+		{"one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen", 15},
+		{"one two three four five six seven eight nine ten eleven twelve thirteen fourteen", 14},
+		{"This is a short description", 5},
+		{"This is a longer description that has more than fifteen words in it to test the threshold properly", 18},
+		{"\n\ttabbed\n\nand\nnewlines\n", 3},
+	}
+
+	for _, tt := range tests {
+		got := countWords(tt.input)
+		if got != tt.expected {
+			t.Errorf("countWords(%q) = %d, want %d", tt.input, got, tt.expected)
+		}
+	}
+}

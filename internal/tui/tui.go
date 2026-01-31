@@ -54,6 +54,7 @@ const (
 	InputBatchStatus             // Entering status for batch change
 	InputBatchPriority           // Entering priority for batch change
 	InputTextarea                // Multi-line textarea editing
+	InputStatusMenu              // Status change confirmation menu
 )
 
 // Status icons
@@ -132,6 +133,9 @@ type Model struct {
 	textarea         textarea.Model
 	textareaTarget   string // what we're editing: "description" or "var:<name>"
 	textareaOriginal string // original value for cancel
+
+	// Status menu state
+	statusMenuCursor int // 0=start, 1=done, 2=block, 3=cancel
 }
 
 // graphNode represents a task in the dependency graph view.
@@ -550,6 +554,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTextareaKey(msg)
 	}
 
+	// Handle status menu mode
+	if m.inputMode == InputStatusMenu {
+		return m.handleStatusMenuKey(msg)
+	}
+
 	// Handle other input modes
 	if m.inputMode != InputNone {
 		return m.handleInputKey(msg)
@@ -616,6 +625,65 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	return m, nil
+}
+
+// handleStatusMenuKey handles key events when the status menu is active.
+func (m Model) handleStatusMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Cancel menu, return to previous view
+		m.inputMode = InputNone
+		return m, nil
+
+	case "up", "k":
+		if m.statusMenuCursor > 0 {
+			m.statusMenuCursor--
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.statusMenuCursor < 3 {
+			m.statusMenuCursor++
+		}
+		return m, nil
+
+	case "enter":
+		// Execute the selected action
+		m.inputMode = InputNone
+		switch m.statusMenuCursor {
+		case 0: // Start
+			return m.doStart()
+		case 1: // Done
+			return m.doDone()
+		case 2: // Block
+			return m.startInput(InputBlock, "Block reason: ")
+		case 3: // Cancel
+			return m.startInput(InputCancel, "Cancel reason (optional): ")
+		}
+		return m, nil
+
+	case "s":
+		// Quick key for Start
+		m.inputMode = InputNone
+		return m.doStart()
+
+	case "d":
+		// Quick key for Done
+		m.inputMode = InputNone
+		return m.doDone()
+
+	case "b":
+		// Quick key for Block (needs reason)
+		m.inputMode = InputNone
+		return m.startInput(InputBlock, "Block reason: ")
+
+	case "c":
+		// Quick key for Cancel (needs reason)
+		m.inputMode = InputNone
+		return m.startInput(InputCancel, "Cancel reason (optional): ")
+	}
+
 	return m, nil
 }
 
@@ -850,12 +918,12 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadDetail()
 		}
 
-	// Actions
+	// Actions - show status menu for confirmation
 	case "s":
 		if m.selectMode && len(m.selectedItems) > 0 {
 			return m.startInput(InputBatchStatus, "Batch status (o=open, i=in_progress, b=blocked, d=done, c=canceled): ")
 		}
-		return m.doStart()
+		return m.showStatusMenu(0) // Start selected
 	case "p":
 		if m.selectMode && len(m.selectedItems) > 0 {
 			return m.startInput(InputBatchPriority, "Batch priority (1-5): ")
@@ -865,13 +933,13 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectMode && len(m.selectedItems) > 0 {
 			return m.doBatchDone()
 		}
-		return m.doDone()
+		return m.showStatusMenu(1) // Done selected
 	case "b":
-		return m.startInput(InputBlock, "Block reason: ")
+		return m.showStatusMenu(2) // Block selected
 	case "L":
 		return m.startInput(InputLog, "Log message: ")
 	case "c":
-		return m.startInput(InputCancel, "Cancel reason (optional): ")
+		return m.showStatusMenu(3) // Cancel selected
 	case "D":
 		return m.doDelete()
 
@@ -1033,17 +1101,17 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	// Actions work in detail view too
+	// Actions work in detail view too - show status menu for confirmation
 	case "s":
-		return m.doStart()
+		return m.showStatusMenu(0) // Start selected
 	case "d":
-		return m.doDone()
+		return m.showStatusMenu(1) // Done selected
 	case "b":
-		return m.startInput(InputBlock, "Block reason: ")
+		return m.showStatusMenu(2) // Block selected
 	case "L":
 		return m.startInput(InputLog, "Log message: ")
 	case "c":
-		return m.startInput(InputCancel, "Cancel reason (optional): ")
+		return m.showStatusMenu(3) // Cancel selected
 	case "a":
 		return m.startInput(InputAddDep, "Add blocker ID: ")
 	case "e":
@@ -1320,6 +1388,16 @@ func (m Model) startInput(mode InputMode, label string) (Model, tea.Cmd) {
 	m.inputMode = mode
 	m.inputLabel = label
 	m.inputText = ""
+	return m, nil
+}
+
+// showStatusMenu opens the status change confirmation menu with the given option pre-selected.
+func (m Model) showStatusMenu(cursor int) (Model, tea.Cmd) {
+	if len(m.filtered) == 0 {
+		return m, nil
+	}
+	m.inputMode = InputStatusMenu
+	m.statusMenuCursor = cursor
 	return m, nil
 }
 
@@ -1727,6 +1805,9 @@ func (m Model) View() string {
 	// Show textarea view when in textarea editing mode
 	if m.inputMode == InputTextarea {
 		b.WriteString(m.textareaView())
+	} else if m.inputMode == InputStatusMenu {
+		// Show status menu as a centered overlay
+		b.WriteString(m.statusMenuView())
 	} else {
 		switch m.viewMode {
 		case ViewList:
@@ -1798,6 +1879,71 @@ func (m Model) textareaView() string {
 
 	// Help text
 	b.WriteString(helpStyle.Render("ctrl+s:save  esc:cancel  ctrl+e:external editor"))
+
+	return b.String()
+}
+
+// statusMenuView renders the status change confirmation menu.
+func (m Model) statusMenuView() string {
+	var b strings.Builder
+
+	// Get current item info for context
+	var itemInfo string
+	if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+		item := m.filtered[m.cursor]
+		itemInfo = fmt.Sprintf("%s: %s", item.ID, item.Title)
+		if len(itemInfo) > 50 {
+			itemInfo = itemInfo[:47] + "..."
+		}
+	}
+
+	// Menu box style
+	menuStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 2)
+
+	// Menu options
+	options := []struct {
+		key    string
+		label  string
+		status string
+	}{
+		{"s", "Start", "in_progress"},
+		{"d", "Done", "done"},
+		{"b", "Block", "blocked"},
+		{"c", "Cancel", "canceled"},
+	}
+
+	var menuContent strings.Builder
+	menuContent.WriteString(titleStyle.Render("Change Status") + "\n")
+	if itemInfo != "" {
+		menuContent.WriteString(dimStyle.Render(itemInfo) + "\n")
+	}
+	menuContent.WriteString("\n")
+
+	for i, opt := range options {
+		prefix := "  "
+		if i == m.statusMenuCursor {
+			prefix = "▸ "
+		}
+
+		line := fmt.Sprintf("%s[%s] %s", prefix, opt.key, opt.label)
+		if opt.status != "" {
+			line += " " + dimStyle.Render("("+opt.status+")")
+		}
+
+		if i == m.statusMenuCursor {
+			menuContent.WriteString(selectedRowStyle.Render(line) + "\n")
+		} else {
+			menuContent.WriteString(line + "\n")
+		}
+	}
+
+	menuContent.WriteString("\n")
+	menuContent.WriteString(helpStyle.Render("↑/↓:select  enter:confirm  esc:cancel"))
+
+	b.WriteString(menuStyle.Render(menuContent.String()))
 
 	return b.String()
 }
