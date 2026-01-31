@@ -277,7 +277,7 @@ func statusText(s model.Status) string {
 	case model.StatusOpen:
 		return "open"
 	case model.StatusInProgress:
-		return "prog"
+		return "active"
 	case model.StatusDone:
 		return "done"
 	case model.StatusBlocked:
@@ -458,6 +458,15 @@ func (m *Model) applyFilters() {
 		}
 		m.filtered = append(m.filtered, item)
 	}
+
+	// Sort by priority first (lower = higher priority), then by ID for stability
+	sort.Slice(m.filtered, func(i, j int) bool {
+		if m.filtered[i].Priority != m.filtered[j].Priority {
+			return m.filtered[i].Priority < m.filtered[j].Priority
+		}
+		return m.filtered[i].ID < m.filtered[j].ID
+	})
+
 	// Adjust cursor
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(0, len(m.filtered)-1)

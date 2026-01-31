@@ -35,7 +35,7 @@ func TestStatusText(t *testing.T) {
 		want   string
 	}{
 		{model.StatusOpen, "open"},
-		{model.StatusInProgress, "prog"},
+		{model.StatusInProgress, "active"},
 		{model.StatusBlocked, "block"},
 		{model.StatusDone, "done"},
 		{model.StatusCanceled, "cancel"},
@@ -60,7 +60,7 @@ func TestFormatStatus(t *testing.T) {
 		wantText string
 	}{
 		{model.StatusOpen, iconOpen, "open"},
-		{model.StatusInProgress, iconInProgress, "prog"},
+		{model.StatusInProgress, iconInProgress, "active"},
 		{model.StatusBlocked, iconBlocked, "block"},
 		{model.StatusDone, iconDone, "done"},
 		{model.StatusCanceled, iconCanceled, "cancel"},
