@@ -3,6 +3,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -282,6 +284,14 @@ type staleMsg struct {
 	err   error
 }
 
+// editorFinishedMsg is sent when the external editor closes.
+type editorFinishedMsg struct {
+	itemID   string
+	tmpPath  string
+	origTime time.Time
+	err      error
+}
+
 // loadItems loads items from the database, filtered by the current project.
 func (m Model) loadItems() tea.Cmd {
 	return func() tea.Msg {
@@ -453,6 +463,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.staleItems[item.ID] = true
 		}
 		return m, nil
+
+	case editorFinishedMsg:
+		return m.handleEditorFinished(msg)
 	}
 
 	return m, nil
@@ -887,6 +900,8 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startInput(InputCancel, "Cancel reason (optional): ")
 	case "a":
 		return m.startInput(InputAddDep, "Add blocker ID: ")
+	case "e":
+		return m.editDescription()
 
 	case "r":
 		return m, m.loadDetail()
@@ -1040,6 +1055,115 @@ func (m Model) doDelete() (Model, tea.Cmd) {
 		}
 		return actionMsg{message: fmt.Sprintf("Deleted %s", item.ID)}
 	}
+}
+
+// getEditor returns the editor command to use.
+// Prefers $TPG_EDITOR, then $EDITOR, then nvim, nano, vi.
+func getEditor() string {
+	if editor := os.Getenv("TPG_EDITOR"); editor != "" {
+		return editor
+	}
+	if editor := os.Getenv("EDITOR"); editor != "" {
+		return editor
+	}
+	if _, err := exec.LookPath("nvim"); err == nil {
+		return "nvim"
+	}
+	if _, err := exec.LookPath("nano"); err == nil {
+		return "nano"
+	}
+	return "vi"
+}
+
+// editDescription opens the current item's description in an external editor.
+// Returns a tea.ExecProcess command that suspends the TUI while editing.
+func (m Model) editDescription() (Model, tea.Cmd) {
+	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+		return m, nil
+	}
+	item := m.filtered[m.cursor]
+
+	// Create temp file with current description
+	tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
+	if err != nil {
+		m.err = fmt.Errorf("failed to create temp file: %w", err)
+		return m, nil
+	}
+	tmpPath := tmpfile.Name()
+
+	// Write current description
+	if _, err := tmpfile.WriteString(item.Description); err != nil {
+		_ = tmpfile.Close()
+		_ = os.Remove(tmpPath)
+		m.err = fmt.Errorf("failed to write temp file: %w", err)
+		return m, nil
+	}
+	if err := tmpfile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		m.err = fmt.Errorf("failed to close temp file: %w", err)
+		return m, nil
+	}
+
+	// Get original mod time for comparison
+	origStat, err := os.Stat(tmpPath)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		m.err = fmt.Errorf("failed to stat temp file: %w", err)
+		return m, nil
+	}
+
+	editor := getEditor()
+	c := exec.Command(editor, tmpPath)
+
+	// Use tea.ExecProcess to suspend TUI and run editor
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{
+			itemID:   item.ID,
+			tmpPath:  tmpPath,
+			origTime: origStat.ModTime(),
+			err:      err,
+		}
+	})
+}
+
+// handleEditorFinished processes the result of an external editor session.
+func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
+	// Always clean up temp file
+	defer func() { _ = os.Remove(msg.tmpPath) }()
+
+	if msg.err != nil {
+		m.err = fmt.Errorf("editor failed: %w", msg.err)
+		return m, nil
+	}
+
+	// Check if file was modified
+	newStat, err := os.Stat(msg.tmpPath)
+	if err != nil {
+		m.err = fmt.Errorf("failed to stat temp file: %w", err)
+		return m, nil
+	}
+
+	if newStat.ModTime().Equal(msg.origTime) {
+		m.message = "No changes made"
+		return m, nil
+	}
+
+	// Read new content
+	newContent, err := os.ReadFile(msg.tmpPath)
+	if err != nil {
+		m.err = fmt.Errorf("failed to read temp file: %w", err)
+		return m, nil
+	}
+
+	// Update description in database
+	if err := m.db.SetDescription(msg.itemID, string(newContent)); err != nil {
+		m.err = fmt.Errorf("failed to update description: %w", err)
+		return m, nil
+	}
+
+	m.message = fmt.Sprintf("Updated description for %s", msg.itemID)
+	// Reload items to reflect the change
+	return m, tea.Batch(m.loadItems(), m.loadDetail())
 }
 
 // View implements tea.Model.
@@ -1445,7 +1569,7 @@ func (m Model) detailView() string {
 	}
 
 	b.WriteString("\n")
-	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep  v:logs  q:quit"
+	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep e:edit  v:logs  q:quit"
 	if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
 		help += "  tab:deps enter:jump"
 	}
