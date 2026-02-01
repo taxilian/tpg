@@ -3,6 +3,11 @@
     "task": "ts",
     "epic": "ep"
   },
+  "custom_prefixes": null,
   "default_project": "tpg",
-  "id_length": 3
+  "id_length": 3,
+  "warnings": {
+    "short_description": true,
+    "min_description_words": 15
+  }
 }

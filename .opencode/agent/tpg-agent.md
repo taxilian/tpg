@@ -192,17 +192,39 @@ If given another task, compact your context and start fresh from step 1. Don't c
 ## Using TPG Tools
 
 ```bash
-tpg show <id>                          # Read task details
+tpg show <id>                          # Read task details (includes worktree context)
+tpg ready --epic <id>                  # Filter to epic's tasks
 tpg start <id>                         # Claim work
 tpg log <id> "msg"                     # Log milestone/discovery
 tpg done <id> "results"                # Mark complete with results
 tpg add "title" --desc "desc" --blocks <id>  # Follow-up task with dependency (preferred)
 tpg dep <id> blocks <other-id>             # Add dependency to existing tasks
 tpg dep <id> list                          # Show dependencies
+tpg edit <id> --parent <id>                # Change parent
 tpg label <id> needs-review            # Quality gates
 tpg template list                      # Check available templates
 tpg add "title" --template <id>        # Create from template
 ```
+
+## Worktree Awareness
+
+Tasks may belong to epics with dedicated worktrees. `tpg show` displays worktree context automatically:
+
+```
+Epic:        ep-abc123 "Implement worktree support"
+Worktree:    .worktrees/ep-abc123/ (branch: feature/ep-abc123-worktree-support)
+Status:      ✓ worktree exists
+```
+
+**When working in a worktree:**
+- Verify context with `tpg show <id>` before starting
+- Use `tpg ready --epic <id>` to filter to the epic's tasks
+- All tpg commands work the same regardless of location
+
+**When task has worktree but you're not in it:**
+- `tpg start` will show a reminder about the worktree location
+- Consider whether the work needs to be done in the worktree environment
+- If needed, `cd` to the worktree path before starting work
 
 ## Common Scenarios
 

@@ -60,6 +60,7 @@ permission:
   lsp: "allow"
   bash:
     "*": "deny"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg *": "allow"
     "tpg *": "allow"
     "rg *": "allow"
     "ack *": "allow"

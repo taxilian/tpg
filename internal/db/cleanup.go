@@ -52,7 +52,8 @@ func (db *DB) GetOldItemIDs(before time.Time, status model.Status) ([]string, er
 }
 
 // DeleteOldItems removes items older than the given date with the given status.
-// Returns the number of items deleted and associated cleanup counts.
+// Items with children are skipped (they'll be cleaned up after their children are).
+// Returns the number of items deleted.
 func (db *DB) DeleteOldItems(before time.Time, status model.Status) (int, error) {
 	// Get the IDs first
 	ids, err := db.GetOldItemIDs(before, status)
@@ -64,6 +65,22 @@ func (db *DB) DeleteOldItems(before time.Time, status model.Status) (int, error)
 		return 0, nil
 	}
 
+	// Filter out items that have children
+	var deletableIDs []string
+	for _, id := range ids {
+		hasKids, err := db.hasChildren(id)
+		if err != nil {
+			return 0, fmt.Errorf("failed to check children for %s: %w", id, err)
+		}
+		if !hasKids {
+			deletableIDs = append(deletableIDs, id)
+		}
+	}
+
+	if len(deletableIDs) == 0 {
+		return 0, nil
+	}
+
 	// Delete in a transaction
 	tx, err := db.Begin()
 	if err != nil {
@@ -71,7 +88,7 @@ func (db *DB) DeleteOldItems(before time.Time, status model.Status) (int, error)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	for _, id := range ids {
+	for _, id := range deletableIDs {
 		// Delete logs
 		if _, err := tx.Exec(`DELETE FROM logs WHERE item_id = ?`, id); err != nil {
 			return 0, fmt.Errorf("failed to delete logs for %s: %w", id, err)
@@ -97,7 +114,7 @@ func (db *DB) DeleteOldItems(before time.Time, status model.Status) (int, error)
 		return 0, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	return len(ids), nil
+	return len(deletableIDs), nil
 }
 
 // CountOrphanedLogs returns the count of logs that reference non-existent items.
@@ -148,6 +165,13 @@ func (db *DB) DeleteOldLogs(before time.Time) (int, error) {
 	}
 	rows, _ := result.RowsAffected()
 	return int(rows), nil
+}
+
+// hasChildren checks if an item has any children.
+func (db *DB) hasChildren(id string) (bool, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ?`, id).Scan(&count)
+	return count > 0, err
 }
 
 // Vacuum compacts the database by running SQLite VACUUM.

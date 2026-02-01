@@ -18,6 +18,18 @@ func (db *DB) CreateItem(item *model.Item) error {
 		return fmt.Errorf("invalid status: %s", item.Status)
 	}
 
+	// Check if parent is closed (cannot add child to closed parent)
+	if item.ParentID != nil && *item.ParentID != "" {
+		var parentStatus model.Status
+		err := db.QueryRow(`SELECT status FROM items WHERE id = ?`, *item.ParentID).Scan(&parentStatus)
+		if err != nil {
+			return fmt.Errorf("parent not found: %s (use 'tpg list' to see available items)", *item.ParentID)
+		}
+		if parentStatus == model.StatusDone || parentStatus == model.StatusCanceled {
+			return fmt.Errorf("cannot add child to closed parent %s", *item.ParentID)
+		}
+	}
+
 	// Auto-create project if specified
 	if item.Project != "" {
 		if err := db.EnsureProject(item.Project); err != nil {
@@ -34,12 +46,14 @@ func (db *DB) CreateItem(item *model.Item) error {
 		INSERT INTO items (
 			id, project, type, title, description, status, priority, parent_id,
 			template_id, step_index, variables, template_hash, results,
+			worktree_branch, worktree_base,
 			created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Project, item.Type, item.Title, item.Description,
 		item.Status, item.Priority, item.ParentID,
 		item.TemplateID, item.StepIndex, varsJSON, item.TemplateHash, item.Results,
+		item.WorktreeBranch, item.WorktreeBase,
 		sqlTime(item.CreatedAt), sqlTime(item.UpdatedAt),
 	)
 	if err != nil {
@@ -54,6 +68,7 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 		SELECT id, project, type, title, description, status, priority, parent_id,
 			agent_id, agent_last_active,
 			template_id, step_index, variables, template_hash, results,
+			worktree_branch, worktree_base,
 			created_at, updated_at
 		FROM items WHERE id = ?`, id)
 
@@ -66,11 +81,14 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	var variables sql.NullString
 	var templateHash sql.NullString
 	var results sql.NullString
+	var worktreeBranch sql.NullString
+	var worktreeBase sql.NullString
 	err := row.Scan(
 		&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
 		&item.Status, &item.Priority, &parentID,
 		&agentID, &agentLastActive,
 		&templateID, &stepIndex, &variables, &templateHash, &results,
+		&worktreeBranch, &worktreeBase,
 		&item.CreatedAt, &item.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -109,6 +127,12 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	if results.Valid {
 		item.Results = results.String
 	}
+	if worktreeBranch.Valid {
+		item.WorktreeBranch = worktreeBranch.String
+	}
+	if worktreeBase.Valid {
+		item.WorktreeBase = worktreeBase.String
+	}
 	return item, nil
 }
 
@@ -117,6 +141,18 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext) error {
 	if !status.IsValid() {
 		return fmt.Errorf("invalid status: %s", status)
+	}
+
+	// Cannot close parent with open children
+	if status == model.StatusDone || status == model.StatusCanceled {
+		var openChildren int
+		err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
+		if err != nil {
+			return fmt.Errorf("failed to check children: %w", err)
+		}
+		if openChildren > 0 {
+			return fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
+		}
 	}
 
 	// Update status and timestamp
@@ -157,6 +193,16 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 
 // CompleteItem marks an item as done, records a results message, and releases agent assignment.
 func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
+	// Cannot close parent with open children
+	var openChildren int
+	err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
+	if err != nil {
+		return fmt.Errorf("failed to check children: %w", err)
+	}
+	if openChildren > 0 {
+		return fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
+	}
+
 	result, err := db.Exec(`
 		UPDATE items SET status = ?, results = ?, updated_at = ? WHERE id = ?`,
 		model.StatusDone, results, sqlTime(time.Now()), id)
@@ -201,11 +247,17 @@ func (db *DB) AppendDescription(id string, text string) error {
 
 // SetParent sets an item's parent.
 func (db *DB) SetParent(itemID, parentID string) error {
-	// Verify parent exists
+	// Verify parent exists and check its status
 	var itemType string
-	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, parentID).Scan(&itemType)
+	var parentStatus model.Status
+	err := db.QueryRow(`SELECT type, status FROM items WHERE id = ?`, parentID).Scan(&itemType, &parentStatus)
 	if err != nil {
 		return fmt.Errorf("parent not found: %s (use 'tpg list' to see available items)", parentID)
+	}
+
+	// Cannot add child to closed parent
+	if parentStatus == model.StatusDone || parentStatus == model.StatusCanceled {
+		return fmt.Errorf("cannot add child to closed parent %s", parentID)
 	}
 
 	// Update the item's parent

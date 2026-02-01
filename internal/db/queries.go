@@ -8,7 +8,7 @@ import (
 	"github.com/taxilian/tpg/internal/model"
 )
 
-const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, agent_id, agent_last_active, template_id, step_index, variables, template_hash, results, created_at, updated_at"
+const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, agent_id, agent_last_active, template_id, step_index, variables, template_hash, results, worktree_branch, worktree_base, created_at, updated_at"
 
 // ListFilter contains optional filters for listing items.
 type ListFilter struct {
@@ -451,11 +451,14 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		var variables sql.NullString
 		var templateHash sql.NullString
 		var results sql.NullString
+		var worktreeBranch sql.NullString
+		var worktreeBase sql.NullString
 		if err := rows.Scan(
 			&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
 			&item.Status, &item.Priority, &parentID,
 			&agentID, &agentLastActive,
 			&templateID, &stepIndex, &variables, &templateHash, &results,
+			&worktreeBranch, &worktreeBase,
 			&item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan item: %w", err)
@@ -488,6 +491,12 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		}
 		if results.Valid {
 			item.Results = results.String
+		}
+		if worktreeBranch.Valid {
+			item.WorktreeBranch = worktreeBranch.String
+		}
+		if worktreeBase.Valid {
+			item.WorktreeBase = worktreeBase.String
 		}
 		items = append(items, item)
 	}

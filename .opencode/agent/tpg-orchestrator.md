@@ -58,6 +58,25 @@ permission:
     # It must NEVER run: tpg start, tpg done, tpg block, tpg cancel, tpg log
     # Those commands MUST be run by the subagent so agent assignment tracking works.
     # tpg set-status is allowed for fixing stuck/broken task state only.
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg ready*": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg status*": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg show *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg list*": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg add *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg dep *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg graph*": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg template *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg prime*": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg concepts*": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg context *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg labels*": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg label *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg unlabel *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg parent *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg append *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg desc *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg history *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg set-status *": "allow"
     "tpg ready*": "allow"
     "tpg status*": "allow"
     "tpg show *": "allow"
@@ -216,16 +235,24 @@ For each ready task from `tpg ready`:
 ```
 1. Read the task description completely
 2. Verify it has all context needed (check parent chain too)
-3. Launch a tpg-agent subagent with the task ID
+3. Check if task belongs to a worktree epic (use `tpg show <id>`)
+4. Launch a tpg-agent subagent with the task ID
    ** DO NOT run `tpg start` — the agent does that **
-4. Move to next ready task (don't wait for completion)
-5. Track which tasks are in flight
+5. Move to next ready task (don't wait for completion)
+6. Track which tasks are in flight
 ```
 
 Example invocation:
 ```
 @tpg-agent Work on task AUTH-1.2: Implement JWT token service. 
 The full context is in tpg task AUTH-1.2 and its parent AUTH-1.
+```
+
+**For tasks in worktree epics:**
+```
+@tpg-agent Work on FEATURE-1.2: Add validation logic.
+This task belongs to epic ep-abc123 with worktree at .worktrees/ep-abc123/.
+Run `tpg show FEATURE-1.2` to confirm worktree context before starting.
 ```
 
 ### 4. Coordinate Parallel Work
@@ -345,6 +372,39 @@ Tasks should be reopened by the agent, not by you!
 1. Check `tpg show <id>` — read the logs to understand how far the agent got
 2. Assign it to a new agent; that agent should reopen it, check previous logs (with `tpg show <id>`) and continue work
 **Do NOT change the status with --set-status** — that command is strictly reserved for fixing unfixable errors, it is not a normal workflow.
+
+## Worktree Delegation
+
+Some epics have dedicated worktrees for isolated development. When delegating tasks from worktree epics:
+
+**1. Confirm worktree context:**
+```bash
+tpg show <task-id>
+# Look for:
+# Epic:        ep-abc123 "Feature name"
+# Worktree:    .worktrees/ep-abc123/ (branch: feature/ep-abc123-name)
+# Status:      ✓ worktree exists
+```
+
+**2. Filter to epic's ready tasks:**
+```bash
+tpg ready --epic ep-abc123
+```
+
+**3. Delegate with worktree awareness:**
+```
+@tpg-agent Work on FEATURE-1.2.
+This task belongs to epic ep-abc123 with worktree at .worktrees/ep-abc123/.
+Verify context with `tpg show FEATURE-1.2` before starting.
+```
+
+**4. Agent workflow in worktree:**
+- Agent runs `tpg show <id>` to see worktree context
+- Agent uses `tpg ready --epic <id>` to filter tasks
+- All tpg commands work the same regardless of location
+- Agent may need to `cd` to worktree if work requires that environment
+
+**Note:** Worktree context is informational. Agents use the same commands everywhere; tpg shows context but doesn't enforce location.
 
 ## Using tpg-agent Effectively
 

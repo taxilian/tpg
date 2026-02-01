@@ -736,3 +736,73 @@ func TestCompleteItem_ResultsCanBeRetrievedViaGetItem(t *testing.T) {
 		t.Errorf("status from GetItem = %q, want %q", got.Status, model.StatusDone)
 	}
 }
+
+func TestWorktreeFields_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create an epic with worktree metadata
+	epic := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Worktree Epic",
+		Status:         model.StatusOpen,
+		Priority:       2,
+		WorktreeBranch: "feature/epic-work",
+		WorktreeBase:   "main",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic with worktree: %v", err)
+	}
+
+	// Retrieve via GetItem
+	got, err := db.GetItem(epic.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+
+	if got.WorktreeBranch != "feature/epic-work" {
+		t.Errorf("WorktreeBranch from GetItem = %q, want %q", got.WorktreeBranch, "feature/epic-work")
+	}
+	if got.WorktreeBase != "main" {
+		t.Errorf("WorktreeBase from GetItem = %q, want %q", got.WorktreeBase, "main")
+	}
+
+	// Retrieve via ListItems
+	items, err := db.ListItems("test", nil)
+	if err != nil {
+		t.Fatalf("failed to list items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].WorktreeBranch != "feature/epic-work" {
+		t.Errorf("WorktreeBranch from ListItems = %q, want %q", items[0].WorktreeBranch, "feature/epic-work")
+	}
+	if items[0].WorktreeBase != "main" {
+		t.Errorf("WorktreeBase from ListItems = %q, want %q", items[0].WorktreeBase, "main")
+	}
+}
+
+func TestWorktreeFields_EmptyByDefault(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a task without worktree metadata
+	task := createTestItemWithProject(t, db, "Regular Task", "test", model.StatusOpen, 2)
+
+	// Retrieve via GetItem
+	got, err := db.GetItem(task.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+
+	if got.WorktreeBranch != "" {
+		t.Errorf("WorktreeBranch should be empty by default, got %q", got.WorktreeBranch)
+	}
+	if got.WorktreeBase != "" {
+		t.Errorf("WorktreeBase should be empty by default, got %q", got.WorktreeBase)
+	}
+}

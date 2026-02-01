@@ -45,6 +45,7 @@ permission:
   bash:
     "*": "deny"
     "tpg *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg *": "allow"
     "rg *": "allow"
     "ack *": "allow"
     "ls *": "allow"

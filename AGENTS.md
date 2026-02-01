@@ -10,10 +10,12 @@ Run `tpg prime` for workflow context, or configure hooks for auto-injection.
 **Quick reference:**
 ```
 tpg ready                        # Find unblocked work
+tpg ready --epic <id>            # Filter to epic's tasks
 tpg start <id>                   # Claim work
 tpg done <id>                    # Complete work
 tpg dep <id> blocks <other-id>   # Set dependency
 tpg dep <id> list                # Show dependencies
+tpg edit <id> --parent <id>      # Change parent
 
 # Creating tasks — always use heredoc for full context:
 tpg add "Title" -p 1 --desc - <<EOF

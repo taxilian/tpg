@@ -303,6 +303,125 @@ func TestGetDatabaseSize(t *testing.T) {
 	}
 }
 
+func TestDeleteOldItemsSkipsParentsWithChildren(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	oldTime := now.AddDate(0, 0, -60)
+
+	// Create an old epic (parent) - start as open so we can add children
+	parentEpic := &model.Item{
+		ID:        "ep-old1",
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Old done epic",
+		Status:    model.StatusOpen,
+		Priority:  2,
+		CreatedAt: oldTime,
+		UpdatedAt: oldTime,
+	}
+	if err := db.CreateItem(parentEpic); err != nil {
+		t.Fatalf("failed to create parent epic: %v", err)
+	}
+
+	// Create a child task referencing the parent (while parent is still open)
+	childTask := &model.Item{
+		ID:        "ts-child1",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Child task",
+		Status:    model.StatusDone, // Child is done so parent can be closed
+		Priority:  2,
+		ParentID:  &parentEpic.ID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := db.CreateItem(childTask); err != nil {
+		t.Fatalf("failed to create child task: %v", err)
+	}
+
+	// Now mark parent as done (allowed since child is done)
+	if err := db.UpdateStatus(parentEpic.ID, model.StatusDone, AgentContext{}); err != nil {
+		t.Fatalf("failed to mark parent done: %v", err)
+	}
+
+	// Set the parent's updated_at to old time to make it eligible for cleanup
+	_, err := db.Exec("UPDATE items SET updated_at = ? WHERE id = ?", sqlTime(oldTime), parentEpic.ID)
+	if err != nil {
+		t.Fatalf("failed to update timestamp: %v", err)
+	}
+
+	// Delete old done items - parent should be SKIPPED because it has children
+	cutoff := now.AddDate(0, 0, -30)
+	deleted, err := db.DeleteOldItems(cutoff, model.StatusDone)
+	if err != nil {
+		t.Fatalf("DeleteOldItems failed: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted items (parent has children), got %d", deleted)
+	}
+
+	// Verify parent still exists
+	parent, err := db.GetItem(parentEpic.ID)
+	if err != nil {
+		t.Fatalf("expected parent epic to still exist: %v", err)
+	}
+	if parent.ID != parentEpic.ID {
+		t.Errorf("parent ID mismatch")
+	}
+
+	// Verify child still exists with parent_id intact
+	child, err := db.GetItem(childTask.ID)
+	if err != nil {
+		t.Fatalf("expected child task to still exist: %v", err)
+	}
+	if child.ParentID == nil || *child.ParentID != parentEpic.ID {
+		t.Errorf("expected child parent_id to be %s, got %v", parentEpic.ID, child.ParentID)
+	}
+}
+
+func TestDeleteOldItemsDeletesParentWithoutChildren(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	oldTime := now.AddDate(0, 0, -60)
+
+	// Create an old done epic (parent) with NO children
+	parentEpic := &model.Item{
+		ID:        "ep-old1",
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Old done epic without children",
+		Status:    model.StatusDone,
+		Priority:  2,
+		CreatedAt: oldTime,
+		UpdatedAt: oldTime,
+	}
+	if err := db.CreateItem(parentEpic); err != nil {
+		t.Fatalf("failed to create parent epic: %v", err)
+	}
+	_, err := db.Exec("UPDATE items SET updated_at = ? WHERE id = ?", sqlTime(oldTime), parentEpic.ID)
+	if err != nil {
+		t.Fatalf("failed to update timestamp: %v", err)
+	}
+
+	// Delete old done items - parent should be deleted because it has no children
+	cutoff := now.AddDate(0, 0, -30)
+	deleted, err := db.DeleteOldItems(cutoff, model.StatusDone)
+	if err != nil {
+		t.Fatalf("DeleteOldItems failed: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted item, got %d", deleted)
+	}
+
+	// Verify parent is gone
+	_, err = db.GetItem(parentEpic.ID)
+	if err == nil {
+		t.Error("expected parent epic to be deleted")
+	}
+}
+
 func TestDeleteOldItemsWithLabels(t *testing.T) {
 	db := setupTestDB(t)
 

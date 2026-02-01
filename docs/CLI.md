@@ -7,9 +7,12 @@
 | `tpg init` | Initialize the database |
 | `tpg onboard` | Set up tpg integration for Opencode |
 | `tpg add <title>` | Create a work item (returns ID) |
+| `tpg add -e <title>` | Create an epic (with optional `--worktree` flag) |
 | `tpg list` | List all tasks |
+| `tpg list --ids-only` | Output just IDs (useful for scripting) |
 | `tpg show <id>` | Show task details, logs, deps, suggested concepts |
 | `tpg ready` | Show tasks ready for work (open + deps met) |
+| `tpg ready --epic <id>` | Show ready tasks filtered by epic |
 | `tpg status` | Project overview for agent spin-up |
 | `tpg prime` | Output context for agent hooks |
 | `tpg compact` | Output compaction workflow guidance |
@@ -27,13 +30,13 @@
 | `tpg append <id> <text>` | Append to task description |
 | `tpg desc <id> <text>` | Replace task description |
 | `tpg edit <id>` | Edit description in $TPG_EDITOR (defaults to nvim, nano, vi) |
+| `tpg edit --select <filter>` | Bulk edit: --type, --status, --label, --parent, --project |
 | `tpg merge <source> <target>` | Merge duplicate tasks (requires `--yes-i-am-sure`) |
 
 ## Organization
 
 | Command | Description |
 |---------|-------------|
-| `tpg parent <id> <epic-id>` | Set task's parent epic |
 | `tpg dep <id> blocks <other>` | Add blocking relationship (other blocked until id done) |
 | `tpg dep <id> after <other>` | Add dependency (id depends on other) |
 | `tpg dep <id> list` | Show all dependencies for a task |
@@ -41,6 +44,38 @@
 | `tpg graph` | Show dependency graph |
 | `tpg projects` | List all projects |
 | `tpg add "<title>" --type <type>` | Create item with custom type (task, epic, bug, story, etc.) |
+
+## Epics
+
+| Command | Description |
+|---------|-------------|
+| `tpg epic worktree <id>` | Set up worktree for epic (creates branch, worktree directory) |
+| `tpg epic finish <id>` | Complete epic: merge branch, close all tasks, cleanup worktree |
+
+Epics can have associated Git worktrees for isolated development:
+
+```bash
+# Create an epic with worktree
+tpg add "Implement user authentication" -e --worktree
+
+# Set up worktree for existing epic
+tpg epic worktree ep-abc123
+
+# Complete the epic and cleanup
+tpg epic finish ep-abc123
+```
+
+Worktree configuration in `.tpg/config.json`:
+
+```json
+{
+  "worktree": {
+    "branch_prefix": "feature",
+    "require_epic_id": true,
+    "root": ".worktrees"
+  }
+}
+```
 
 ## Labels
 
@@ -87,7 +122,10 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 | `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
 | `--parent <id>` | add, list | Set parent item at creation / filter by parent (any type can have children) |
 | `--blocks` | add | Set task this will block at creation |
+| `--worktree` | add | Create epic with worktree metadata (use with `-e`) |
 | `--status` | list | Filter by status |
+| `--epic <id>` | list, ready | Filter by parent epic |
+| `--ids-only` | list | Output just IDs, one per line |
 | `--type` | list | Filter by item type (task, epic, bug, etc.) |
 | `--blocking` | list | Show items that block the given ID |
 | `--blocked-by` | list | Show items blocked by the given ID |
@@ -119,6 +157,39 @@ IDs are auto-generated with configurable type prefixes:
 ```
 
 ID length is configurable via `id_length` in `.tpg/config.json` (default: 3 characters, base-36 alphabet `[0-9a-z]`).
+
+## Removed Commands
+
+The following commands have been removed. Use these alternatives:
+
+| Removed | Replacement |
+|---------|-------------|
+| `tpg parent <id> <epic-id>` | `tpg edit <id> --parent <epic-id>` |
+| `tpg set-status <id> <status>` | `tpg done <id>`, `tpg cancel <id>`, `tpg block <id>` |
+
+## Worktree Workflow Example
+
+```bash
+# 1. Create an epic with worktree
+tpg add "Implement OAuth2 authentication" -e --worktree
+# → Creates ep-abc123 with worktree_branch="feature/ep-abc123-oauth2"
+
+# 2. Add tasks to the epic
+tpg add "Set up OAuth2 provider config" --parent ep-abc123
+tpg add "Implement token refresh" --parent ep-abc123
+tpg add "Add logout endpoint" --parent ep-abc123
+
+# 3. View ready tasks for this epic
+tpg ready --epic ep-abc123
+
+# 4. Start working on a task (worktree guidance shown)
+tpg start ts-def456
+# → Shows: "Worktree: feature/ep-abc123-oauth2 at .worktrees/ep-abc123"
+
+# 5. Complete all tasks, then finish the epic
+tpg epic finish ep-abc123
+# → Merges branch, closes epic, removes worktree directory
+```
 
 ## Environment Variables
 

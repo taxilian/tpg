@@ -52,6 +52,7 @@ var (
 	flagTemplateVars     []string
 	flagListParent       string
 	flagListType         string
+	flagListEpic         string
 	flagBlocking         string
 	flagBlockedBy        string
 	flagHasBlockers      bool
@@ -97,6 +98,7 @@ var (
 	flagShowVars         bool
 	flagDryRun           bool
 	flagListAll          bool
+	flagIdsOnly          bool
 )
 
 func openDB() (*db.DB, error) {
@@ -472,15 +474,42 @@ Examples:
 			items = filtered
 		}
 
-		// Populate labels for display
-		if err := database.PopulateItemLabels(items); err != nil {
-			return err
-		}
-		if err := renderTemplatesForItems(items); err != nil {
-			return err
+		// Filter to epic descendants if --epic is set
+		if flagListEpic != "" {
+			descendants, err := database.GetDescendants(flagListEpic)
+			if err != nil {
+				return fmt.Errorf("failed to get descendants of epic %s: %w", flagListEpic, err)
+			}
+			// Create a map of descendant IDs for fast lookup
+			descendantIDs := make(map[string]bool)
+			for _, d := range descendants {
+				descendantIDs[d.ID] = true
+			}
+			// Filter items to only those in the descendant set
+			filtered := make([]model.Item, 0, len(items))
+			for _, item := range items {
+				if descendantIDs[item.ID] {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
 		}
 
-		printItemsTable(items)
+		// Populate labels for display (skip if ids-only)
+		if !flagIdsOnly {
+			if err := database.PopulateItemLabels(items); err != nil {
+				return err
+			}
+			if err := renderTemplatesForItems(items); err != nil {
+				return err
+			}
+		}
+
+		if flagIdsOnly {
+			printItemsIDs(items)
+		} else {
+			printItemsTable(items)
+		}
 		return nil
 	},
 }
@@ -4029,6 +4058,57 @@ Examples:
 	},
 }
 
+var configCmd = &cobra.Command{
+	Use:   "config [key] [value]",
+	Short: "View or modify configuration",
+	Long: `View or modify tpg configuration.
+
+Without arguments: show all config values
+With one argument: show specific config value
+With two arguments: set config value
+
+Examples:
+  tpg config                              # Show all config
+  tpg config prefixes.task                # Show task prefix
+  tpg config prefixes.task ts             # Set task prefix to "ts"
+  tpg config warnings.short_description false  # Disable warning
+  tpg config warnings.min_description_words 20 # Set threshold`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		config, err := db.LoadConfig()
+		if err != nil {
+			return err
+		}
+
+		switch len(args) {
+		case 0:
+			// Show all config
+			fields := db.GetConfigFields(config)
+			for _, f := range fields {
+				fmt.Printf("%s = %s\n", f.Path, db.FormatConfigValue(f.Value))
+			}
+		case 1:
+			// Show specific value
+			val, err := db.GetConfigField(config, args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Println(db.FormatConfigValue(val))
+		case 2:
+			// Set value
+			if err := db.SetConfigField(config, args[0], args[1]); err != nil {
+				return err
+			}
+			if err := db.SaveConfig(config); err != nil {
+				return err
+			}
+			fmt.Printf("Set %s = %s\n", args[0], args[1])
+		default:
+			return fmt.Errorf("too many arguments")
+		}
+		return nil
+	},
+}
+
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&flagProject, "project", "", "Project scope")
@@ -4070,10 +4150,12 @@ func init() {
 	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done, canceled)")
 	listCmd.Flags().StringVar(&flagListParent, "parent", "", "Filter by parent epic ID")
 	listCmd.Flags().StringVar(&flagListType, "type", "", "Filter by item type (task, epic)")
+	listCmd.Flags().StringVar(&flagListEpic, "epic", "", "Filter to descendants of this epic ID")
 	listCmd.Flags().StringVar(&flagBlocking, "blocking", "", "Show items that block the given ID")
 	listCmd.Flags().StringVar(&flagBlockedBy, "blocked-by", "", "Show items blocked by the given ID")
 	listCmd.Flags().BoolVar(&flagHasBlockers, "has-blockers", false, "Show only items with unresolved blockers")
 	listCmd.Flags().BoolVar(&flagNoBlockers, "no-blockers", false, "Show only items with no blockers")
+	listCmd.Flags().BoolVar(&flagIdsOnly, "ids-only", false, "Output only IDs, one per line (pipe-friendly)")
 	listCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
 
 	// merge flags
@@ -4210,6 +4292,7 @@ func init() {
 	rootCmd.AddCommand(backupsCmd)
 	rootCmd.AddCommand(restoreCmd)
 	rootCmd.AddCommand(impactCmd)
+	rootCmd.AddCommand(configCmd)
 
 	// Import subcommands
 	importCmd.AddCommand(importBeadsCmd)
@@ -4232,6 +4315,12 @@ func main() {
 }
 
 // Output formatting
+
+func printItemsIDs(items []model.Item) {
+	for _, item := range items {
+		fmt.Println(item.ID)
+	}
+}
 
 func printItemsTable(items []model.Item) {
 	if len(items) == 0 {

@@ -26,6 +26,7 @@ const (
 	ViewGraph
 	ViewTemplateList
 	ViewTemplateDetail
+	ViewConfig
 )
 
 // InputMode represents what kind of text input is active.
@@ -136,6 +137,11 @@ type Model struct {
 
 	// Status menu state
 	statusMenuCursor int // 0=start, 1=done, 2=block, 3=cancel
+
+	// Config view state
+	configFields  []db.ConfigField
+	configCursor  int
+	configEditing bool
 }
 
 // graphNode represents a task in the dependency graph view.
@@ -351,6 +357,12 @@ type staleMsg struct {
 	err   error
 }
 
+// configMsg carries config data.
+type configMsg struct {
+	fields []db.ConfigField
+	err    error
+}
+
 // editorFinishedMsg is sent when the external editor closes.
 type editorFinishedMsg struct {
 	itemID   string
@@ -392,6 +404,18 @@ func (m Model) loadTemplates() tea.Cmd {
 	return func() tea.Msg {
 		tmpls, err := templates.ListTemplates()
 		return templatesMsg{templates: tmpls, err: err}
+	}
+}
+
+// loadConfig loads config fields.
+func (m Model) loadConfig() tea.Cmd {
+	return func() tea.Msg {
+		config, err := db.LoadConfig()
+		if err != nil {
+			return configMsg{err: err}
+		}
+		fields := db.GetConfigFields(config)
+		return configMsg{fields: fields}
 	}
 }
 
@@ -541,6 +565,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case configMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.configFields = msg.fields
+		m.configCursor = 0
+		return m, nil
+
 	case editorFinishedMsg:
 		return m.handleEditorFinished(msg)
 	}
@@ -575,6 +608,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTemplateListKey(msg)
 	case ViewTemplateDetail:
 		return m.handleTemplateDetailKey(msg)
+	case ViewConfig:
+		return m.handleConfigKey(msg)
 	}
 	return m, nil
 }
@@ -1002,6 +1037,11 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "T":
 		m.viewMode = ViewTemplateList
 		return m, m.loadTemplates()
+
+	// Config
+	case "C":
+		m.viewMode = ViewConfig
+		return m, m.loadConfig()
 	}
 
 	return m, nil
@@ -1342,6 +1382,103 @@ func (m Model) handleTemplateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "h", "backspace":
 		m.viewMode = ViewTemplateList
 		m.selectedTemplate = nil
+	}
+
+	return m, nil
+}
+
+func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle editing mode
+	if m.configEditing {
+		switch msg.String() {
+		case "esc":
+			m.configEditing = false
+			m.inputText = ""
+			return m, nil
+		case "enter":
+			// Save the value
+			if m.configCursor < len(m.configFields) {
+				field := m.configFields[m.configCursor]
+				config, err := db.LoadConfig()
+				if err != nil {
+					m.err = err
+					m.configEditing = false
+					return m, nil
+				}
+				if err := db.SetConfigField(config, field.Path, m.inputText); err != nil {
+					m.err = err
+					m.configEditing = false
+					return m, nil
+				}
+				if err := db.SaveConfig(config); err != nil {
+					m.err = err
+					m.configEditing = false
+					return m, nil
+				}
+				m.message = fmt.Sprintf("Set %s = %s", field.Path, m.inputText)
+				m.configEditing = false
+				m.inputText = ""
+				return m, m.loadConfig()
+			}
+			return m, nil
+		case "backspace":
+			if len(m.inputText) > 0 {
+				m.inputText = m.inputText[:len(m.inputText)-1]
+			}
+			return m, nil
+		default:
+			if len(msg.String()) == 1 {
+				m.inputText += msg.String()
+			}
+			return m, nil
+		}
+	}
+
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+
+	case "esc", "h", "backspace":
+		m.viewMode = ViewList
+		m.configCursor = 0
+		return m, nil
+
+	case "up", "k":
+		if m.configCursor > 0 {
+			m.configCursor--
+		}
+
+	case "down", "j":
+		if m.configCursor < len(m.configFields)-1 {
+			m.configCursor++
+		}
+
+	case "g", "home":
+		m.configCursor = 0
+
+	case "G", "end":
+		m.configCursor = max(0, len(m.configFields)-1)
+
+	case "enter", "e":
+		// Start editing the current field
+		if m.configCursor < len(m.configFields) {
+			field := m.configFields[m.configCursor]
+			// Don't allow editing map fields directly
+			if field.Type == "map" {
+				m.message = "Cannot edit map fields directly; edit config.json"
+				return m, nil
+			}
+			m.configEditing = true
+			// Pre-fill with current value
+			if field.Value != nil {
+				m.inputText = fmt.Sprintf("%v", field.Value)
+			} else {
+				m.inputText = ""
+			}
+		}
+
+	case "r":
+		return m, m.loadConfig()
 	}
 
 	return m, nil
@@ -1820,6 +1957,8 @@ func (m Model) View() string {
 			b.WriteString(m.templateListView())
 		case ViewTemplateDetail:
 			b.WriteString(m.templateDetailView())
+		case ViewConfig:
+			b.WriteString(m.configView())
 		}
 
 		// Input line (for non-textarea input modes)
@@ -2032,7 +2171,7 @@ func (m Model) listView() string {
 	} else {
 		b.WriteString(helpStyle.Render("j/k:nav  ^u/^d:½pg  pgup/dn:pg  g/G:top/end  enter:detail  s:start d:done n:new"))
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  b:block L:log c:cancel  ctrl+v:select  r:refresh q:quit"))
+		b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  b:block L:log c:cancel  T:templates C:config  r:refresh q:quit"))
 	}
 
 	return b.String()
@@ -2200,10 +2339,17 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 func (m Model) activeFiltersString() string {
 	var parts []string
 
-	// Status filter
+	// Status filter - iterate in consistent order
 	var statuses []string
-	for s, active := range m.filterStatuses {
-		if active {
+	statusOrder := []model.Status{
+		model.StatusOpen,
+		model.StatusInProgress,
+		model.StatusBlocked,
+		model.StatusDone,
+		model.StatusCanceled,
+	}
+	for _, s := range statusOrder {
+		if m.filterStatuses[s] {
 			statuses = append(statuses, statusText(s))
 		}
 	}
@@ -2944,6 +3090,80 @@ func (m Model) templateDetailView() string {
 
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("esc:back  q:quit"))
+
+	return b.String()
+}
+
+func (m Model) configView() string {
+	var b strings.Builder
+
+	// Header
+	b.WriteString(titleStyle.Render("Configuration"))
+	b.WriteString(fmt.Sprintf("  %d settings\n\n", len(m.configFields)))
+
+	// Config fields
+	if len(m.configFields) == 0 {
+		b.WriteString("No configuration found\n")
+		b.WriteString(dimStyle.Render("Run 'tpg init' to create a config file\n"))
+	} else {
+		visibleHeight := m.height - 8
+		if visibleHeight < 5 {
+			visibleHeight = 15
+		}
+		start := 0
+		if m.configCursor >= visibleHeight {
+			start = m.configCursor - visibleHeight + 1
+		}
+		end := min(start+visibleHeight, len(m.configFields))
+
+		rowWidth := m.width - (contentPadding * 2)
+		if rowWidth < 60 {
+			rowWidth = 80
+		}
+
+		for i := start; i < end; i++ {
+			field := m.configFields[i]
+			selected := i == m.configCursor
+
+			// Format value for display
+			valueStr := db.FormatConfigValue(field.Value)
+
+			// Format: path = value (type)
+			line := fmt.Sprintf("%-35s = %-20s", field.Path, valueStr)
+			if field.Type != "" && field.Type != "string" {
+				line += " " + dimStyle.Render("("+field.Type+")")
+			}
+
+			// Truncate to fit width
+			if len(line) > rowWidth {
+				line = line[:rowWidth-3] + "..."
+			}
+
+			if selected {
+				if m.configEditing {
+					// Show edit mode
+					editLine := fmt.Sprintf("%-35s = ", field.Path)
+					b.WriteString(editLine)
+					b.WriteString(inputStyle.Render(m.inputText + "█"))
+					b.WriteString("\n")
+				} else {
+					b.WriteString(selectedRowStyle.Width(rowWidth).Render(line))
+					b.WriteString("\n")
+				}
+			} else {
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	// Footer
+	b.WriteString("\n")
+	if m.configEditing {
+		b.WriteString(helpStyle.Render("enter:save  esc:cancel"))
+	} else {
+		b.WriteString(helpStyle.Render("j/k:nav  enter/e:edit  r:refresh  esc:back  q:quit"))
+	}
 
 	return b.String()
 }

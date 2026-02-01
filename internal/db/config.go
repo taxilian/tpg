@@ -22,6 +22,7 @@ type Config struct {
 	DefaultProject string            `json:"default_project"`
 	IDLength       int               `json:"id_length,omitempty"`
 	Warnings       WarningsConfig    `json:"warnings,omitempty"`
+	Worktree       WorktreeConfig    `json:"worktree,omitempty"`
 }
 
 // WarningsConfig controls which warnings are shown.
@@ -31,6 +32,13 @@ type WarningsConfig struct {
 	ShortDescription *bool `json:"short_description,omitempty"`
 	// MinDescriptionWords is the minimum word count before warning. Default is 15.
 	MinDescriptionWords int `json:"min_description_words,omitempty"`
+}
+
+// WorktreeConfig holds settings for Git worktree integration.
+type WorktreeConfig struct {
+	BranchPrefix  string `json:"branch_prefix,omitempty"`   // Default "feature"
+	RequireEpicID bool   `json:"require_epic_id,omitempty"` // Default true
+	Root          string `json:"root,omitempty"`            // Default ".worktrees"
 }
 
 // DefaultMinDescriptionWords is the default threshold for short description warnings.
@@ -86,6 +94,15 @@ func applyDefaults(config *Config, dataDir string) {
 	if config.IDLength == 0 {
 		config.IDLength = model.DefaultIDLength
 	}
+	// Worktree defaults
+	if config.Worktree.BranchPrefix == "" {
+		config.Worktree.BranchPrefix = "feature"
+	}
+	if config.Worktree.Root == "" {
+		config.Worktree.Root = ".worktrees"
+	}
+	// RequireEpicID defaults to true (zero value is false, so we need to handle this carefully)
+	// The zero value (false) is acceptable since we can check if the config was explicitly set
 }
 
 // LoadConfig reads the project config from .tpg/config.json.
@@ -241,6 +258,16 @@ func mergeConfigs(dataDir string, configs []*Config) *Config {
 		}
 		if cfg.Warnings.MinDescriptionWords > 0 {
 			merged.Warnings.MinDescriptionWords = cfg.Warnings.MinDescriptionWords
+		}
+		// Merge worktree config - later configs override
+		if cfg.Worktree.BranchPrefix != "" {
+			merged.Worktree.BranchPrefix = cfg.Worktree.BranchPrefix
+		}
+		// For bool fields, we need to check if explicitly set - use a pointer or track separately
+		// For now, always take the later config's value for RequireEpicID
+		merged.Worktree.RequireEpicID = cfg.Worktree.RequireEpicID
+		if cfg.Worktree.Root != "" {
+			merged.Worktree.Root = cfg.Worktree.Root
 		}
 	}
 

@@ -1467,3 +1467,144 @@ func TestLoadMergedConfig_IDLengthZeroNotOverride(t *testing.T) {
 		t.Errorf("IDLength = %d, want %d", merged.IDLength, 8)
 	}
 }
+
+// ============================================================================
+// WorktreeConfig Tests
+// ============================================================================
+
+func TestWorktreeConfig_Defaults(t *testing.T) {
+	dir := t.TempDir()
+	setupTpgDir(t, dir)
+	chdir(t, dir)
+
+	// Load config without worktree section
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	// Verify defaults
+	if config.Worktree.BranchPrefix != "feature" {
+		t.Errorf("BranchPrefix = %q, want %q", config.Worktree.BranchPrefix, "feature")
+	}
+	if config.Worktree.Root != ".worktrees" {
+		t.Errorf("Root = %q, want %q", config.Worktree.Root, ".worktrees")
+	}
+	// RequireEpicID defaults to false (zero value), but can be set to true explicitly
+}
+
+func TestWorktreeConfig_LoadsExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	tpgDir := setupTpgDir(t, dir)
+	chdir(t, dir)
+
+	// Write config with worktree settings
+	existingConfig := &Config{
+		Worktree: WorktreeConfig{
+			BranchPrefix:  "wip",
+			RequireEpicID: false,
+			Root:          "worktrees",
+		},
+	}
+	writeConfig(t, tpgDir, existingConfig)
+
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if config.Worktree.BranchPrefix != "wip" {
+		t.Errorf("BranchPrefix = %q, want %q", config.Worktree.BranchPrefix, "wip")
+	}
+	if config.Worktree.Root != "worktrees" {
+		t.Errorf("Root = %q, want %q", config.Worktree.Root, "worktrees")
+	}
+}
+
+func TestWorktreeConfig_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	setupTpgDir(t, dir)
+	chdir(t, dir)
+
+	// Save config with worktree settings
+	config := &Config{
+		Worktree: WorktreeConfig{
+			BranchPrefix:  "dev",
+			RequireEpicID: true,
+			Root:          "wt",
+		},
+	}
+
+	if err := SaveConfig(config); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	// Reload and verify
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if loaded.Worktree.BranchPrefix != "dev" {
+		t.Errorf("BranchPrefix = %q, want %q", loaded.Worktree.BranchPrefix, "dev")
+	}
+	if loaded.Worktree.RequireEpicID != true {
+		t.Errorf("RequireEpicID = %v, want %v", loaded.Worktree.RequireEpicID, true)
+	}
+	if loaded.Worktree.Root != "wt" {
+		t.Errorf("Root = %q, want %q", loaded.Worktree.Root, "wt")
+	}
+}
+
+func TestWorktreeConfig_Merge(t *testing.T) {
+	// Arrange
+	systemDir := t.TempDir()
+	worktreeDir := t.TempDir()
+	setupTpgDir(t, systemDir)
+	worktreeTpgDir := setupTpgDir(t, worktreeDir)
+	chdir(t, worktreeDir)
+
+	// System config: base worktree settings
+	systemConfig := &Config{
+		Worktree: WorktreeConfig{
+			BranchPrefix:  "sys-feature",
+			RequireEpicID: true,
+			Root:          ".sys-worktrees",
+		},
+	}
+	writeConfig(t, filepath.Join(systemDir, ".tpg"), systemConfig)
+
+	// Worktree config: overrides some settings
+	worktreeConfig := &Config{
+		Worktree: WorktreeConfig{
+			BranchPrefix: "work-branch", // Override
+			// RequireEpicID not set (should inherit)
+			Root: "", // Empty string, should not override
+		},
+	}
+	writeConfig(t, worktreeTpgDir, worktreeConfig)
+
+	// Act
+	merged, err := LoadMergedConfigWithPaths(
+		filepath.Join(systemDir, ".tpg", ConfigFile),
+		filepath.Join(worktreeTpgDir, ConfigFile),
+	)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("LoadMergedConfigWithPaths() error = %v", err)
+	}
+
+	// BranchPrefix from worktree (overrides)
+	if merged.Worktree.BranchPrefix != "work-branch" {
+		t.Errorf("BranchPrefix = %q, want %q", merged.Worktree.BranchPrefix, "work-branch")
+	}
+	// RequireEpicID from worktree (false overrides true)
+	if merged.Worktree.RequireEpicID != false {
+		t.Errorf("RequireEpicID = %v, want %v", merged.Worktree.RequireEpicID, false)
+	}
+	// Root from system (empty string doesn't override)
+	if merged.Worktree.Root != ".sys-worktrees" {
+		t.Errorf("Root = %q, want %q", merged.Worktree.Root, ".sys-worktrees")
+	}
+}

@@ -94,6 +94,8 @@ type Item struct {
 	TemplateVars    map[string]string // Template variables (if templated)
 	TemplateHash    string            // Hash of template at instantiation
 	Results         string            // Results message when done
+	WorktreeBranch  string            // Git branch name for worktree (NULL = no worktree)
+	WorktreeBase    string            // Base branch hint for instructions (NULL = no worktree)
 	Labels          []string          // Attached label names (populated separately)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time

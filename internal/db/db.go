@@ -31,7 +31,7 @@ func sqlTime(t time.Time) string {
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -173,6 +173,11 @@ ALTER TABLE items ADD COLUMN step_index INTEGER;
 ALTER TABLE items ADD COLUMN variables TEXT;
 ALTER TABLE items ADD COLUMN template_hash TEXT;
 ALTER TABLE items ADD COLUMN results TEXT;
+`,
+	// Version 4: Add worktree metadata for epics
+	`
+ALTER TABLE items ADD COLUMN worktree_branch TEXT;
+ALTER TABLE items ADD COLUMN worktree_base TEXT;
 `,
 }
 
