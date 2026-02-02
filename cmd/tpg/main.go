@@ -908,16 +908,22 @@ Example:
 			}
 		}
 
+		// Check if item is under a worktree epic
+		rootEpic, epicPath, err := database.GetRootEpic(item.ID)
+		if err != nil {
+			return err
+		}
+
 		// Output based on format
 		switch flagShowFormat {
 		case "json":
-			return printItemJSON(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain)
+			return printItemJSON(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, rootEpic, epicPath)
 		case "yaml":
-			return printItemYAML(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain)
+			return printItemYAML(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, rootEpic, epicPath)
 		case "markdown":
-			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain)
+			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, rootEpic, epicPath)
 		default:
-			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars)
+			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars, rootEpic, epicPath)
 			if flagShowWithParent && len(parentChain) > 0 {
 				fmt.Printf("\nParent Chain:\n")
 				for _, parent := range parentChain {
@@ -4701,7 +4707,7 @@ type DepEdgeJSON struct {
 	DependsOnStatus string `json:"depends_on_status"`
 }
 
-func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool) {
+func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool, rootEpic *model.Item, epicPath []model.Item) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
@@ -4719,6 +4725,33 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 		if item.StepIndex != nil {
 			fmt.Printf("Step:        %d\n", *item.StepIndex+1)
 		}
+	}
+
+	// Display worktree information if applicable
+	if rootEpic != nil {
+		fmt.Printf("\nWorktree:\n")
+		fmt.Printf("  Epic:     %s - %s\n", rootEpic.ID, rootEpic.Title)
+		fmt.Printf("  Branch:   %s\n", rootEpic.WorktreeBranch)
+		fmt.Printf("  Location: .worktrees/%s\n", rootEpic.ID)
+
+		// Check if worktree exists (we can't actually check, but we can show instructions)
+		fmt.Printf("  Status:   (check with: git worktree list)\n")
+
+		// Show path from epic to this item
+		if len(epicPath) > 1 {
+			fmt.Printf("  Path:     ")
+			for i, pathItem := range epicPath {
+				if i > 0 {
+					fmt.Print(" -> ")
+				}
+				fmt.Print(pathItem.ID)
+			}
+			fmt.Println()
+		}
+
+		fmt.Printf("\n  To create worktree:\n")
+		fmt.Printf("    git worktree add -b %s .worktrees/%s %s\n", rootEpic.WorktreeBranch, rootEpic.ID, rootEpic.WorktreeBase)
+		fmt.Printf("    cd .worktrees/%s\n", rootEpic.ID)
 	}
 
 	fmt.Printf("\nLatest Update:\n")
@@ -4809,9 +4842,20 @@ type ShowData struct {
 	Children       []model.Item    `json:"children,omitempty" yaml:"children,omitempty"`
 	ParentChain    []model.Item    `json:"parent_chain,omitempty" yaml:"parent_chain,omitempty"`
 	DepChain       []db.DepEdge    `json:"dependency_chain,omitempty" yaml:"dependency_chain,omitempty"`
+	Worktree       *WorktreeInfo   `json:"worktree,omitempty" yaml:"worktree,omitempty"`
 }
 
-func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge) error {
+// WorktreeInfo represents worktree context for an item
+type WorktreeInfo struct {
+	EpicID    string   `json:"epic_id" yaml:"epic_id"`
+	EpicTitle string   `json:"epic_title" yaml:"epic_title"`
+	Branch    string   `json:"branch" yaml:"branch"`
+	Base      string   `json:"base" yaml:"base"`
+	Location  string   `json:"location" yaml:"location"`
+	Path      []string `json:"path,omitempty" yaml:"path,omitempty"`
+}
+
+func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, rootEpic *model.Item, epicPath []model.Item) error {
 	data := ShowData{
 		Item:           item,
 		Logs:           logs,
@@ -4824,12 +4868,29 @@ func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers [
 		ParentChain:    parentChain,
 		DepChain:       depChain,
 	}
+
+	// Add worktree info if applicable
+	if rootEpic != nil {
+		var pathIDs []string
+		for _, p := range epicPath {
+			pathIDs = append(pathIDs, p.ID)
+		}
+		data.Worktree = &WorktreeInfo{
+			EpicID:    rootEpic.ID,
+			EpicTitle: rootEpic.Title,
+			Branch:    rootEpic.WorktreeBranch,
+			Base:      rootEpic.WorktreeBase,
+			Location:  ".worktrees/" + rootEpic.ID,
+			Path:      pathIDs,
+		}
+	}
+
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(data)
 }
 
-func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge) error {
+func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, rootEpic *model.Item, epicPath []model.Item) error {
 	data := ShowData{
 		Item:           item,
 		Logs:           logs,
@@ -4842,6 +4903,23 @@ func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers [
 		ParentChain:    parentChain,
 		DepChain:       depChain,
 	}
+
+	// Add worktree info if applicable
+	if rootEpic != nil {
+		var pathIDs []string
+		for _, p := range epicPath {
+			pathIDs = append(pathIDs, p.ID)
+		}
+		data.Worktree = &WorktreeInfo{
+			EpicID:    rootEpic.ID,
+			EpicTitle: rootEpic.Title,
+			Branch:    rootEpic.WorktreeBranch,
+			Base:      rootEpic.WorktreeBase,
+			Location:  ".worktrees/" + rootEpic.ID,
+			Path:      pathIDs,
+		}
+	}
+
 	// Simple YAML output - in production would use a YAML library
 	fmt.Printf("item:\n")
 	fmt.Printf("  id: %s\n", item.ID)
@@ -4890,11 +4968,21 @@ func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers [
 			fmt.Printf("  - item: %s\n    depends_on: %s\n    status: %s\n", edge.ItemID, edge.DependsOnID, edge.DependsOnStatus)
 		}
 	}
-	_ = data // Use data to avoid unused variable warning
+	if data.Worktree != nil {
+		fmt.Printf("worktree:\n")
+		fmt.Printf("  epic_id: %s\n", data.Worktree.EpicID)
+		fmt.Printf("  epic_title: %q\n", data.Worktree.EpicTitle)
+		fmt.Printf("  branch: %s\n", data.Worktree.Branch)
+		fmt.Printf("  base: %s\n", data.Worktree.Base)
+		fmt.Printf("  location: %s\n", data.Worktree.Location)
+		if len(data.Worktree.Path) > 0 {
+			fmt.Printf("  path: [%s]\n", strings.Join(data.Worktree.Path, ", "))
+		}
+	}
 	return nil
 }
 
-func printItemMarkdown(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge) error {
+func printItemMarkdown(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, rootEpic *model.Item, epicPath []model.Item) error {
 	fmt.Printf("# %s\n\n", item.Title)
 	fmt.Printf("**ID:** %s  \n", item.ID)
 	fmt.Printf("**Type:** %s  \n", item.Type)
@@ -4954,6 +5042,25 @@ func printItemMarkdown(item *model.Item, logs []model.Log, deps []string, blocke
 		fmt.Printf("## Dependency Chain\n\n")
 		for _, edge := range depChain {
 			fmt.Printf("- %s → %s [%s]\n", edge.ItemID, edge.DependsOnID, edge.DependsOnStatus)
+		}
+		fmt.Println()
+	}
+
+	if rootEpic != nil {
+		fmt.Printf("## Worktree\n\n")
+		fmt.Printf("**Epic:** %s - %s  \n", rootEpic.ID, rootEpic.Title)
+		fmt.Printf("**Branch:** %s  \n", rootEpic.WorktreeBranch)
+		fmt.Printf("**Base:** %s  \n", rootEpic.WorktreeBase)
+		fmt.Printf("**Location:** .worktrees/%s  \n", rootEpic.ID)
+		if len(epicPath) > 1 {
+			fmt.Printf("**Path:** ")
+			for i, pathItem := range epicPath {
+				if i > 0 {
+					fmt.Print(" → ")
+				}
+				fmt.Print(pathItem.ID)
+			}
+			fmt.Println()
 		}
 		fmt.Println()
 	}
