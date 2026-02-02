@@ -9,7 +9,30 @@ This document specifies the required behavior changes for the current prog CLI, 
 - Onboarding: `tpg onboard` writes a Task Tracking snippet to `AGENTS.md` and installs an OpenCode plugin.
 - Task reading: `prog show` prints task details, logs, deps, and suggested concepts.
 - Readiness: `prog ready` filters out tasks with unmet dependencies.
-- Tasks vs Epics: Both are items. Epics (`ep-` prefix) are a grouping mechanism; tasks (`ts-` prefix) can have a parent epic. The parent relationship is hierarchical/organizational, separate from the dependency system which controls work ordering.
+- Tasks vs Epics: Both are items. Epics (`ep-` prefix) are a grouping mechanism; tasks (`ts-` prefix) can have a parent epic. The parent relationship implies dependency inheritance - tasks within an epic are implicitly blocked by the epic's dependencies.
+
+### Dependency Inheritance
+
+When an epic has dependencies (i.e., it is blocked by other items), all tasks within that epic are also blocked. This is automatic - you don't need to manually add the epic's dependencies to each task.
+
+**Example:**
+- Epic A depends on Task X (Epic A is blocked until Task X is done)
+- Task Y is a child of Epic A
+- Task Y shows as "not ready" until Task X is done
+
+**Visual Example:**
+```
+Epic A [blocked] → depends on → Task X [open]
+  └─ Task Y [blocked - inherited from Epic A]
+  └─ Task Z [blocked - inherited from Epic A]
+```
+
+When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both direct dependencies and inherited dependencies from ancestor epics are displayed. Inherited dependencies are marked as such.
+
+**Benefits:**
+- No manual dependency management for child tasks
+- Automatic coordination when epics have external dependencies
+- Clear visibility into why tasks are blocked
 
 ## Scope of Change
 - Rename CLI to `tpg`.
@@ -63,12 +86,15 @@ This document specifies the required behavior changes for the current prog CLI, 
 - A template contains an ordered list of steps.
 - Each step may define an optional `id` and an optional `depends` list (referencing other step ids).
 - If a step id is omitted, it is generated at instantiation time as a random 3-character hash that is unique within the template instance.
+- A template may define `worktree: true` to indicate the parent epic should use a git worktree for isolated development.
+- Alternatively, templates can use a `use_worktree` variable to allow dynamic worktree selection.
 
 #### Template Instantiation
 - Using templates is optional; simple tasks can be created without a template.
 - When using a template, instantiation requires a value for every template variable.
 - Variable values accept multi-line content; values are passed as JSON-encoded strings to support newlines and special characters.
-- Instantiation creates a parent epic and child tasks for each template step using the existing dependency system.
+- Instantiation creates a parent epic (for multi-step templates) or task/epic (for single-step templates based on -e flag) and child tasks for each template step using the existing dependency system.
+- Multi-step templates always create a parent epic regardless of the -e flag.
 - The parent epic depends on all child tasks via standard dependencies.
 - Step dependencies are applied between child tasks based on the template `depends` lists, using standard dependencies.
 - If a `depends` entry references a non-existent step id, instantiation fails with no partial task creation.
