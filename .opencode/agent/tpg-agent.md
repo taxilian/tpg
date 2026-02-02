@@ -211,20 +211,42 @@ tpg add "title" --template <id>        # Create from template
 Tasks may belong to epics with dedicated worktrees. `tpg show` displays worktree context automatically:
 
 ```
-Epic:        ep-abc123 "Implement worktree support"
-Worktree:    .worktrees/ep-abc123/ (branch: feature/ep-abc123-worktree-support)
-Status:      ✓ worktree exists
+Worktree:
+  Epic:     ep-abc123 - Implement worktree support
+  Branch:   feature/ep-abc123-implement-worktree-support
+  Location: .worktrees/ep-abc123
+  Path:     ep-abc123 -> ts-xyz789
+
+  To create worktree:
+    git worktree add -b feature/ep-abc123-implement-worktree-support .worktrees/ep-abc123 main
+    cd .worktrees/ep-abc123
+```
+
+**When starting a task in a worktree epic:**
+```bash
+tpg start ts-xyz789
+# Started ts-xyz789
+#
+# 📁 Worktree: ep-abc123 - Implement worktree support
+#    Branch: feature/ep-abc123-implement-worktree-support
+#    Location: .worktrees/ep-abc123
+#
+#    To work in the correct directory:
+#    cd .worktrees/ep-abc123
 ```
 
 **When working in a worktree:**
 - Verify context with `tpg show <id>` before starting
 - Use `tpg ready --epic <id>` to filter to the epic's tasks
 - All tpg commands work the same regardless of location
+- Navigate to the worktree directory if work needs to be done there
 
 **When task has worktree but you're not in it:**
 - `tpg start` will show a reminder about the worktree location
 - Consider whether the work needs to be done in the worktree environment
 - If needed, `cd` to the worktree path before starting work
+
+**Important:** TPG never executes git commands. It only prints instructions. You must decide whether to execute them.
 
 ## Common Scenarios
 

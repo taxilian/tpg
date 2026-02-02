@@ -49,21 +49,36 @@
 
 | Command | Description |
 |---------|-------------|
-| `tpg epic worktree <id>` | Set up worktree for epic (creates branch, worktree directory) |
-| `tpg epic finish <id>` | Complete epic: merge branch, close all tasks, cleanup worktree |
+| `tpg add "<title>" -e --worktree` | Create epic with worktree metadata |
+| `tpg add "<title>" -e --branch <name> --base <branch>` | Create epic with custom branch/base |
+| `tpg epic worktree <id>` | Set up worktree metadata for existing epic |
+| `tpg epic worktree <id> --branch <name> --base <branch>` | Set up with custom branch/base |
+| `tpg epic finish <id>` | Complete epic: validate descendants done, print cleanup instructions |
 
 Epics can have associated Git worktrees for isolated development:
 
 ```bash
-# Create an epic with worktree
+# Create an epic with worktree (auto-generates branch name)
 tpg add "Implement user authentication" -e --worktree
+# → Creates ep-abc123 with worktree_branch="feature/ep-abc123-implement-user-authentication"
+
+# Create epic with custom branch
+tpg add "Fix API bugs" -e --worktree --branch feature/api-fixes --base develop
 
 # Set up worktree for existing epic
 tpg epic worktree ep-abc123
 
+# Set up with custom branch
+tpg epic worktree ep-abc123 --branch feature/custom-name --base main
+
 # Complete the epic and cleanup
 tpg epic finish ep-abc123
+# → Validates all descendants are done/canceled
+# → Prints merge and cleanup instructions
+# → For nested epics: merges to parent epic's branch
 ```
+
+**Branch naming:** Auto-generated branches follow the pattern `feature/<epic-id>-<slug>` where slug is the lowercase title with non-alphanumeric characters replaced by hyphens.
 
 Worktree configuration in `.tpg/config.json`:
 
@@ -123,6 +138,8 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 | `--parent <id>` | add, list | Set parent item at creation / filter by parent (any type can have children) |
 | `--blocks` | add | Set task this will block at creation |
 | `--worktree` | add | Create epic with worktree metadata (use with `-e`) |
+| `--branch` | add, epic worktree | Custom branch name for worktree (default: auto-generated) |
+| `--base` | add, epic worktree | Base branch for worktree (default: main) |
 | `--status` | list | Filter by status |
 | `--epic <id>` | list, ready | Filter by parent epic |
 | `--ids-only` | list | Output just IDs, one per line |
@@ -172,7 +189,10 @@ The following commands have been removed. Use these alternatives:
 ```bash
 # 1. Create an epic with worktree
 tpg add "Implement OAuth2 authentication" -e --worktree
-# → Creates ep-abc123 with worktree_branch="feature/ep-abc123-oauth2"
+# → Creates ep-abc123 with worktree_branch="feature/ep-abc123-implement-oauth2-authentication"
+# → Prints worktree setup instructions:
+#    git worktree add -b feature/ep-abc123-implement-oauth2-authentication .worktrees/ep-abc123 main
+#    cd .worktrees/ep-abc123
 
 # 2. Add tasks to the epic
 tpg add "Set up OAuth2 provider config" --parent ep-abc123
@@ -181,14 +201,44 @@ tpg add "Add logout endpoint" --parent ep-abc123
 
 # 3. View ready tasks for this epic
 tpg ready --epic ep-abc123
+# Ready tasks for epic ep-abc123 - Implement OAuth2 authentication:
+# (3 ready)
 
 # 4. Start working on a task (worktree guidance shown)
 tpg start ts-def456
-# → Shows: "Worktree: feature/ep-abc123-oauth2 at .worktrees/ep-abc123"
+# Started ts-def456
+#
+# 📁 Worktree: ep-abc123 - Implement OAuth2 authentication
+#    Branch: feature/ep-abc123-implement-oauth2-authentication
+#    Location: .worktrees/ep-abc123
+#
+#    To work in the correct directory:
+#    cd .worktrees/ep-abc123
 
-# 5. Complete all tasks, then finish the epic
+# 5. Show task details with worktree context
+tpg show ts-def456
+# ...
+# Worktree:
+#   Epic:     ep-abc123 - Implement OAuth2 authentication
+#   Branch:   feature/ep-abc123-implement-oauth2-authentication
+#   Location: .worktrees/ep-abc123
+#   Status:   (check with: git worktree list)
+#   Path:     ep-abc123 -> ts-def456
+#
+#   To create worktree:
+#     git worktree add -b feature/ep-abc123-implement-oauth2-authentication .worktrees/ep-abc123 main
+#     cd .worktrees/ep-abc123
+
+# 6. Complete all tasks, then finish the epic
 tpg epic finish ep-abc123
-# → Merges branch, closes epic, removes worktree directory
+# Epic ep-abc123 marked as done.
+#
+# Cleanup instructions:
+#   # Merge to main:
+#   git checkout main
+#   git merge feature/ep-abc123-implement-oauth2-authentication
+#   git worktree remove .worktrees/ep-abc123
+#   git branch -d feature/ep-abc123-implement-oauth2-authentication
 ```
 
 ## Environment Variables
