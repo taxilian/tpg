@@ -892,7 +892,7 @@ Example:
 			return err
 		}
 
-		depStatuses, err := database.GetDepStatuses(args[0])
+		depStatuses, err := database.GetAllDepStatuses(args[0])
 		if err != nil {
 			return err
 		}
@@ -1936,7 +1936,7 @@ Examples:
 		depInfo := make(map[string][]db.DepStatus)
 		blockedBy := make(map[string][]db.DepStatus)
 		for _, item := range descendants {
-			deps, err := database.GetDepStatuses(item.ID)
+			deps, err := database.GetAllDepStatuses(item.ID)
 			if err != nil {
 				return err
 			}
@@ -2704,8 +2704,8 @@ Examples:
 			fmt.Printf("Removed dependency between %s and %s\n", id, otherID)
 
 		case "list":
-			// Show what this task depends on
-			waitingOn, err := database.GetDepStatuses(id)
+			// Show what this task depends on (including inherited deps)
+			waitingOn, err := database.GetAllDepStatuses(id)
 			if err != nil {
 				return err
 			}

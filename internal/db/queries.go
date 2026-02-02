@@ -107,6 +107,10 @@ func (db *DB) ReadyItems(project string) ([]model.Item, error) {
 }
 
 // ReadyItemsFiltered returns ready items with optional label filtering.
+// An item is ready if:
+// 1. It has status 'open'
+// 2. It has no unmet direct dependencies
+// 3. None of its ancestor epics have unmet dependencies (inherited deps)
 func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item, error) {
 	query := fmt.Sprintf(`
 		SELECT %s
@@ -146,7 +150,24 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 	}
 	query += ` ORDER BY priority ASC, created_at ASC`
 
-	return db.queryItems(query, args...)
+	candidates, err := db.queryItems(query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter out items with unmet ancestor dependencies
+	var ready []model.Item
+	for _, item := range candidates {
+		ancestorDeps, err := db.GetAncestorDependencies(item.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(ancestorDeps) == 0 {
+			ready = append(ready, item)
+		}
+	}
+
+	return ready, nil
 }
 
 // StaleItems returns in-progress items that haven't been updated since the cutoff.
