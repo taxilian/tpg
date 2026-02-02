@@ -3,6 +3,8 @@ package db
 import (
 	"fmt"
 	"time"
+
+	"github.com/taxilian/tpg/internal/model"
 )
 
 // AddDep adds a dependency between items.
@@ -121,9 +123,11 @@ type DepEdge struct {
 
 // DepStatus represents a dependency with status details.
 type DepStatus struct {
-	ID     string
-	Title  string
-	Status string
+	ID            string
+	Title         string
+	Status        string
+	IsInherited   bool   // True if this dependency is inherited from an ancestor epic
+	InheritedFrom string // The ancestor epic ID from which this dependency is inherited
 }
 
 // GetDepStatuses returns dependencies for a single item with their statuses.
@@ -147,6 +151,70 @@ func (db *DB) GetDepStatuses(itemID string) ([]DepStatus, error) {
 		deps = append(deps, dep)
 	}
 	return deps, rows.Err()
+}
+
+// GetAncestorDependencies returns all unmet dependencies from ancestor epics.
+// These are dependencies that the item implicitly inherits from its parent epic chain.
+func (db *DB) GetAncestorDependencies(itemID string) ([]DepStatus, error) {
+	// Get parent chain (ordered by depth DESC, so root is first, immediate parent is last)
+	ancestors, err := db.GetParentChain(itemID)
+	if err != nil {
+		return nil, err
+	}
+
+	var ancestorDeps []DepStatus
+
+	// For each ancestor, get its dependencies
+	for _, ancestor := range ancestors {
+		// Only consider epics (not intermediate tasks if any)
+		if ancestor.Type != model.ItemTypeEpic {
+			continue
+		}
+
+		// Get direct dependencies of this ancestor
+		rows, err := db.Query(`
+			SELECT d.depends_on, i.title, i.status
+			FROM deps d
+			JOIN items i ON d.depends_on = i.id
+			WHERE d.item_id = ? AND i.status != 'done'`, ancestor.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get ancestor dependencies: %w", err)
+		}
+
+		for rows.Next() {
+			var dep DepStatus
+			if err := rows.Scan(&dep.ID, &dep.Title, &dep.Status); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("failed to scan ancestor dependency: %w", err)
+			}
+			// Mark as inherited
+			dep.IsInherited = true
+			dep.InheritedFrom = ancestor.ID
+			ancestorDeps = append(ancestorDeps, dep)
+		}
+		rows.Close()
+	}
+
+	return ancestorDeps, nil
+}
+
+// GetAllDepStatuses returns both direct and inherited dependencies for an item.
+func (db *DB) GetAllDepStatuses(itemID string) ([]DepStatus, error) {
+	// Get direct dependencies
+	directDeps, err := db.GetDepStatuses(itemID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get inherited dependencies from ancestors
+	inheritedDeps, err := db.GetAncestorDependencies(itemID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Combine both
+	allDeps := append(directDeps, inheritedDeps...)
+	return allDeps, nil
 }
 
 // ImpactItem represents a task that would become ready if dependencies are resolved.
