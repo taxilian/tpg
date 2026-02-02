@@ -1,0 +1,103 @@
+# Worktree Epic Template
+#
+# Creates an epic with Git worktree support for isolated development.
+#
+# Usage:
+#   tpg add "Feature Name" -e --template worktree-epic --vars-yaml <<'EOF'
+#   epic_name: "User Authentication"
+#   objective: "Implement user login and registration"
+#   acceptance_criteria: |
+#     - Users can register
+#     - Users can login
+#     - Sessions are secure
+#   base_branch: "main"
+#   EOF
+
+title: "Worktree Epic"
+description: "Epic using Git worktree for isolated development"
+
+variables:
+  epic_name:
+    description: "Short epic title"
+  objective:
+    description: "One-sentence goal"
+  acceptance_criteria:
+    description: "Testable completion criteria"
+  base_branch:
+    description: "Base branch (main, develop, etc.)"
+    default: "main"
+  context:
+    description: "Background information"
+    optional: true
+    default: ""
+
+steps:
+  - id: epic
+    type: epic
+    title: "{{.epic_name}}"
+    description: |
+      ## Objective
+
+      {{.objective}}
+      {{- if hasValue .context}}
+
+      ## Context
+
+      {{.context}}
+      {{- end}}
+
+      ## Worktree Setup
+
+      This epic uses a Git worktree for isolated development.
+
+      **Configuration:**
+      - **Branch**: `feature/{{.item_id}}-{{.epic_name | slugify}}`
+      - **Base**: `{{.base_branch}}`
+      - **Location**: `.worktrees/{{.item_id}}/`
+
+      **Create:**
+      ```bash
+      git worktree add -b feature/{{.item_id}}-{{.epic_name | slugify}} .worktrees/{{.item_id}} {{.base_branch}}
+      ```
+
+      **Work:**
+      ```bash
+      cd .worktrees/{{.item_id}}/
+      # ... do work ...
+      git add . && git commit -m "feat: changes"
+      ```
+
+      **Complete:**
+      ```bash
+      cd ../..                              # Return to main repo
+      git merge feature/{{.item_id}}-{{.epic_name | slugify}}  # Merge branch
+      git worktree remove .worktrees/{{.item_id}}              # Remove worktree
+      git branch -d feature/{{.item_id}}-{{.epic_name | slugify}}  # Delete branch
+      ```
+
+      **Using PRs?** Push branch and create PR instead of direct merge:
+      ```bash
+      cd .worktrees/{{.item_id}}
+      git push origin feature/{{.item_id}}-{{.epic_name | slugify}}
+      # Create PR in GitHub/GitLab
+      ```
+
+      ## Acceptance Criteria
+
+      {{.acceptance_criteria}}
+
+      - [ ] Worktree created
+      - [ ] All tasks completed
+      - [ ] Changes committed to worktree branch
+      - [ ] Branch merged (or PR merged)
+      - [ ] Worktree cleaned up
+
+      ## Parallel Execution
+
+      **Safe:**
+      - ✅ Tasks in different epics
+      - ✅ Sub-epics with nested worktrees
+      - ✅ Tasks modifying different files
+
+      **Unsafe:**
+      - ❌ Tasks in same epic modifying same files
