@@ -1070,6 +1070,22 @@ Example:
 		_ = database.AddLog(args[0], logMsg)
 
 		fmt.Printf("Started %s\n", args[0])
+
+		// Check if task belongs to a worktree epic
+		rootEpic, _, err := database.GetRootEpic(item.ID)
+		if err != nil {
+			return err
+		}
+
+		if rootEpic != nil {
+			// Task is under a worktree epic
+			fmt.Fprintf(os.Stderr, "\n📁 Worktree: %s - %s\n", rootEpic.ID, rootEpic.Title)
+			fmt.Fprintf(os.Stderr, "   Branch: %s\n", rootEpic.WorktreeBranch)
+			fmt.Fprintf(os.Stderr, "   Location: .worktrees/%s\n", rootEpic.ID)
+			fmt.Fprintf(os.Stderr, "\n   To work in the correct directory:\n")
+			fmt.Fprintf(os.Stderr, "   cd .worktrees/%s\n", rootEpic.ID)
+		}
+
 		return nil
 	},
 }
