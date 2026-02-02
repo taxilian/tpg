@@ -173,6 +173,161 @@ var initCmd = &cobra.Command{
 	},
 }
 
+var epicCmd = &cobra.Command{
+	Use:   "epic",
+	Short: "Manage epics and their worktrees",
+	Long:  `Commands for managing epics, including worktree setup and completion.`,
+}
+
+var epicWorktreeCmd = &cobra.Command{
+	Use:   "worktree <id>",
+	Short: "Set up worktree metadata for an existing epic",
+	Long: `Update an existing epic with worktree metadata.
+
+If --branch is not specified, a branch name will be auto-generated.
+If --base is not specified, "main" will be used.
+
+Examples:
+  tpg epic worktree ep-abc123
+  tpg epic worktree ep-abc123 --branch feature/my-custom-branch
+  tpg epic worktree ep-abc123 --base develop`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		epicID := args[0]
+
+		// Verify the item exists and is an epic
+		item, err := database.GetItem(epicID)
+		if err != nil {
+			return err
+		}
+		if item.Type != model.ItemTypeEpic {
+			return fmt.Errorf("%s is not an epic", epicID)
+		}
+
+		// Generate branch name if not provided
+		branch := flagWorktreeBranch
+		if branch == "" {
+			branch = generateWorktreeBranch(item.ID, item.Title)
+		}
+
+		// Determine base branch
+		base := flagWorktreeBase
+		if base == "" {
+			base = "main"
+		}
+
+		// Update the epic with worktree metadata
+		if err := database.SetWorktreeMetadata(item.ID, branch, base); err != nil {
+			return fmt.Errorf("failed to set worktree metadata: %w", err)
+		}
+
+		fmt.Printf("Updated epic %s with worktree metadata:\n", item.ID)
+		fmt.Printf("  Branch: %s\n", branch)
+		fmt.Printf("  Base:   %s\n", base)
+		fmt.Printf("\nWorktree setup instructions:\n")
+		fmt.Printf("  git worktree add -b %s .worktrees/%s %s\n", branch, item.ID, base)
+		fmt.Printf("  cd .worktrees/%s\n", item.ID)
+
+		database.BackupQuiet()
+		return nil
+	},
+}
+
+var epicFinishCmd = &cobra.Command{
+	Use:   "finish <id>",
+	Short: "Mark an epic as done and print cleanup instructions",
+	Long: `Validate that all descendants are done/canceled, mark the epic as done,
+and print instructions for cleaning up the worktree.
+
+For nested epics, merges to the parent epic's branch instead of main.
+
+Examples:
+  tpg epic finish ep-abc123`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		epicID := args[0]
+
+		// Verify the item exists and is an epic
+		item, err := database.GetItem(epicID)
+		if err != nil {
+			return err
+		}
+		if item.Type != model.ItemTypeEpic {
+			return fmt.Errorf("%s is not an epic", epicID)
+		}
+
+		// Get all descendants
+		descendants, err := database.GetDescendants(epicID)
+		if err != nil {
+			return fmt.Errorf("failed to get descendants: %w", err)
+		}
+
+		// Check if all descendants are done or canceled
+		var openDescendants []string
+		for _, d := range descendants {
+			if d.Status != model.StatusDone && d.Status != model.StatusCanceled {
+				openDescendants = append(openDescendants, d.ID)
+			}
+		}
+
+		if len(openDescendants) > 0 {
+			fmt.Fprintf(os.Stderr, "Cannot finish epic: %d open descendants:\n", len(openDescendants))
+			for _, id := range openDescendants {
+				fmt.Fprintf(os.Stderr, "  %s\n", id)
+			}
+			return fmt.Errorf("all descendants must be done or canceled before finishing epic")
+		}
+
+		// Mark the epic as done
+		agentCtx := db.AgentContext{}
+		if err := database.UpdateStatus(epicID, model.StatusDone, agentCtx); err != nil {
+			return fmt.Errorf("failed to mark epic as done: %w", err)
+		}
+
+		fmt.Printf("Epic %s marked as done.\n", epicID)
+
+		// Print cleanup instructions
+		if item.WorktreeBranch != "" {
+			fmt.Printf("\nCleanup instructions:\n")
+
+			// Determine merge target
+			mergeTarget := "main"
+			if item.ParentID != nil && *item.ParentID != "" {
+				// Check if parent has worktree
+				parent, err := database.GetItem(*item.ParentID)
+				if err == nil && parent.WorktreeBranch != "" {
+					mergeTarget = parent.WorktreeBranch
+					fmt.Printf("  # Merge to parent epic branch (%s):\n", mergeTarget)
+				} else {
+					fmt.Printf("  # Merge to main:\n")
+				}
+			} else {
+				fmt.Printf("  # Merge to main:\n")
+			}
+
+			fmt.Printf("  git checkout %s\n", mergeTarget)
+			fmt.Printf("  git merge %s\n", item.WorktreeBranch)
+			fmt.Printf("  git worktree remove .worktrees/%s\n", epicID)
+			fmt.Printf("  git branch -d %s\n", item.WorktreeBranch)
+		}
+
+		database.BackupQuiet()
+		return nil
+	},
+}
+
 var addCmd = &cobra.Command{
 	Use:   "add <title>",
 	Short: "Create a new task or epic",
@@ -4316,6 +4471,14 @@ func init() {
 	cleanCmd.Flags().BoolVar(&flagForce, "force", false, "Skip confirmation prompt")
 
 	rootCmd.AddCommand(initCmd)
+
+	// epic subcommands and flags
+	epicWorktreeCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name (default: auto-generated)")
+	epicWorktreeCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch (default: main)")
+	epicCmd.AddCommand(epicWorktreeCmd)
+	epicCmd.AddCommand(epicFinishCmd)
+	rootCmd.AddCommand(epicCmd)
+
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(readyCmd)
