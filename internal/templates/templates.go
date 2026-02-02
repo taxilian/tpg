@@ -23,6 +23,7 @@ type Template struct {
 	ID          string              `json:"-"`
 	Title       string              `yaml:"title" toml:"title"`
 	Description string              `yaml:"description" toml:"description"`
+	Worktree    bool                `yaml:"worktree" toml:"worktree"` // When true, creates epic with worktree
 	Variables   map[string]Variable `yaml:"variables" toml:"variables"`
 	Steps       []Step              `yaml:"steps" toml:"steps"`
 	SourcePath  string              `json:"-"`
