@@ -472,6 +472,24 @@ func (db *DB) GetDescendants(itemID string) ([]model.Item, error) {
 	return db.queryItems(query, itemID)
 }
 
+// SetWorktreeMetadata sets the worktree branch and base for an item.
+func (db *DB) SetWorktreeMetadata(itemID, branch, base string) error {
+	result, err := db.Exec(`
+		UPDATE items
+		SET worktree_branch = ?, worktree_base = ?, updated_at = ?
+		WHERE id = ?`,
+		branch, base, sqlTime(time.Now()), itemID)
+	if err != nil {
+		return fmt.Errorf("failed to set worktree metadata: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", itemID)
+	}
+	return nil
+}
+
 // GetParentChain returns all ancestors of an item up to the root.
 func (db *DB) GetParentChain(itemID string) ([]model.Item, error) {
 	query := fmt.Sprintf(`

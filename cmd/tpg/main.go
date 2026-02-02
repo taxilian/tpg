@@ -97,6 +97,9 @@ var (
 	flagShowFormat       string
 	flagShowVars         bool
 	flagDryRun           bool
+	flagWorktree         bool
+	flagWorktreeBranch   string
+	flagWorktreeBase     string
 	flagListAll          bool
 	flagIdsOnly          bool
 )
@@ -379,7 +382,37 @@ Examples:
 			}
 		}
 
-		fmt.Println(item.ID)
+		// Handle worktree metadata for epics
+		if flagWorktree || flagWorktreeBranch != "" {
+			if itemType != model.ItemTypeEpic {
+				return fmt.Errorf("--worktree and --branch can only be used with epics (use -e flag)")
+			}
+
+			// Generate branch name if not provided
+			branch := flagWorktreeBranch
+			if branch == "" {
+				branch = generateWorktreeBranch(item.ID, item.Title)
+			}
+
+			// Determine base branch
+			base := flagWorktreeBase
+			if base == "" {
+				base = "main"
+			}
+
+			// Update the epic with worktree metadata
+			if err := database.SetWorktreeMetadata(item.ID, branch, base); err != nil {
+				return fmt.Errorf("failed to set worktree metadata: %w", err)
+			}
+
+			// Print setup instructions
+			fmt.Println(item.ID)
+			fmt.Fprintf(os.Stderr, "\nWorktree setup instructions:\n")
+			fmt.Fprintf(os.Stderr, "  git worktree add -b %s .worktrees/%s %s\n", branch, item.ID, base)
+			fmt.Fprintf(os.Stderr, "  cd .worktrees/%s\n", item.ID)
+		} else {
+			fmt.Println(item.ID)
+		}
 
 		// Warn if description is very short (but not empty) - configurable
 		config, _ := db.LoadConfig()
@@ -400,6 +433,39 @@ Examples:
 // countWords returns the number of words in a string
 func countWords(s string) int {
 	return len(strings.Fields(s))
+}
+
+// generateWorktreeBranch generates a branch name from epic ID and title.
+// Format: feature/<epic-id>-<slug> where slug is lowercase title with non-alnum→hyphens
+func generateWorktreeBranch(epicID, title string) string {
+	// Convert title to lowercase
+	slug := strings.ToLower(title)
+
+	// Replace non-alphanumeric characters with hyphens
+	var result strings.Builder
+	for _, r := range slug {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else {
+			result.WriteRune('-')
+		}
+	}
+
+	// Collapse multiple hyphens
+	slug = result.String()
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+
+	// Trim hyphens from ends
+	slug = strings.Trim(slug, "-")
+
+	// Limit length
+	if len(slug) > 50 {
+		slug = slug[:50]
+	}
+
+	return fmt.Sprintf("feature/%s-%s", epicID, slug)
 }
 
 var listCmd = &cobra.Command{
@@ -4139,6 +4205,9 @@ func init() {
 	addCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview what would be created without actually creating")
 	addCmd.Flags().StringVar(&flagType, "type", "", "Item type (default: task, or epic if -e flag used)")
 	addCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
+	addCmd.Flags().BoolVar(&flagWorktree, "worktree", false, "Create epic with worktree metadata (generates branch name)")
+	addCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name for worktree (default: auto-generated)")
+	addCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch for worktree (default: main)")
 
 	// init flags
 	initCmd.Flags().StringVar(&flagInitTaskPrefix, "prefix", "", "Task ID prefix (default: ts)")
