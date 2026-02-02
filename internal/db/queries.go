@@ -432,6 +432,145 @@ func (db *DB) ListProjects() ([]string, error) {
 	return projects, rows.Err()
 }
 
+// FindEpicByBranch finds an epic by its worktree branch name.
+func (db *DB) FindEpicByBranch(branch string) (*model.Item, error) {
+	query := fmt.Sprintf("SELECT %s FROM items WHERE type = 'epic' AND worktree_branch = ?", itemSelectColumns)
+	items, err := db.queryItems(query, branch)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("epic not found for branch: %s", branch)
+	}
+	return &items[0], nil
+}
+
+// ReadyItemsForEpic returns ready items (open with no unmet dependencies) for a specific epic.
+func (db *DB) ReadyItemsForEpic(epicID string) ([]model.Item, error) {
+	// Get all descendants of the epic
+	descendants, err := db.GetDescendants(epicID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get descendants: %w", err)
+	}
+
+	// Build a set of descendant IDs for quick lookup
+	descendantIDs := make(map[string]bool)
+	for _, d := range descendants {
+		descendantIDs[d.ID] = true
+	}
+
+	// Get all ready items
+	readyItems, err := db.ReadyItems("")
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter to only those under this epic
+	var epicReady []model.Item
+	for _, item := range readyItems {
+		if descendantIDs[item.ID] {
+			epicReady = append(epicReady, item)
+		}
+	}
+
+	return epicReady, nil
+}
+
+// GetRootEpic finds the nearest ancestor epic with worktree and returns the full path.
+// Returns the epic with worktree, the path from that epic to the item (inclusive), and any error.
+func (db *DB) GetRootEpic(itemID string) (*model.Item, []model.Item, error) {
+	// First check if the item itself has a worktree
+	item, err := db.GetItem(itemID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if item.WorktreeBranch != "" {
+		// The item itself has a worktree
+		return item, []model.Item{*item}, nil
+	}
+
+	// Get the parent chain (ordered by depth DESC, so root is first, immediate parent is last)
+	ancestors, err := db.GetParentChain(itemID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get parent chain: %w", err)
+	}
+
+	// Find the nearest ancestor with a worktree
+	// ancestors are ordered root -> immediate parent (depth DESC)
+	// so we need to iterate in reverse to find the nearest one
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		ancestor := ancestors[i]
+		if ancestor.WorktreeBranch != "" {
+			// Found the nearest epic with worktree
+			// Build path from this epic to the original item
+			path := []model.Item{ancestor}
+
+			// Get descendants of the epic to find intermediate items
+			descendants, err := db.GetDescendants(ancestor.ID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to get descendants: %w", err)
+			}
+
+			// Build a map of item ID -> parent ID for tracing up
+			parentMap := make(map[string]string)
+			for _, d := range descendants {
+				if d.ParentID != nil {
+					parentMap[d.ID] = *d.ParentID
+				}
+			}
+
+			// Collect intermediate items (between ancestor and item)
+			var intermediate []model.Item
+			currentID := itemID
+			for currentID != ancestor.ID {
+				// Get the item
+				item, err := db.GetItem(currentID)
+				if err != nil {
+					return nil, nil, err
+				}
+				intermediate = append(intermediate, *item)
+
+				// Move up
+				if parentID, ok := parentMap[currentID]; ok {
+					currentID = parentID
+				} else {
+					break
+				}
+			}
+
+			// Reverse intermediate items to get ancestor -> item order
+			for i := len(intermediate) - 1; i >= 0; i-- {
+				path = append(path, intermediate[i])
+			}
+
+			return &ancestor, path, nil
+		}
+	}
+
+	return nil, nil, nil
+}
+
+// FindEpicsNeedingWorktreeSetup finds epics with worktree metadata but no worktree.
+// existingBranches is a map of branch name -> worktree path for branches that already have worktrees.
+func (db *DB) FindEpicsNeedingWorktreeSetup(existingBranches map[string]string) ([]model.Item, error) {
+	// Get all epics with worktree_branch set
+	query := fmt.Sprintf("SELECT %s FROM items WHERE type = 'epic' AND worktree_branch IS NOT NULL AND worktree_branch != ''", itemSelectColumns)
+	epics, err := db.queryItems(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query epics: %w", err)
+	}
+
+	// Filter to only those whose branch doesn't exist in existingBranches
+	var needingSetup []model.Item
+	for _, epic := range epics {
+		if _, exists := existingBranches[epic.WorktreeBranch]; !exists {
+			needingSetup = append(needingSetup, epic)
+		}
+	}
+
+	return needingSetup, nil
+}
+
 // queryItems is a helper to scan item rows.
 func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 	rows, err := db.Query(query, args...)

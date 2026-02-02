@@ -806,3 +806,249 @@ func TestWorktreeFields_EmptyByDefault(t *testing.T) {
 		t.Errorf("WorktreeBase should be empty by default, got %q", got.WorktreeBase)
 	}
 }
+
+func TestFindEpicByBranch(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create an epic with worktree metadata
+	epic := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Worktree Epic",
+		Status:         model.StatusOpen,
+		Priority:       2,
+		WorktreeBranch: "feature/my-epic",
+		WorktreeBase:   "main",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	// Find by branch
+	found, err := db.FindEpicByBranch("feature/my-epic")
+	if err != nil {
+		t.Fatalf("failed to find epic by branch: %v", err)
+	}
+	if found.ID != epic.ID {
+		t.Errorf("found epic ID = %q, want %q", found.ID, epic.ID)
+	}
+
+	// Try non-existent branch
+	_, err = db.FindEpicByBranch("feature/nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent branch")
+	}
+}
+
+func TestReadyItemsForEpic(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create an epic
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	// Create tasks under the epic
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	task3 := createTestItemWithProject(t, db, "Task 3", "test", model.StatusInProgress, 2)
+
+	// Set parents
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task3.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// task2 depends on task1
+	if err := db.AddDep(task2.ID, task1.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Get ready items for epic
+	ready, err := db.ReadyItemsForEpic(epic.ID)
+	if err != nil {
+		t.Fatalf("failed to get ready items: %v", err)
+	}
+
+	// Only task1 should be ready (task2 has unmet dep, task3 is in_progress)
+	if len(ready) != 1 {
+		t.Errorf("expected 1 ready item, got %d", len(ready))
+	}
+	if len(ready) > 0 && ready[0].ID != task1.ID {
+		t.Errorf("ready item = %q, want %q", ready[0].ID, task1.ID)
+	}
+}
+
+func TestGetRootEpic(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create nested epics with worktrees
+	rootEpic := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Root Epic",
+		Status:         model.StatusOpen,
+		Priority:       2,
+		WorktreeBranch: "feature/root",
+		WorktreeBase:   "main",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := db.CreateItem(rootEpic); err != nil {
+		t.Fatalf("failed to create root epic: %v", err)
+	}
+
+	// Create child epic with worktree (no parent initially)
+	childEpic := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Child Epic",
+		Status:         model.StatusOpen,
+		Priority:       2,
+		WorktreeBranch: "feature/child",
+		WorktreeBase:   "feature/root",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := db.CreateItem(childEpic); err != nil {
+		t.Fatalf("failed to create child epic: %v", err)
+	}
+
+	// Set child epic's parent to root epic
+	if err := db.SetParent(childEpic.ID, rootEpic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	// Update childEpic struct to reflect the parent
+	childEpic.ParentID = &rootEpic.ID
+
+	// Create task under child epic
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task.ID, childEpic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Get root epic for task - should find child epic (nearest)
+	root, path, err := db.GetRootEpic(task.ID)
+	if err != nil {
+		t.Fatalf("failed to get root epic: %v", err)
+	}
+	if root == nil {
+		t.Fatal("expected to find root epic, got nil")
+	}
+	if root.ID != childEpic.ID {
+		t.Errorf("root epic = %q, want %q (nearest ancestor)", root.ID, childEpic.ID)
+	}
+
+	// Path should include child epic and task
+	if len(path) != 2 {
+		t.Errorf("expected path length 2, got %d", len(path))
+	}
+
+	// Get root epic for child epic itself
+	root, path, err = db.GetRootEpic(childEpic.ID)
+	if err != nil {
+		t.Fatalf("failed to get root epic: %v", err)
+	}
+	if root == nil {
+		t.Fatal("expected to find root epic, got nil")
+	}
+	if root.ID != childEpic.ID {
+		t.Errorf("root epic = %q, want %q", root.ID, childEpic.ID)
+	}
+	if len(path) != 1 || path[0].ID != childEpic.ID {
+		t.Errorf("path should contain only child epic")
+	}
+}
+
+func TestGetRootEpic_NoWorktree(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epic without worktree
+	epic := createTestEpic(t, db, "No Worktree Epic", "test")
+
+	// Create task under epic
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Get root epic - should return nil since no ancestor has worktree
+	root, path, err := db.GetRootEpic(task.ID)
+	if err != nil {
+		t.Fatalf("failed to get root epic: %v", err)
+	}
+	if root != nil {
+		t.Errorf("expected nil root epic, got %q", root.ID)
+	}
+	if path != nil {
+		t.Error("expected nil path")
+	}
+}
+
+func TestFindEpicsNeedingWorktreeSetup(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epics with worktree metadata
+	epic1 := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Epic 1",
+		Status:         model.StatusOpen,
+		Priority:       2,
+		WorktreeBranch: "feature/epic1",
+		WorktreeBase:   "main",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := db.CreateItem(epic1); err != nil {
+		t.Fatalf("failed to create epic1: %v", err)
+	}
+
+	epic2 := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Epic 2",
+		Status:         model.StatusOpen,
+		Priority:       2,
+		WorktreeBranch: "feature/epic2",
+		WorktreeBase:   "main",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := db.CreateItem(epic2); err != nil {
+		t.Fatalf("failed to create epic2: %v", err)
+	}
+
+	// Create epic without worktree
+	epic3 := createTestEpic(t, db, "Epic 3", "test")
+	_ = epic3
+
+	// Simulate that epic1 already has a worktree
+	existingBranches := map[string]string{
+		"feature/epic1": ".worktrees/epic1",
+	}
+
+	// Find epics needing setup
+	needingSetup, err := db.FindEpicsNeedingWorktreeSetup(existingBranches)
+	if err != nil {
+		t.Fatalf("failed to find epics needing setup: %v", err)
+	}
+
+	// Only epic2 should need setup
+	if len(needingSetup) != 1 {
+		t.Errorf("expected 1 epic needing setup, got %d", len(needingSetup))
+	}
+	if len(needingSetup) > 0 && needingSetup[0].ID != epic2.ID {
+		t.Errorf("epic needing setup = %q, want %q", needingSetup[0].ID, epic2.ID)
+	}
+}
