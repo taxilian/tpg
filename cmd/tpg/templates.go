@@ -187,6 +187,11 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 		}
 	}
 
+	// Multi-step templates always create a parent epic
+	if len(tmpl.Steps) > 1 {
+		parentType = model.ItemTypeEpic
+	}
+
 	parentID, err := database.GenerateItemID(parentType)
 	if err != nil {
 		return "", err
