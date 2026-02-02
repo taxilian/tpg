@@ -203,19 +203,41 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 		}
 	}
 
+	// Check if this template should use worktree
+	useWorktree := tmpl.Worktree
+	if !useWorktree {
+		// Check for variable-based worktree
+		if val, ok := vars["use_worktree"]; ok && (val == "true" || val == "yes") {
+			useWorktree = true
+		}
+	}
+
+	// Generate worktree metadata if applicable (only for epics)
+	worktreeBranch := ""
+	worktreeBase := "main"
+	if useWorktree && parentType == model.ItemTypeEpic {
+		worktreeBranch = generateWorktreeBranch(parentID, title)
+		// Check for custom base branch in variables
+		if base, ok := vars["base_branch"]; ok && base != "" {
+			worktreeBase = base
+		}
+	}
+
 	now := time.Now()
 	parent := &model.Item{
-		ID:           parentID,
-		Project:      project,
-		Type:         parentType,
-		Title:        title,
-		Status:       model.StatusOpen,
-		Priority:     priority,
-		TemplateID:   tmpl.ID,
-		TemplateVars: vars,
-		TemplateHash: tmpl.Hash,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             parentID,
+		Project:        project,
+		Type:           parentType,
+		Title:          title,
+		Status:         model.StatusOpen,
+		Priority:       priority,
+		TemplateID:     tmpl.ID,
+		TemplateVars:   vars,
+		TemplateHash:   tmpl.Hash,
+		WorktreeBranch: worktreeBranch,
+		WorktreeBase:   worktreeBase,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := database.CreateItem(parent); err != nil {
 		return "", err
@@ -278,6 +300,17 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 			cleanup()
 			return "", err
 		}
+	}
+
+	// Print worktree instructions if applicable
+	if worktreeBranch != "" {
+		fmt.Printf("\n📁 Worktree setup:\n")
+		fmt.Printf("  Branch: %s\n", worktreeBranch)
+		fmt.Printf("  Base: %s\n", worktreeBase)
+		fmt.Printf("\n  Create worktree:\n")
+		fmt.Printf("    git worktree add -b %s .worktrees/%s %s\n", worktreeBranch, parentID, worktreeBase)
+		fmt.Printf("\n  Navigate to worktree:\n")
+		fmt.Printf("    cd .worktrees/%s\n", parentID)
 	}
 
 	return parentID, nil
