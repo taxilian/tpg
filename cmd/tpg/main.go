@@ -97,11 +97,13 @@ var (
 	flagShowFormat       string
 	flagShowVars         bool
 	flagDryRun           bool
-	flagWorktree         bool
-	flagWorktreeBranch   string
-	flagWorktreeBase     string
+	flagReadyEpic        string
 	flagListAll          bool
 	flagIdsOnly          bool
+
+	flagWorktree       bool
+	flagWorktreeBranch string
+	flagWorktreeBase   string
 )
 
 func openDB() (*db.DB, error) {
@@ -749,7 +751,8 @@ Results are sorted by priority (1=high first).
 Examples:
   tpg ready
   tpg ready -p myproject
-  tpg ready -l bug`,
+  tpg ready -l bug
+  tpg ready --epic ep-abc123`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -768,14 +771,56 @@ Examples:
 			_ = database.RecordAgentProjectAccess(agentCtx.ID, project)
 		}
 
-		items, err := database.ReadyItemsFiltered(project, flagFilterLabels)
-		if err != nil {
-			return err
+		var items []model.Item
+
+		// Check if filtering by epic
+		if flagReadyEpic != "" {
+			// Verify the epic exists
+			epic, err := database.GetItem(flagReadyEpic)
+			if err != nil {
+				return err
+			}
+			if epic.Type != model.ItemTypeEpic {
+				return fmt.Errorf("%s is not an epic", flagReadyEpic)
+			}
+
+			items, err = database.ReadyItemsForEpic(flagReadyEpic)
+			if err != nil {
+				return err
+			}
+
+			// Filter by project if specified
+			if project != "" {
+				var filtered []model.Item
+				for _, item := range items {
+					if item.Project == project {
+						filtered = append(filtered, item)
+					}
+				}
+				items = filtered
+			}
+
+			// Show epic title in header
+			fmt.Printf("Ready tasks for epic %s - %s:\n", epic.ID, epic.Title)
+		} else {
+			items, err = database.ReadyItemsFiltered(project, flagFilterLabels)
+			if err != nil {
+				return err
+			}
 		}
 
 		if len(items) == 0 {
-			fmt.Println("No ready tasks")
+			if flagReadyEpic != "" {
+				fmt.Println("No ready tasks for this epic")
+			} else {
+				fmt.Println("No ready tasks")
+			}
 			return nil
+		}
+
+		// Show count
+		if flagReadyEpic != "" {
+			fmt.Printf("(%d ready)\n\n", len(items))
 		}
 
 		// Populate labels for display
@@ -4421,6 +4466,7 @@ func init() {
 
 	// ready flags
 	readyCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
+	readyCmd.Flags().StringVar(&flagReadyEpic, "epic", "", "Show ready tasks for a specific epic")
 
 	// status flags
 	statusCmd.Flags().BoolVar(&flagStatusAll, "all", false, "Show all ready tasks (default: limit to 10)")
