@@ -104,6 +104,8 @@ var (
 	flagWorktree       bool
 	flagWorktreeBranch string
 	flagWorktreeBase   string
+
+	flagDoctorDryRun bool
 )
 
 func openDB() (*db.DB, error) {
@@ -3795,6 +3797,83 @@ Example:
 	},
 }
 
+var doctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Check and fix data integrity issues",
+	Long: `Scans for common data integrity issues like circular dependencies and offers to fix them.
+
+Checks performed:
+  1. Parent-child circular dependencies (epic depends on its child task)
+  2. General circular dependencies (A depends on B depends on C depends on A)
+
+Examples:
+  tpg doctor              # Check and optionally fix issues
+  tpg doctor --dry-run    # Show issues without fixing`,
+	RunE: runDoctor,
+}
+
+func runDoctor(cmd *cobra.Command, args []string) error {
+	database, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = database.Close() }()
+
+	fmt.Println("🔍 Checking for data integrity issues...")
+	fmt.Println()
+
+	// Check 1: Parent-child circular dependencies
+	fmt.Println("1. Checking for parent-child circular dependencies...")
+	parentChildDeps, err := database.FindParentChildCircularDeps()
+	if err != nil {
+		return fmt.Errorf("failed to check parent-child deps: %w", err)
+	}
+
+	if len(parentChildDeps) == 0 {
+		fmt.Println("   ✓ No parent-child circular dependencies found")
+	} else {
+		fmt.Printf("   ⚠️  Found %d parent-child circular dependencies:\n", len(parentChildDeps))
+		for _, dep := range parentChildDeps {
+			fmt.Printf("      - %s depends on %s (parent-child relationship)\n", dep.ParentID, dep.ChildID)
+		}
+
+		if !flagDoctorDryRun {
+			fmt.Print("\n   Fix these dependencies? [y/N]: ")
+			var response string
+			fmt.Scanln(&response)
+			if strings.ToLower(response) == "y" {
+				fixed, err := database.FixAllParentChildCircularDeps()
+				if err != nil {
+					return fmt.Errorf("failed to fix deps: %w", err)
+				}
+				fmt.Printf("   ✓ Fixed %d dependencies\n", fixed)
+			}
+		} else {
+			fmt.Println("\n   (dry-run mode - no changes made)")
+		}
+	}
+
+	// Check 2: General circular dependencies
+	fmt.Println("\n2. Checking for other circular dependencies...")
+	circularDeps, err := database.FindCircularDeps()
+	if err != nil {
+		return fmt.Errorf("failed to check circular deps: %w", err)
+	}
+
+	if len(circularDeps) == 0 {
+		fmt.Println("   ✓ No circular dependencies found")
+	} else {
+		fmt.Printf("   ⚠️  Found %d circular dependencies:\n", len(circularDeps))
+		for _, dep := range circularDeps {
+			fmt.Printf("      - Cycle: %s\n", strings.Join(dep.CyclePath, " -> "))
+		}
+		fmt.Println("\n   These must be fixed manually. Use 'tpg dep <id> remove <other-id>' to break the cycle.")
+	}
+
+	fmt.Println("\n✅ Doctor check complete!")
+	return nil
+}
+
 // Template commands
 
 var templateCmd = &cobra.Command{
@@ -4593,6 +4672,10 @@ func init() {
 	rootCmd.AddCommand(restoreCmd)
 	rootCmd.AddCommand(impactCmd)
 	rootCmd.AddCommand(configCmd)
+
+	// doctor flags
+	doctorCmd.Flags().BoolVar(&flagDoctorDryRun, "dry-run", false, "Show issues without fixing")
+	rootCmd.AddCommand(doctorCmd)
 
 	// Import subcommands
 	importCmd.AddCommand(importBeadsCmd)

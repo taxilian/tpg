@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/taxilian/tpg/internal/model"
@@ -11,6 +12,11 @@ import (
 // If itemID is in_progress and dependsOnID is not done, itemID is reverted
 // to open with a log entry — an in_progress task with unmet deps is invalid.
 func (db *DB) AddDep(itemID, dependsOnID string) error {
+	// Check for self-dependency first (before existence check, since IN clause fails for same ID twice)
+	if itemID == dependsOnID {
+		return fmt.Errorf("cannot create self-dependency: %s cannot depend on itself", itemID)
+	}
+
 	// Verify both items exist
 	var count int
 	err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE id IN (?, ?)`, itemID, dependsOnID).Scan(&count)
@@ -19,6 +25,16 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 	}
 	if count != 2 {
 		return fmt.Errorf("one or both items not found: %s, %s (use 'tpg list' to see available items)", itemID, dependsOnID)
+	}
+
+	// Check for parent-child circular dependency (common mistake)
+	if err := checkParentChildCycle(db, itemID, dependsOnID); err != nil {
+		return err
+	}
+
+	// Check for general circular dependency
+	if wouldCreateCycle(db, itemID, dependsOnID) {
+		return fmt.Errorf("cannot add dependency: %s already depends on %s (would create cycle)", dependsOnID, itemID)
 	}
 
 	_, err = db.Exec(`
@@ -448,4 +464,246 @@ func (db *DB) GetReverseDependencyChain(itemID string) ([]DepEdge, error) {
 		edges = append(edges, e)
 	}
 	return edges, rows.Err()
+}
+
+// wouldCreateCycle checks if adding itemID -> dependsOnID would create a cycle.
+// A cycle exists if dependsOnID already depends on itemID (directly or transitively).
+func wouldCreateCycle(db *DB, itemID, dependsOnID string) bool {
+	// Use BFS to check if dependsOnID can reach itemID
+	visited := make(map[string]bool)
+	queue := []string{dependsOnID}
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+
+		// If we can reach itemID from dependsOnID, adding itemID -> dependsOnID creates cycle
+		if current == itemID {
+			return true
+		}
+
+		// Get all items that current depends on
+		deps, err := db.GetDeps(current)
+		if err != nil {
+			continue // Skip on error, conservative approach
+		}
+		queue = append(queue, deps...)
+	}
+
+	return false
+}
+
+// checkParentChildCycle specifically checks for parent-child circular dependencies.
+// This detects when trying to create a dependency between a parent and its child.
+func checkParentChildCycle(db *DB, itemID, dependsOnID string) error {
+	// Get the item that would have the dependency added
+	item, err := db.GetItem(itemID)
+	if err != nil {
+		return nil // Can't check, allow it
+	}
+
+	// Check if dependsOnID is a child of itemID (via ParentID)
+	// This would create: Parent depends on Child, but Child has ParentID = Parent
+	childrenOfItem, err := db.getChildIDs(itemID)
+	if err != nil {
+		return nil
+	}
+
+	for _, childID := range childrenOfItem {
+		if childID == dependsOnID {
+			return fmt.Errorf("cannot create dependency: %s is a child of %s. Parent-child relationships should not have dependencies", dependsOnID, itemID)
+		}
+	}
+
+	// Check if itemID is a child of dependsOnID
+	// This would create: Child depends on Parent, but Child has ParentID = Parent
+	if item.ParentID != nil && *item.ParentID == dependsOnID {
+		return fmt.Errorf("cannot create dependency: %s is the parent of %s. Parent-child relationships should not have dependencies", dependsOnID, itemID)
+	}
+
+	return nil
+}
+
+// getChildIDs returns all item IDs that have the given item as their parent.
+func (db *DB) getChildIDs(parentID string) ([]string, error) {
+	rows, err := db.Query(`SELECT id FROM items WHERE parent_id = ?`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var children []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		children = append(children, id)
+	}
+	return children, rows.Err()
+}
+
+// CircularDep represents a circular dependency found in the database
+type CircularDep struct {
+	ItemID      string
+	DependsOnID string
+	CyclePath   []string // Full cycle path for reporting
+}
+
+// FindCircularDeps scans all dependencies and returns any circular ones
+func (db *DB) FindCircularDeps() ([]CircularDep, error) {
+	// Get all dependencies
+	rows, err := db.Query(`SELECT item_id, depends_on FROM deps`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Build adjacency list
+	deps := make(map[string][]string)
+	allItems := make(map[string]bool)
+	for rows.Next() {
+		var itemID, dependsOnID string
+		if err := rows.Scan(&itemID, &dependsOnID); err != nil {
+			continue
+		}
+		deps[itemID] = append(deps[itemID], dependsOnID)
+		allItems[itemID] = true
+		allItems[dependsOnID] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var circularDeps []CircularDep
+	foundCycles := make(map[string]bool) // Track found cycles to avoid duplicates
+
+	// For each item, check if following its deps leads back to itself
+	for itemID := range allItems {
+		if cycle := findCycleDFS(itemID, deps, []string{}, make(map[string]bool)); cycle != nil {
+			// Create a unique key for this cycle to avoid duplicates
+			cycleKey := strings.Join(cycle, "->")
+			if !foundCycles[cycleKey] {
+				foundCycles[cycleKey] = true
+				circularDeps = append(circularDeps, CircularDep{
+					ItemID:      cycle[0],
+					DependsOnID: cycle[len(cycle)-2], // The item that points back to start
+					CyclePath:   cycle,
+				})
+			}
+		}
+	}
+
+	return circularDeps, nil
+}
+
+// findCycleDFS uses DFS to detect cycles starting from the given node
+func findCycleDFS(start string, deps map[string][]string, path []string, visitedInPath map[string]bool) []string {
+	// If we've seen this node in the current path, we found a cycle
+	if visitedInPath[start] {
+		// Extract the cycle from the path
+		for i, node := range path {
+			if node == start {
+				// Return cycle from first occurrence of start to end, plus start again
+				cycle := append(path[i:], start)
+				return cycle
+			}
+		}
+		return nil
+	}
+
+	// Mark as visited in current path
+	visitedInPath[start] = true
+	path = append(path, start)
+
+	// Check all dependencies of this node
+	for _, next := range deps[start] {
+		if cycle := findCycleDFS(next, deps, path, visitedInPath); cycle != nil {
+			return cycle
+		}
+	}
+
+	// Unmark when backtracking
+	visitedInPath[start] = false
+	return nil
+}
+
+// ParentChildDep represents a parent-child circular dependency
+type ParentChildDep struct {
+	ParentID string
+	ChildID  string
+}
+
+// FindParentChildCircularDeps finds dependencies where a parent depends on its child
+// This is the specific issue caused by the template bug
+func (db *DB) FindParentChildCircularDeps() ([]ParentChildDep, error) {
+	// Find all dependencies where:
+	// 1. Item depends on another item that has it as parent (parent depends on child)
+	// 2. Item depends on its own parent (child depends on parent)
+	query := `
+		SELECT d.item_id, d.depends_on
+		FROM deps d
+		JOIN items child ON child.id = d.depends_on
+		WHERE child.parent_id = d.item_id
+
+		UNION
+
+		SELECT d.item_id, d.depends_on
+		FROM deps d
+		JOIN items item ON item.id = d.item_id
+		WHERE item.parent_id = d.depends_on
+	`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deps []ParentChildDep
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var parentID, childID string
+		if err := rows.Scan(&parentID, &childID); err != nil {
+			continue
+		}
+		// Use sorted key to avoid duplicates
+		key := parentID + "->" + childID
+		if !seen[key] {
+			seen[key] = true
+			deps = append(deps, ParentChildDep{ParentID: parentID, ChildID: childID})
+		}
+	}
+
+	return deps, rows.Err()
+}
+
+// RemoveCircularDep removes a specific circular dependency
+func (db *DB) RemoveCircularDep(itemID, dependsOnID string) error {
+	_, err := db.Exec(`DELETE FROM deps WHERE item_id = ? AND depends_on = ?`, itemID, dependsOnID)
+	return err
+}
+
+// FixAllParentChildCircularDeps removes all parent-child circular deps
+func (db *DB) FixAllParentChildCircularDeps() (int, error) {
+	deps, err := db.FindParentChildCircularDeps()
+	if err != nil {
+		return 0, err
+	}
+
+	fixed := 0
+	for _, dep := range deps {
+		if err := db.RemoveCircularDep(dep.ParentID, dep.ChildID); err != nil {
+			continue
+		}
+		fixed++
+	}
+
+	return fixed, nil
 }

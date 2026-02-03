@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,5 +347,316 @@ func TestGetAllDeps_Empty(t *testing.T) {
 	}
 	if len(edges) != 0 {
 		t.Errorf("expected 0 edges, got %d", len(edges))
+	}
+}
+
+func TestAddDep_CircularDependency(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create items
+	taskA := createTestItem(t, db, "Task A")
+	taskB := createTestItem(t, db, "Task B")
+	taskC := createTestItem(t, db, "Task C")
+
+	// Create A -> B dependency
+	if err := db.AddDep(taskA.ID, taskB.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Create B -> C dependency
+	if err := db.AddDep(taskB.ID, taskC.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Try to create C -> A (would create cycle)
+	err := db.AddDep(taskC.ID, taskA.ID)
+	if err == nil {
+		t.Error("expected error when creating circular dependency")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected error message to mention 'cycle', got: %v", err)
+	}
+}
+
+func TestAddDep_ParentChildCycle(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epic and child task
+	epic := createTestEpic(t, db, "Epic", "test")
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+
+	// Set parent relationship
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Try to make epic depend on task (parent depends on child)
+	err := db.AddDep(epic.ID, task.ID)
+	if err == nil {
+		t.Error("expected error when creating parent-child dependency")
+	}
+	if !strings.Contains(err.Error(), "child") && !strings.Contains(err.Error(), "parent") {
+		t.Errorf("expected error about parent-child relationship, got: %v", err)
+	}
+}
+
+func TestAddDep_SelfDependency(t *testing.T) {
+	db := setupTestDB(t)
+
+	task := createTestItem(t, db, "Task")
+
+	// Try to make task depend on itself
+	err := db.AddDep(task.ID, task.ID)
+	if err == nil {
+		t.Error("expected error when creating self-dependency")
+	}
+	if !strings.Contains(err.Error(), "self") {
+		t.Errorf("expected error about self-dependency, got: %v", err)
+	}
+}
+
+func TestFindCircularDeps(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a simple cycle: A -> B -> C -> A
+	taskA := createTestItem(t, db, "Task A")
+	taskB := createTestItem(t, db, "Task B")
+	taskC := createTestItem(t, db, "Task C")
+
+	// Create dependencies manually to bypass cycle detection
+	_, err := db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, taskA.ID, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, taskB.ID, taskC.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, taskC.ID, taskA.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+
+	circularDeps, err := db.FindCircularDeps()
+	if err != nil {
+		t.Fatalf("failed to find circular deps: %v", err)
+	}
+
+	if len(circularDeps) == 0 {
+		t.Error("expected to find circular dependencies, found none")
+	}
+
+	// Check that we found a cycle containing our tasks
+	foundCycle := false
+	for _, dep := range circularDeps {
+		if len(dep.CyclePath) >= 3 {
+			// Check if cycle contains A, B, and C
+			hasA, hasB, hasC := false, false, false
+			for _, node := range dep.CyclePath {
+				if node == taskA.ID {
+					hasA = true
+				}
+				if node == taskB.ID {
+					hasB = true
+				}
+				if node == taskC.ID {
+					hasC = true
+				}
+			}
+			if hasA && hasB && hasC {
+				foundCycle = true
+				break
+			}
+		}
+	}
+	if !foundCycle {
+		t.Errorf("expected to find cycle containing A, B, and C")
+	}
+}
+
+func TestFindCircularDeps_NoCycles(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a chain: A -> B -> C (no cycle)
+	taskA := createTestItem(t, db, "Task A")
+	taskB := createTestItem(t, db, "Task B")
+	taskC := createTestItem(t, db, "Task C")
+
+	// Create dependencies manually
+	_, err := db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, taskA.ID, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, taskB.ID, taskC.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+
+	circularDeps, err := db.FindCircularDeps()
+	if err != nil {
+		t.Fatalf("failed to find circular deps: %v", err)
+	}
+
+	if len(circularDeps) != 0 {
+		t.Errorf("expected no circular dependencies, found %d", len(circularDeps))
+	}
+}
+
+func TestFindParentChildCircularDeps(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epic and child task
+	epic := createTestEpic(t, db, "Epic", "test")
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+
+	// Set parent relationship
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Create circular dependency: epic depends on task (parent depends on child)
+	_, err := db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, epic.ID, task.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+
+	parentChildDeps, err := db.FindParentChildCircularDeps()
+	if err != nil {
+		t.Fatalf("failed to find parent-child circular deps: %v", err)
+	}
+
+	if len(parentChildDeps) != 1 {
+		t.Errorf("expected 1 parent-child circular dependency, got %d", len(parentChildDeps))
+	}
+
+	if len(parentChildDeps) > 0 {
+		dep := parentChildDeps[0]
+		if dep.ParentID != epic.ID {
+			t.Errorf("expected ParentID = %s, got %s", epic.ID, dep.ParentID)
+		}
+		if dep.ChildID != task.ID {
+			t.Errorf("expected ChildID = %s, got %s", task.ID, dep.ChildID)
+		}
+	}
+}
+
+func TestFindParentChildCircularDeps_ChildDependsOnParent(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epic and child task
+	epic := createTestEpic(t, db, "Epic", "test")
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+
+	// Set parent relationship
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Create circular dependency: task depends on epic (child depends on parent)
+	_, err := db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, task.ID, epic.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+
+	parentChildDeps, err := db.FindParentChildCircularDeps()
+	if err != nil {
+		t.Fatalf("failed to find parent-child circular deps: %v", err)
+	}
+
+	if len(parentChildDeps) != 1 {
+		t.Errorf("expected 1 parent-child circular dependency, got %d", len(parentChildDeps))
+	}
+
+	if len(parentChildDeps) > 0 {
+		dep := parentChildDeps[0]
+		if dep.ParentID != task.ID {
+			t.Errorf("expected ParentID = %s, got %s", task.ID, dep.ParentID)
+		}
+		if dep.ChildID != epic.ID {
+			t.Errorf("expected ChildID = %s, got %s", epic.ID, dep.ChildID)
+		}
+	}
+}
+
+func TestFixAllParentChildCircularDeps(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epic and child task
+	epic := createTestEpic(t, db, "Epic", "test")
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+
+	// Set parent relationship
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Create circular dependency: epic depends on task
+	_, err := db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, epic.ID, task.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+
+	// Verify the dependency exists
+	deps, err := db.GetDeps(epic.ID)
+	if err != nil {
+		t.Fatalf("failed to get deps: %v", err)
+	}
+	if len(deps) != 1 {
+		t.Errorf("expected 1 dep before fix, got %d", len(deps))
+	}
+
+	// Fix the circular dependency
+	fixed, err := db.FixAllParentChildCircularDeps()
+	if err != nil {
+		t.Fatalf("failed to fix deps: %v", err)
+	}
+
+	if fixed != 1 {
+		t.Errorf("expected to fix 1 dependency, fixed %d", fixed)
+	}
+
+	// Verify the dependency is removed
+	deps, err = db.GetDeps(epic.ID)
+	if err != nil {
+		t.Fatalf("failed to get deps after fix: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Errorf("expected 0 deps after fix, got %d", len(deps))
+	}
+}
+
+func TestRemoveCircularDep(t *testing.T) {
+	db := setupTestDB(t)
+
+	taskA := createTestItem(t, db, "Task A")
+	taskB := createTestItem(t, db, "Task B")
+
+	// Create dependency manually
+	_, err := db.Exec(`INSERT INTO deps (item_id, depends_on) VALUES (?, ?)`, taskA.ID, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to insert dep: %v", err)
+	}
+
+	// Verify it exists
+	deps, err := db.GetDeps(taskA.ID)
+	if err != nil {
+		t.Fatalf("failed to get deps: %v", err)
+	}
+	if len(deps) != 1 {
+		t.Errorf("expected 1 dep, got %d", len(deps))
+	}
+
+	// Remove it
+	if err := db.RemoveCircularDep(taskA.ID, taskB.ID); err != nil {
+		t.Fatalf("failed to remove dep: %v", err)
+	}
+
+	// Verify it's gone
+	deps, err = db.GetDeps(taskA.ID)
+	if err != nil {
+		t.Fatalf("failed to get deps after remove: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Errorf("expected 0 deps after remove, got %d", len(deps))
 	}
 }
