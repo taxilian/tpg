@@ -109,6 +109,7 @@ permission:
     "uniq *": "allow"
     "jq *": "allow"
     "yq *": "allow"
+    "git worktree *": "allow"
     "git status *": "allow"
     "git diff *": "allow"
     "git log *": "allow"
