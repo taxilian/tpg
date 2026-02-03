@@ -2297,6 +2297,10 @@ func (m Model) doStart() (Model, tea.Cmd) {
 		return m, nil
 	}
 	item := treeNodes[m.cursor].Item
+	if item.Status == model.StatusInProgress {
+		m.message = fmt.Sprintf("%s is already in progress (use CLI with --resume to take over)", item.ID)
+		return m, nil
+	}
 	if item.Status != model.StatusOpen && item.Status != model.StatusBlocked {
 		m.message = "Can only start open or blocked items"
 		return m, nil
