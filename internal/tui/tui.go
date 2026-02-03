@@ -27,6 +27,7 @@ const (
 	ViewTemplateList
 	ViewTemplateDetail
 	ViewConfig
+	ViewCreateWizard
 )
 
 // InputMode represents what kind of text input is active.
@@ -142,6 +143,47 @@ type Model struct {
 	configFields  []db.ConfigField
 	configCursor  int
 	configEditing bool
+
+	// Tree view state
+	treeExpanded map[string]bool // item ID -> expanded state
+	treeCursor   int             // cursor position in tree view
+
+	// Create wizard state
+	createWizardStep  int
+	createWizardState CreateWizardState
+}
+
+// CreateWizardState holds all data during item creation
+type CreateWizardState struct {
+	// Step 1: Type
+	SelectedType model.ItemType
+
+	// Step 2: Basic Config
+	Priority         int
+	Project          string
+	UseCustomProject bool
+
+	// Step 3: Relationships
+	ParentID     string
+	Dependencies []string
+	Blockers     []string
+
+	// Step 4: Worktree (epics only)
+	UseWorktree    bool
+	WorktreeBranch string
+	WorktreeBase   string
+
+	// Step 5: Method
+	UseTemplate      bool
+	SelectedTemplate *templates.Template
+
+	// Step 6: Title/Variables/Labels
+	Title        string
+	Labels       []string
+	TemplateVars map[string]string
+
+	// Step 7: Description
+	Description string
 }
 
 // graphNode represents a task in the dependency graph view.
@@ -151,6 +193,14 @@ type graphNode struct {
 	Status   string
 	Column   int // 0 = blockers, 1 = current, 2 = blocked
 	Position int // vertical position within column
+}
+
+// treeNode represents an item in the hierarchical tree view.
+type treeNode struct {
+	Item        model.Item
+	Level       int  // Indentation level (0 = root, 1 = child, etc.)
+	HasChildren bool // Whether this item has children
+	IsLastChild bool // Whether this is the last child (for branch drawing)
 }
 
 // Styles
@@ -316,14 +366,21 @@ func New(database *db.DB, project string) Model {
 	ta.SetHeight(10)
 
 	return Model{
-		db:             database,
-		project:        project,
-		viewMode:       ViewList,
-		filterStatuses: statuses,
-		staleItems:     make(map[string]bool),
-		selectedItems:  make(map[string]bool),
-		varExpanded:    make(map[string]bool),
-		textarea:       ta,
+		db:               database,
+		project:          project,
+		viewMode:         ViewList,
+		filterStatuses:   statuses,
+		staleItems:       make(map[string]bool),
+		selectedItems:    make(map[string]bool),
+		varExpanded:      make(map[string]bool),
+		textarea:         ta,
+		treeExpanded:     make(map[string]bool),
+		createWizardStep: 0, // 0 = not in wizard
+		createWizardState: CreateWizardState{
+			Priority:     2, // Default medium priority
+			Project:      project,
+			TemplateVars: make(map[string]string),
+		},
 	}
 }
 
@@ -421,10 +478,11 @@ func (m Model) loadConfig() tea.Cmd {
 
 // loadDetail loads logs and deps for current item.
 func (m Model) loadDetail() tea.Cmd {
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
 		return nil
 	}
-	id := m.filtered[m.cursor].ID
+	id := treeNodes[m.cursor].Item.ID
 	return func() tea.Msg {
 		logs, err := m.db.GetLogs(id)
 		if err != nil {
@@ -610,6 +668,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTemplateDetailKey(msg)
 	case ViewConfig:
 		return m.handleConfigKey(msg)
+	case ViewCreateWizard:
+		return m.handleCreateWizardKey(msg)
 	}
 	return m, nil
 }
@@ -759,8 +819,9 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	case InputCreateType:
 		// Use the selected item's project if available
 		var project string
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			project = m.filtered[m.cursor].Project
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			project = treeNodes[m.cursor].Item.Project
 		}
 		// Default to "task" if no type specified
 		itemType := model.ItemType(text)
@@ -793,10 +854,11 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	}
 
 	// Remaining inputs require an existing item
-	if len(m.filtered) == 0 {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 {
 		return m, nil
 	}
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 
 	switch mode {
 	case InputBlock:
@@ -883,8 +945,9 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case " ":
 		// Space: toggle selection of current item (only in select mode)
-		if m.selectMode && len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			id := m.filtered[m.cursor].ID
+		treeNodes := m.buildTree()
+		if m.selectMode && len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			id := treeNodes[m.cursor].Item.ID
 			if m.selectedItems[id] {
 				delete(m.selectedItems, id)
 			} else {
@@ -899,7 +962,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "down", "j":
-		if m.cursor < len(m.filtered)-1 {
+		treeNodes := m.buildTree()
+		if m.cursor < len(treeNodes)-1 {
 			m.cursor++
 		}
 
@@ -907,7 +971,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 
 	case "G", "end":
-		m.cursor = max(0, len(m.filtered)-1)
+		treeNodes := m.buildTree()
+		m.cursor = max(0, len(treeNodes)-1)
 
 	case "pgup", "ctrl+b":
 		// Page up - move cursor up by visible height
@@ -919,10 +984,11 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "pgdown", "ctrl+f":
 		// Page down - move cursor down by visible height
+		treeNodes := m.buildTree()
 		pageSize := m.listVisibleHeight()
 		m.cursor += pageSize
-		if m.cursor >= len(m.filtered) {
-			m.cursor = max(0, len(m.filtered)-1)
+		if m.cursor >= len(treeNodes) {
+			m.cursor = max(0, len(treeNodes)-1)
 		}
 
 	case "ctrl+u":
@@ -938,17 +1004,50 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+d":
 		// Half page down
+		treeNodes := m.buildTree()
 		pageSize := m.listVisibleHeight() / 2
 		if pageSize < 1 {
 			pageSize = 1
 		}
 		m.cursor += pageSize
-		if m.cursor >= len(m.filtered) {
-			m.cursor = max(0, len(m.filtered)-1)
+		if m.cursor >= len(treeNodes) {
+			m.cursor = max(0, len(treeNodes)-1)
+		}
+
+	case "right":
+		// Expand current node if it has children
+		treeNodes := m.buildTree()
+		if m.cursor < len(treeNodes) {
+			node := treeNodes[m.cursor]
+			if node.HasChildren && !m.treeExpanded[node.Item.ID] {
+				m.treeExpanded[node.Item.ID] = true
+			}
+		}
+
+	case "left":
+		// Collapse current node or jump to parent
+		treeNodes := m.buildTree()
+		if m.cursor < len(treeNodes) {
+			node := treeNodes[m.cursor]
+			if node.HasChildren && m.treeExpanded[node.Item.ID] {
+				// Collapse if expanded
+				delete(m.treeExpanded, node.Item.ID)
+			} else if node.Level > 0 {
+				// Jump to parent if collapsed and has a parent
+				if node.Item.ParentID != nil {
+					for i, n := range treeNodes {
+						if n.Item.ID == *node.Item.ParentID {
+							m.cursor = i
+							break
+						}
+					}
+				}
+			}
 		}
 
 	case "enter", "l":
-		if len(m.filtered) > 0 {
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 {
 			m.viewMode = ViewDetail
 			return m, m.loadDetail()
 		}
@@ -1025,13 +1124,15 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Create
 	case "n":
-		label := "New item: "
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			if proj := m.filtered[m.cursor].Project; proj != "" {
-				label = fmt.Sprintf("New item [%s]: ", proj)
-			}
+		// Start the creation wizard instead of simple input
+		m.viewMode = ViewCreateWizard
+		m.createWizardStep = 1
+		m.createWizardState = CreateWizardState{
+			Priority:     2,
+			Project:      m.project,
+			TemplateVars: make(map[string]string),
 		}
-		return m.startInput(InputCreate, label)
+		return m, nil
 
 	// Templates
 	case "T":
@@ -1084,8 +1185,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else if m.varCursor >= 0 {
 			// Navigate variables
-			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-				item := m.filtered[m.cursor]
+			treeNodes := m.buildTree()
+			if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+				item := treeNodes[m.cursor].Item
 				varNames := m.getSortedVarNames(item)
 				if m.varCursor < len(varNames)-1 {
 					m.varCursor++
@@ -1129,9 +1231,10 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			section := m.currentDepSection()
 			if m.depCursor < len(section) {
 				targetID := section[m.depCursor].ID
-				// Find the target in filtered items
-				for i, item := range m.filtered {
-					if item.ID == targetID {
+				// Find the target in tree nodes
+				treeNodes := m.buildTree()
+				for i, node := range treeNodes {
+					if node.Item.ID == targetID {
 						m.cursor = i
 						m.depNavActive = false
 						return m, m.loadDetail()
@@ -1156,8 +1259,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startInput(InputAddDep, "Add blocker ID: ")
 	case "e":
 		// Open built-in textarea editor for description or selected variable
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			item := m.filtered[m.cursor]
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			item := treeNodes[m.cursor].Item
 			// If variable cursor is active, edit that variable
 			if m.varCursor >= 0 && item.TemplateID != "" && len(item.TemplateVars) > 0 {
 				varNames := m.getSortedVarNames(item)
@@ -1171,8 +1275,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "E":
 		// Toggle variable edit mode for templated items
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			item := m.filtered[m.cursor]
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			item := treeNodes[m.cursor].Item
 			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
 				if m.descViewMode == DescViewVars {
 					// Exit variable edit mode, go back to rendered view
@@ -1197,8 +1302,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Toggle template variable expansion
 	case "x":
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			item := m.filtered[m.cursor]
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			item := treeNodes[m.cursor].Item
 			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
 				// Toggle all variables
 				allExpanded := true
@@ -1216,8 +1322,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Toggle description view mode (rendered/stored/vars)
 	case "X":
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			item := m.filtered[m.cursor]
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			item := treeNodes[m.cursor].Item
 			if item.TemplateID != "" {
 				// Cycle through view modes: rendered -> stored -> vars -> rendered
 				m.descViewMode = (m.descViewMode + 1) % 3
@@ -1232,8 +1339,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Refresh stored description from rendered template
 	case "R":
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			item := m.filtered[m.cursor]
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			item := treeNodes[m.cursor].Item
 			if item.TemplateID != "" {
 				rendered := renderTemplateForItem(item)
 				return m, func() tea.Msg {
@@ -1259,12 +1367,13 @@ func (m Model) currentDepSection() []db.DepStatus {
 
 // buildGraph constructs the graph nodes from the current item's dependencies.
 func (m *Model) buildGraph() {
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
 		m.graphNodes = nil
 		return
 	}
 
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 	m.graphCurrentID = item.ID
 	m.graphNodes = nil
 
@@ -1300,6 +1409,73 @@ func (m *Model) buildGraph() {
 	}
 
 	m.graphCursor = len(m.detailDeps) // Start cursor on current item
+}
+
+// buildTree constructs a hierarchical tree from filtered items.
+// Returns flattened list with level information.
+func (m *Model) buildTree() []treeNode {
+	// Create a map of all items for quick lookup
+	itemMap := make(map[string]model.Item)
+	for _, item := range m.filtered {
+		itemMap[item.ID] = item
+	}
+
+	// Create a map of parent -> children relationships
+	childrenMap := make(map[string][]model.Item)
+	for _, item := range m.filtered {
+		if item.ParentID != nil {
+			childrenMap[*item.ParentID] = append(childrenMap[*item.ParentID], item)
+		}
+	}
+
+	var nodes []treeNode
+
+	// Find root items (no parent or parent not in filtered list)
+	for _, item := range m.filtered {
+		isRoot := item.ParentID == nil
+		if item.ParentID != nil {
+			if _, hasParent := itemMap[*item.ParentID]; !hasParent {
+				isRoot = true // Parent not in filtered list, treat as root
+			}
+		}
+
+		if isRoot {
+			nodes = append(nodes, treeNode{
+				Item:        item,
+				Level:       0,
+				HasChildren: len(childrenMap[item.ID]) > 0,
+			})
+
+			// Recursively add children if expanded
+			if m.treeExpanded[item.ID] {
+				nodes = append(nodes, m.getChildNodes(item.ID, 1, childrenMap)...)
+			}
+		}
+	}
+
+	return nodes
+}
+
+// getChildNodes recursively gets child nodes for a parent.
+func (m *Model) getChildNodes(parentID string, level int, childrenMap map[string][]model.Item) []treeNode {
+	var nodes []treeNode
+	children := childrenMap[parentID]
+
+	for i, child := range children {
+		nodes = append(nodes, treeNode{
+			Item:        child,
+			Level:       level,
+			HasChildren: len(childrenMap[child.ID]) > 0,
+			IsLastChild: i == len(children)-1,
+		})
+
+		// Recursively add grandchildren if expanded
+		if m.treeExpanded[child.ID] {
+			nodes = append(nodes, m.getChildNodes(child.ID, level+1, childrenMap)...)
+		}
+	}
+
+	return nodes
 }
 
 func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1521,6 +1697,286 @@ func (m Model) handleGraphKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleCreateWizardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Cancel wizard
+		m.viewMode = ViewList
+		m.createWizardStep = 0
+		m.message = "Creation canceled"
+		return m, nil
+
+	case "enter":
+		return m.advanceWizardStep()
+
+	case "left", "h":
+		// Go back
+		if m.createWizardStep > 1 {
+			m.createWizardStep--
+			// Skip worktree step if not an epic
+			if m.createWizardStep == 4 && m.createWizardState.SelectedType != model.ItemTypeEpic {
+				m.createWizardStep = 3
+			}
+		}
+		return m, nil
+
+	case "tab":
+		// Switch between fields in current step
+		return m.handleWizardTab()
+
+	case "up", "k":
+		return m.handleWizardUp()
+
+	case "down", "j":
+		return m.handleWizardDown()
+	}
+
+	// Handle character input for text fields
+	if len(msg.String()) == 1 {
+		return m.handleWizardCharInput(msg.String())
+	}
+
+	return m, nil
+}
+
+func (m Model) handleWizardTab() (tea.Model, tea.Cmd) {
+	// Tab handling depends on current step
+	switch m.createWizardStep {
+	case 1: // Type selection - no tab fields
+	case 2: // Basic config - toggle between priority and project
+		m.createWizardState.UseCustomProject = !m.createWizardState.UseCustomProject
+	case 3: // Relationships - toggle between parent, dependencies, blockers
+		// Cycle through relationship fields
+	case 4: // Worktree - toggle between fields
+	case 5: // Method - toggle between ad-hoc and template
+		m.createWizardState.UseTemplate = !m.createWizardState.UseTemplate
+	case 6: // Title/Variables
+	case 7: // Description
+	}
+	return m, nil
+}
+
+func (m Model) handleWizardUp() (tea.Model, tea.Cmd) {
+	switch m.createWizardStep {
+	case 1: // Type selection
+		types := []model.ItemType{
+			model.ItemTypeTask,
+			model.ItemTypeEpic,
+		}
+		// Find current index and move up
+		for i, t := range types {
+			if t == m.createWizardState.SelectedType && i > 0 {
+				m.createWizardState.SelectedType = types[i-1]
+				break
+			}
+		}
+	case 2: // Priority selection
+		if m.createWizardState.Priority > 1 {
+			m.createWizardState.Priority--
+		}
+	case 5: // Template selection
+		if m.createWizardState.UseTemplate && len(m.templates) > 0 {
+			// Find current template index
+			for i, t := range m.templates {
+				if m.createWizardState.SelectedTemplate != nil && t.ID == m.createWizardState.SelectedTemplate.ID && i > 0 {
+					m.createWizardState.SelectedTemplate = m.templates[i-1]
+					break
+				}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleWizardDown() (tea.Model, tea.Cmd) {
+	switch m.createWizardStep {
+	case 1: // Type selection
+		types := []model.ItemType{
+			model.ItemTypeTask,
+			model.ItemTypeEpic,
+		}
+		// Find current index and move down
+		for i, t := range types {
+			if t == m.createWizardState.SelectedType && i < len(types)-1 {
+				m.createWizardState.SelectedType = types[i+1]
+				break
+			}
+		}
+	case 2: // Priority selection
+		if m.createWizardState.Priority < 5 {
+			m.createWizardState.Priority++
+		}
+	case 5: // Template selection
+		if m.createWizardState.UseTemplate && len(m.templates) > 0 {
+			// Find current template index
+			for i, t := range m.templates {
+				if m.createWizardState.SelectedTemplate != nil && t.ID == m.createWizardState.SelectedTemplate.ID && i < len(m.templates)-1 {
+					m.createWizardState.SelectedTemplate = m.templates[i+1]
+					break
+				}
+			}
+			// If no template selected yet, select first
+			if m.createWizardState.SelectedTemplate == nil {
+				m.createWizardState.SelectedTemplate = m.templates[0]
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleWizardCharInput(char string) (tea.Model, tea.Cmd) {
+	switch m.createWizardStep {
+	case 2: // Basic config - project input
+		if m.createWizardState.UseCustomProject {
+			m.createWizardState.Project += char
+		}
+	case 3: // Relationships
+	case 4: // Worktree
+		if m.createWizardState.UseWorktree {
+			m.createWizardState.WorktreeBranch += char
+		}
+	case 6: // Title/Variables
+		m.createWizardState.Title += char
+	case 7: // Description
+		m.createWizardState.Description += char
+	}
+	return m, nil
+}
+
+func (m Model) advanceWizardStep() (tea.Model, tea.Cmd) {
+	state := &m.createWizardState
+
+	switch m.createWizardStep {
+	case 1: // Type selected
+		if state.SelectedType == "" {
+			state.SelectedType = model.ItemTypeTask // Default
+		}
+		m.createWizardStep = 2
+
+	case 2: // Basic config
+		m.createWizardStep = 3
+
+	case 3: // Relationships
+		// Skip worktree if not epic
+		if state.SelectedType == model.ItemTypeEpic {
+			m.createWizardStep = 4
+		} else {
+			m.createWizardStep = 5
+		}
+
+	case 4: // Worktree (epics only)
+		m.createWizardStep = 5
+
+	case 5: // Method selection
+		if state.UseTemplate && state.SelectedTemplate == nil {
+			// Need to select template first
+			return m, m.loadTemplates()
+		}
+		m.createWizardStep = 6
+
+	case 6: // Title/Variables
+		if state.Title == "" {
+			m.err = fmt.Errorf("title is required")
+			return m, nil
+		}
+		m.createWizardStep = 7
+
+	case 7: // Description
+		// Validate description
+		if !validateDescription(state.Description) {
+			m.err = fmt.Errorf("description must be at least 3 words or 20 characters")
+			return m, nil
+		}
+		m.createWizardStep = 8
+
+	case 8: // Confirmation
+		return m.createItemFromWizard()
+	}
+
+	return m, nil
+}
+
+func validateDescription(desc string) bool {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return false
+	}
+
+	// Check word count
+	words := strings.Fields(desc)
+	if len(words) >= 3 {
+		return true
+	}
+
+	// Check character count
+	if len(desc) >= 20 {
+		return true
+	}
+
+	return false
+}
+
+func (m Model) createItemFromWizard() (tea.Model, tea.Cmd) {
+	state := m.createWizardState
+
+	return m, func() tea.Msg {
+		// Generate ID
+		itemID, err := m.db.GenerateItemID(state.SelectedType)
+		if err != nil {
+			return actionMsg{err: err}
+		}
+
+		now := time.Now()
+		newItem := &model.Item{
+			ID:             itemID,
+			Project:        state.Project,
+			Type:           state.SelectedType,
+			Title:          state.Title,
+			Description:    state.Description,
+			Status:         model.StatusOpen,
+			Priority:       state.Priority,
+			WorktreeBranch: state.WorktreeBranch,
+			WorktreeBase:   state.WorktreeBase,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+
+		if err := m.db.CreateItem(newItem); err != nil {
+			return actionMsg{err: err}
+		}
+
+		// Set parent if specified
+		if state.ParentID != "" {
+			if err := m.db.SetParent(itemID, state.ParentID); err != nil {
+				return actionMsg{err: err}
+			}
+		}
+
+		// Add dependencies
+		for _, depID := range state.Dependencies {
+			if err := m.db.AddDep(itemID, depID); err != nil {
+				return actionMsg{err: err}
+			}
+		}
+
+		// Add blockers (reverse dependencies)
+		for _, blockerID := range state.Blockers {
+			if err := m.db.AddDep(blockerID, itemID); err != nil {
+				return actionMsg{err: err}
+			}
+		}
+
+		// Add labels
+		for _, label := range state.Labels {
+			if err := m.db.AddLabelToItem(itemID, state.Project, label); err != nil {
+				return actionMsg{err: err}
+			}
+		}
+
+		return actionMsg{message: fmt.Sprintf("Created %s (%s)", itemID, state.SelectedType)}
+	}
+}
+
 func (m Model) startInput(mode InputMode, label string) (Model, tea.Cmd) {
 	m.inputMode = mode
 	m.inputLabel = label
@@ -1530,7 +1986,8 @@ func (m Model) startInput(mode InputMode, label string) (Model, tea.Cmd) {
 
 // showStatusMenu opens the status change confirmation menu with the given option pre-selected.
 func (m Model) showStatusMenu(cursor int) (Model, tea.Cmd) {
-	if len(m.filtered) == 0 {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 {
 		return m, nil
 	}
 	m.inputMode = InputStatusMenu
@@ -1590,10 +2047,11 @@ func (m Model) saveTextareaEdit() (Model, tea.Cmd) {
 	m.inputMode = InputNone
 	m.textarea.Blur()
 
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
 		return m, nil
 	}
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 
 	if target == "description" {
 		return m, func() tea.Msg {
@@ -1638,10 +2096,11 @@ func (m Model) switchToExternalEditor() (Model, tea.Cmd) {
 	m.inputMode = InputNone
 	m.textarea.Blur()
 
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
 		return m, nil
 	}
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 
 	// Create temp file with current content
 	tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
@@ -1687,10 +2146,11 @@ func (m Model) switchToExternalEditor() (Model, tea.Cmd) {
 }
 
 func (m Model) doStart() (Model, tea.Cmd) {
-	if len(m.filtered) == 0 {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 {
 		return m, nil
 	}
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 	if item.Status != model.StatusOpen && item.Status != model.StatusBlocked {
 		m.message = "Can only start open or blocked items"
 		return m, nil
@@ -1704,10 +2164,11 @@ func (m Model) doStart() (Model, tea.Cmd) {
 }
 
 func (m Model) doDone() (Model, tea.Cmd) {
-	if len(m.filtered) == 0 {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 {
 		return m, nil
 	}
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 	if item.Status != model.StatusInProgress {
 		m.message = "Can only complete in_progress items"
 		return m, nil
@@ -1721,10 +2182,11 @@ func (m Model) doDone() (Model, tea.Cmd) {
 }
 
 func (m Model) doDelete() (Model, tea.Cmd) {
-	if len(m.filtered) == 0 {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 {
 		return m, nil
 	}
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 	return m, func() tea.Msg {
 		if err := m.db.DeleteItem(item.ID); err != nil {
 			return actionMsg{err: err}
@@ -1846,10 +2308,11 @@ func getEditor() string {
 // editDescription opens the current item's description in an external editor.
 // Returns a tea.ExecProcess command that suspends the TUI while editing.
 func (m Model) editDescription() (Model, tea.Cmd) {
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
 		return m, nil
 	}
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 
 	// Create temp file with current description
 	tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
@@ -1959,6 +2422,8 @@ func (m Model) View() string {
 			b.WriteString(m.templateDetailView())
 		case ViewConfig:
 			b.WriteString(m.configView())
+		case ViewCreateWizard:
+			b.WriteString(m.createWizardView())
 		}
 
 		// Input line (for non-textarea input modes)
@@ -1992,17 +2457,18 @@ func (m Model) textareaView() string {
 
 	// Header showing what we're editing
 	var title string
+	treeNodes := m.buildTree()
 	if m.textareaTarget == "description" {
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			item := m.filtered[m.cursor]
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			item := treeNodes[m.cursor].Item
 			title = fmt.Sprintf("Editing description for %s", item.ID)
 		} else {
 			title = "Editing description"
 		}
 	} else if strings.HasPrefix(m.textareaTarget, "var:") {
 		varName := strings.TrimPrefix(m.textareaTarget, "var:")
-		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-			item := m.filtered[m.cursor]
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			item := treeNodes[m.cursor].Item
 			title = fmt.Sprintf("Editing variable '%s' for %s", varName, item.ID)
 		} else {
 			title = fmt.Sprintf("Editing variable '%s'", varName)
@@ -2028,8 +2494,9 @@ func (m Model) statusMenuView() string {
 
 	// Get current item info for context
 	var itemInfo string
-	if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-		item := m.filtered[m.cursor]
+	treeNodes := m.buildTree()
+	if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+		item := treeNodes[m.cursor].Item
 		itemInfo = fmt.Sprintf("%s: %s", item.ID, item.Title)
 		if len(itemInfo) > 50 {
 			itemInfo = itemInfo[:47] + "..."
@@ -2109,8 +2576,11 @@ func (m Model) listView() string {
 	}
 	b.WriteString("\n\n")
 
+	// Build tree from filtered items
+	treeNodes := m.buildTree()
+
 	// Items
-	if len(m.filtered) == 0 {
+	if len(treeNodes) == 0 {
 		b.WriteString("No items match filters\n")
 	} else {
 		// Calculate visible height accounting for header, footer, and padding
@@ -2119,8 +2589,8 @@ func (m Model) listView() string {
 		if visibleHeight < 3 {
 			visibleHeight = 3 // Minimum visible items
 		}
-		if visibleHeight > len(m.filtered) {
-			visibleHeight = len(m.filtered)
+		if visibleHeight > len(treeNodes) {
+			visibleHeight = len(treeNodes)
 		}
 
 		// Calculate start position to keep cursor visible
@@ -2134,11 +2604,11 @@ func (m Model) listView() string {
 		if start < 0 {
 			start = 0
 		}
-		if start > len(m.filtered)-visibleHeight && len(m.filtered) >= visibleHeight {
-			start = len(m.filtered) - visibleHeight
+		if start > len(treeNodes)-visibleHeight && len(treeNodes) >= visibleHeight {
+			start = len(treeNodes) - visibleHeight
 		}
 
-		end := min(start+visibleHeight, len(m.filtered))
+		end := min(start+visibleHeight, len(treeNodes))
 
 		rowWidth := m.width - (contentPadding * 2)
 		if rowWidth < 60 {
@@ -2146,16 +2616,16 @@ func (m Model) listView() string {
 		}
 
 		for i := start; i < end; i++ {
-			item := m.filtered[i]
+			node := treeNodes[i]
 			selected := i == m.cursor
 
 			if selected {
 				// For selected row: plain text, then apply highlight to full width
-				line := m.formatItemLinePlain(item, rowWidth)
+				line := m.formatTreeNodeLinePlain(node, rowWidth)
 				b.WriteString(selectedRowStyle.Width(rowWidth).Render(line))
 			} else {
 				// For non-selected: use styled version
-				line := m.formatItemLineStyled(item, rowWidth)
+				line := m.formatTreeNodeLineStyled(node, rowWidth)
 				b.WriteString(line)
 			}
 			b.WriteString("\n")
@@ -2336,6 +2806,218 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 	return fmt.Sprintf("%s%s%s %s %s  %-*s%s %s", selectPrefix, stale, statusStyled, typeStyled, id, titleWidth, title, labels, project)
 }
 
+// formatTreeNodeLinePlain returns a plain text line for a tree node without ANSI styling.
+// Used for selected rows where we apply a single highlight style.
+func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
+	item := node.Item
+	status := formatStatus(item.Status)
+
+	// Build tree prefix with indentation and expand/collapse indicators
+	treePrefix := m.buildTreePrefix(node)
+	treePrefixWidth := len(treePrefix)
+
+	// Selection indicator
+	selectPrefix := ""
+	selectWidth := 0
+	if m.selectMode {
+		if m.selectedItems[item.ID] {
+			selectPrefix = "✓ "
+		} else {
+			selectPrefix = "  "
+		}
+		selectWidth = 2
+	}
+
+	// Stale indicator
+	stale := ""
+	staleWidth := 0
+	if m.staleItems[item.ID] {
+		stale = "⚠"
+		staleWidth = 2 // ⚠ + space
+	}
+
+	// Agent indicator
+	agent := ""
+	agentWidth := 0
+	if item.AgentID != nil && *item.AgentID != "" {
+		agent = "◈"
+		agentWidth = 2
+	}
+
+	// Type indicator (abbreviated)
+	itemType := string(item.Type)
+	if len(itemType) > 4 {
+		itemType = itemType[:4]
+	}
+	typeWidth := 5 // 4 chars + space
+
+	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
+	statusWidth := 9
+
+	// Format: status type id title [label1] [label2] [project]
+	project := ""
+	projectWidth := 0
+	if item.Project != "" {
+		project = "[" + item.Project + "]"
+		projectWidth = len(project) + 1
+	}
+
+	// Build labels string
+	labels := ""
+	labelsWidth := 0
+	for _, lbl := range item.Labels {
+		labels += " [" + lbl + "]"
+		labelsWidth += len(lbl) + 3 // brackets + space
+	}
+
+	// Calculate available space for title
+	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
+	titleWidth := width - fixedWidth
+	if titleWidth < 20 {
+		titleWidth = 40
+	}
+
+	title := item.Title
+	if len(title) > titleWidth {
+		title = title[:titleWidth-3] + "..."
+	}
+
+	if agent != "" {
+		return fmt.Sprintf("%s%s%s%-8s %-4s %s %s %-*s%s %s", selectPrefix, stale, treePrefix, status, itemType, item.ID, agent, titleWidth, title, labels, project)
+	}
+	return fmt.Sprintf("%s%s%s%-8s %-4s %s  %-*s%s %s", selectPrefix, stale, treePrefix, status, itemType, item.ID, titleWidth, title, labels, project)
+}
+
+// formatTreeNodeLineStyled returns a styled line with colors for non-selected rows.
+func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
+	item := node.Item
+	icon := statusIcon(item.Status)
+	text := statusText(item.Status)
+	color := statusColors[item.Status]
+	statusStyled := lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%-8s", icon+" "+text))
+
+	// Build tree prefix with indentation and expand/collapse indicators
+	treePrefix := m.buildTreePrefix(node)
+	treePrefixWidth := len(treePrefix)
+
+	// Selection indicator
+	selectPrefix := ""
+	selectWidth := 0
+	if m.selectMode {
+		if m.selectedItems[item.ID] {
+			selectPrefix = selectModeStyle.Render("✓") + " "
+		} else {
+			selectPrefix = "  "
+		}
+		selectWidth = 2
+	}
+
+	// Stale indicator
+	stale := ""
+	staleWidth := 0
+	if m.staleItems[item.ID] {
+		stale = staleStyle.Render("⚠ ")
+		staleWidth = 2 // ⚠ + space
+	}
+
+	// Agent indicator
+	agent := ""
+	agentWidth := 0
+	if item.AgentID != nil && *item.AgentID != "" {
+		agent = dimStyle.Render("◈")
+		agentWidth = 2
+	}
+
+	id := dimStyle.Render(item.ID)
+
+	// Type indicator (abbreviated, dimmed)
+	itemType := string(item.Type)
+	if len(itemType) > 4 {
+		itemType = itemType[:4]
+	}
+	typeStyled := dimStyle.Render(fmt.Sprintf("%-4s", itemType))
+	typeWidth := 5 // 4 chars + space
+
+	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
+	statusWidth := 9
+
+	// Format: status type id title [label1] [label2] [project]
+	project := ""
+	projectWidth := 0
+	if item.Project != "" {
+		project = dimStyle.Render("[" + item.Project + "]")
+		projectWidth = len(item.Project) + 3 // brackets + space
+	}
+
+	// Build labels string
+	labels := ""
+	labelsWidth := 0
+	for _, lbl := range item.Labels {
+		labels += " " + labelStyle.Render("["+lbl+"]")
+		labelsWidth += len(lbl) + 3 // brackets + space
+	}
+
+	// Calculate available space for title
+	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
+	titleWidth := width - fixedWidth
+	if titleWidth < 20 {
+		titleWidth = 40
+	}
+
+	title := item.Title
+	if len(title) > titleWidth {
+		title = title[:titleWidth-3] + "..."
+	}
+
+	// Render tree prefix with appropriate styling
+	styledTreePrefix := dimStyle.Render(treePrefix)
+
+	if agent != "" {
+		return fmt.Sprintf("%s%s%s%s %s %s %s %-*s%s %s", selectPrefix, stale, styledTreePrefix, statusStyled, typeStyled, id, agent, titleWidth, title, labels, project)
+	}
+	return fmt.Sprintf("%s%s%s%s %s %s  %-*s%s %s", selectPrefix, stale, styledTreePrefix, statusStyled, typeStyled, id, titleWidth, title, labels, project)
+}
+
+// buildTreePrefix creates the indentation and branch indicators for a tree node.
+func (m Model) buildTreePrefix(node treeNode) string {
+	if node.Level == 0 {
+		// Root level - no indentation
+		if node.HasChildren {
+			if m.treeExpanded[node.Item.ID] {
+				return "▼ "
+			}
+			return "▶ "
+		}
+		return "○ "
+	}
+
+	// Build indentation based on level
+	prefix := ""
+	for i := 0; i < node.Level-1; i++ {
+		prefix += "│  "
+	}
+
+	// Add branch connector
+	if node.IsLastChild {
+		prefix += "└─ "
+	} else {
+		prefix += "├─ "
+	}
+
+	// Add expand/collapse indicator for nodes with children
+	if node.HasChildren {
+		if m.treeExpanded[node.Item.ID] {
+			prefix += "▼ "
+		} else {
+			prefix += "▶ "
+		}
+	} else {
+		prefix += "○ "
+	}
+
+	return prefix
+}
+
 func (m Model) activeFiltersString() string {
 	var parts []string
 
@@ -2511,11 +3193,12 @@ func renderTemplateForItem(item model.Item) string {
 }
 
 func (m Model) detailView() string {
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
 		return "No item selected"
 	}
 
-	item := m.filtered[m.cursor]
+	item := treeNodes[m.cursor].Item
 	var b strings.Builder
 
 	// Title with status icon
@@ -3164,6 +3847,338 @@ func (m Model) configView() string {
 	} else {
 		b.WriteString(helpStyle.Render("j/k:nav  enter/e:edit  r:refresh  esc:back  q:quit"))
 	}
+
+	return b.String()
+}
+
+func (m Model) createWizardView() string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render(fmt.Sprintf(" Create New Item - Step %d/8 ", m.createWizardStep)))
+	b.WriteString("\n\n")
+
+	switch m.createWizardStep {
+	case 1:
+		b.WriteString(m.wizardTypeView())
+	case 2:
+		b.WriteString(m.wizardBasicConfigView())
+	case 3:
+		b.WriteString(m.wizardRelationshipsView())
+	case 4:
+		b.WriteString(m.wizardWorktreeView())
+	case 5:
+		b.WriteString(m.wizardMethodView())
+	case 6:
+		if m.createWizardState.UseTemplate {
+			b.WriteString(m.wizardTemplateVarsView())
+		} else {
+			b.WriteString(m.wizardTitleView())
+		}
+	case 7:
+		b.WriteString(m.wizardDescriptionView())
+	case 8:
+		b.WriteString(m.wizardConfirmationView())
+	}
+
+	// Help footer
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render(" [←] Back  [Enter] Continue  [Esc] Cancel"))
+
+	return b.String()
+}
+
+func (m Model) wizardTypeView() string {
+	var b strings.Builder
+
+	b.WriteString("What type of item would you like to create?\n\n")
+
+	types := []struct {
+		name string
+		desc string
+	}{
+		{"task", "Standard task (default)"},
+		{"epic", "Large body of work with child tasks"},
+	}
+
+	for _, t := range types {
+		cursor := "  "
+		if m.createWizardState.SelectedType == model.ItemType(t.name) {
+			cursor = "● "
+		}
+		b.WriteString(fmt.Sprintf("%s%s - %s\n", cursor, t.name, t.desc))
+	}
+
+	return b.String()
+}
+
+func (m Model) wizardBasicConfigView() string {
+	var b strings.Builder
+
+	b.WriteString("Configure basic settings:\n\n")
+
+	// Priority selection
+	b.WriteString("Priority:\n")
+	priorities := []struct {
+		level int
+		desc  string
+	}{
+		{1, "High (P0)"},
+		{2, "Medium (P1)"},
+		{3, "Low (P2)"},
+		{4, "Very Low"},
+		{5, "Lowest"},
+	}
+	for _, p := range priorities {
+		cursor := "  "
+		if m.createWizardState.Priority == p.level {
+			cursor = "● "
+		}
+		b.WriteString(fmt.Sprintf("%s%d - %s\n", cursor, p.level, p.desc))
+	}
+
+	b.WriteString("\n")
+
+	// Project selection
+	b.WriteString("Project:\n")
+	if m.createWizardState.UseCustomProject {
+		b.WriteString("  ○ Use current project\n")
+		b.WriteString(fmt.Sprintf("  ● Custom: %s█\n", m.createWizardState.Project))
+	} else {
+		b.WriteString(fmt.Sprintf("  ● Use current project (%s)\n", m.project))
+		b.WriteString("  ○ Enter custom project\n")
+	}
+
+	return b.String()
+}
+
+func (m Model) wizardRelationshipsView() string {
+	var b strings.Builder
+
+	b.WriteString("Set relationships (optional):\n\n")
+
+	// Parent
+	b.WriteString("Parent Epic:\n")
+	if m.createWizardState.ParentID == "" {
+		b.WriteString("  ● No parent (top-level item)\n")
+	} else {
+		b.WriteString(fmt.Sprintf("  ● Parent: %s\n", m.createWizardState.ParentID))
+	}
+
+	b.WriteString("\n")
+
+	// Dependencies
+	b.WriteString("Dependencies:\n")
+	if len(m.createWizardState.Dependencies) == 0 {
+		b.WriteString("  (none)\n")
+	} else {
+		for _, dep := range m.createWizardState.Dependencies {
+			b.WriteString(fmt.Sprintf("  • %s\n", dep))
+		}
+	}
+
+	b.WriteString("\n")
+
+	// Blockers
+	b.WriteString("Blocks:\n")
+	if len(m.createWizardState.Blockers) == 0 {
+		b.WriteString("  (none)\n")
+	} else {
+		for _, blocker := range m.createWizardState.Blockers {
+			b.WriteString(fmt.Sprintf("  • %s\n", blocker))
+		}
+	}
+
+	return b.String()
+}
+
+func (m Model) wizardWorktreeView() string {
+	var b strings.Builder
+
+	b.WriteString("Worktree Configuration (Epic only):\n\n")
+
+	// Use worktree toggle
+	if m.createWizardState.UseWorktree {
+		b.WriteString("  ● Create worktree for this epic\n")
+		b.WriteString("  ○ No worktree\n")
+	} else {
+		b.WriteString("  ○ Create worktree for this epic\n")
+		b.WriteString("  ● No worktree\n")
+	}
+
+	b.WriteString("\n")
+
+	if m.createWizardState.UseWorktree {
+		b.WriteString(fmt.Sprintf("Branch: %s\n", m.createWizardState.WorktreeBranch))
+		b.WriteString(fmt.Sprintf("Base:   %s\n", m.createWizardState.WorktreeBase))
+	}
+
+	return b.String()
+}
+
+func (m Model) wizardMethodView() string {
+	var b strings.Builder
+
+	b.WriteString("Choose creation method:\n\n")
+
+	if m.createWizardState.UseTemplate {
+		b.WriteString("  ○ From Scratch (Ad-hoc)\n")
+		b.WriteString("  ● From Template\n")
+	} else {
+		b.WriteString("  ● From Scratch (Ad-hoc)\n")
+		b.WriteString("  ○ From Template\n")
+	}
+
+	if m.createWizardState.UseTemplate {
+		b.WriteString("\nAvailable Templates:\n")
+		if len(m.templates) == 0 {
+			b.WriteString("  (no templates loaded - press Enter to load)\n")
+		} else {
+			for _, t := range m.templates {
+				cursor := "  "
+				if m.createWizardState.SelectedTemplate != nil && m.createWizardState.SelectedTemplate.ID == t.ID {
+					cursor = "● "
+				}
+				b.WriteString(fmt.Sprintf("%s%s - %s\n", cursor, t.ID, t.Title))
+			}
+		}
+	}
+
+	return b.String()
+}
+
+func (m Model) wizardTitleView() string {
+	var b strings.Builder
+
+	b.WriteString("Enter item details:\n\n")
+
+	// Title
+	b.WriteString("Title (required):\n")
+	if m.createWizardState.Title == "" {
+		b.WriteString("  [Enter title]█\n")
+	} else {
+		b.WriteString(fmt.Sprintf("  %s█\n", m.createWizardState.Title))
+	}
+
+	b.WriteString("\n")
+
+	// Labels
+	b.WriteString("Labels (comma-separated, optional):\n")
+	if len(m.createWizardState.Labels) == 0 {
+		b.WriteString("  [none]\n")
+	} else {
+		b.WriteString(fmt.Sprintf("  %s\n", strings.Join(m.createWizardState.Labels, ", ")))
+	}
+
+	return b.String()
+}
+
+func (m Model) wizardTemplateVarsView() string {
+	var b strings.Builder
+
+	if m.createWizardState.SelectedTemplate == nil {
+		b.WriteString("No template selected. Press Enter to go back.\n")
+		return b.String()
+	}
+
+	b.WriteString(fmt.Sprintf("Template: %s\n\n", m.createWizardState.SelectedTemplate.Title))
+
+	// Show template variables
+	if len(m.createWizardState.SelectedTemplate.Variables) > 0 {
+		b.WriteString("Template Variables:\n")
+		for name, v := range m.createWizardState.SelectedTemplate.Variables {
+			optional := ""
+			if v.Optional {
+				optional = " (optional)"
+			}
+			value := m.createWizardState.TemplateVars[name]
+			if value == "" {
+				value = "[not set]"
+			}
+			b.WriteString(fmt.Sprintf("  %s%s: %s\n", name, optional, value))
+		}
+	}
+
+	return b.String()
+}
+
+func (m Model) wizardDescriptionView() string {
+	var b strings.Builder
+
+	b.WriteString("Enter description (required):\n\n")
+
+	if m.createWizardState.Description == "" {
+		b.WriteString("  [Enter detailed description...]\n")
+	} else {
+		// Show first few lines of description
+		lines := strings.Split(m.createWizardState.Description, "\n")
+		for i, line := range lines {
+			if i >= 10 {
+				b.WriteString("  ...\n")
+				break
+			}
+			b.WriteString(fmt.Sprintf("  %s\n", line))
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("Description must be at least 3 words or 20 characters.\n"))
+
+	return b.String()
+}
+
+func (m Model) wizardConfirmationView() string {
+	var b strings.Builder
+
+	state := m.createWizardState
+
+	b.WriteString("Review and confirm:\n\n")
+
+	// Basic info
+	b.WriteString("Basic Info:\n")
+	b.WriteString(fmt.Sprintf("  Type:     %s\n", state.SelectedType))
+	b.WriteString(fmt.Sprintf("  Title:    %s\n", state.Title))
+	b.WriteString(fmt.Sprintf("  Priority: %d\n", state.Priority))
+	b.WriteString(fmt.Sprintf("  Project:  %s\n", state.Project))
+
+	if len(state.Labels) > 0 {
+		b.WriteString(fmt.Sprintf("  Labels:   %s\n", strings.Join(state.Labels, ", ")))
+	}
+
+	b.WriteString("\n")
+
+	// Relationships
+	if state.ParentID != "" || len(state.Dependencies) > 0 || len(state.Blockers) > 0 {
+		b.WriteString("Relationships:\n")
+		if state.ParentID != "" {
+			b.WriteString(fmt.Sprintf("  Parent: %s\n", state.ParentID))
+		}
+		if len(state.Dependencies) > 0 {
+			b.WriteString(fmt.Sprintf("  Depends on: %s\n", strings.Join(state.Dependencies, ", ")))
+		}
+		if len(state.Blockers) > 0 {
+			b.WriteString(fmt.Sprintf("  Blocks: %s\n", strings.Join(state.Blockers, ", ")))
+		}
+		b.WriteString("\n")
+	}
+
+	// Worktree
+	if state.SelectedType == model.ItemTypeEpic && state.UseWorktree {
+		b.WriteString("Worktree:\n")
+		b.WriteString(fmt.Sprintf("  Branch: %s\n", state.WorktreeBranch))
+		b.WriteString(fmt.Sprintf("  Base:   %s\n", state.WorktreeBase))
+		b.WriteString("\n")
+	}
+
+	// Description preview
+	desc := state.Description
+	if len(desc) > 200 {
+		desc = desc[:200] + "..."
+	}
+	b.WriteString("Description Preview:\n")
+	b.WriteString(fmt.Sprintf("  %s\n", desc))
+
+	b.WriteString("\n")
+	b.WriteString("Press Enter to create this item.\n")
 
 	return b.String()
 }
