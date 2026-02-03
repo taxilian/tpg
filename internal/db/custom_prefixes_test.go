@@ -2,11 +2,45 @@ package db
 
 import (
 	"encoding/json"
-	"regexp"
+	"os"
+	"path/filepath"
 	"testing"
-
-	"github.com/taxilian/tpg/internal/model"
 )
+
+// setupTestProject creates a temporary project directory with config and returns a cleanup function.
+func setupTestProject(t *testing.T, config *Config) func() {
+	t.Helper()
+
+	dir := t.TempDir()
+	tpgDir := filepath.Join(dir, ".tpg")
+	if err := os.MkdirAll(tpgDir, 0755); err != nil {
+		t.Fatalf("failed to create .tpg dir: %v", err)
+	}
+
+	if config != nil {
+		data, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			t.Fatalf("failed to marshal config: %v", err)
+		}
+		configPath := filepath.Join(tpgDir, "config.json")
+		if err := os.WriteFile(configPath, data, 0644); err != nil {
+			t.Fatalf("failed to write config: %v", err)
+		}
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+
+	return func() {
+		_ = os.Chdir(oldWd)
+	}
+}
 
 func TestCustomPrefixes_LoadsFromConfig(t *testing.T) {
 	// Create config with custom_prefixes
@@ -153,42 +187,6 @@ func TestCustomPrefixes_GetPrefixForType_EmptyCustomPrefixes(t *testing.T) {
 	// Unknown types should return "it"
 	if prefix := loadedConfig.GetPrefixForType("unknown"); prefix != "it" {
 		t.Errorf("Expected unknown type prefix 'it', got %q", prefix)
-	}
-}
-
-func TestCustomPrefixes_GenerateID_UsesCustomPrefix(t *testing.T) {
-	// Create a minimal test that verifies the config structure works
-	// Note: GenerateItemIDStatic only uses task/epic types, not custom types
-	// This test verifies the config loads correctly with custom prefixes
-	config := &Config{
-		Prefixes: PrefixConfig{
-			Task: "customtask",
-			Epic: "customepic",
-		},
-		CustomPrefixes: map[string]string{
-			"story": "st",
-		},
-	}
-	cleanup := setupTestProject(t, config)
-	defer cleanup()
-
-	// Verify standard types use the configured prefixes
-	taskID, err := GenerateItemIDStatic(model.ItemTypeTask)
-	if err != nil {
-		t.Fatalf("GenerateItemIDStatic failed: %v", err)
-	}
-
-	if !regexp.MustCompile(`^customtask-[0-9a-z]{3}$`).MatchString(taskID) {
-		t.Errorf("Expected task ID to match 'customtask-XXX', got %q", taskID)
-	}
-
-	epicID, err := GenerateItemIDStatic(model.ItemTypeEpic)
-	if err != nil {
-		t.Fatalf("GenerateItemIDStatic failed: %v", err)
-	}
-
-	if !regexp.MustCompile(`^customepic-[0-9a-z]{3}$`).MatchString(epicID) {
-		t.Errorf("Expected epic ID to match 'customepic-XXX', got %q", epicID)
 	}
 }
 

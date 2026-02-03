@@ -199,7 +199,7 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 	createdIDs := []string{}
 	cleanup := func() {
 		for i := len(createdIDs) - 1; i >= 0; i-- {
-			_ = database.DeleteItem(createdIDs[i])
+			_ = database.DeleteItem(createdIDs[i], true)
 		}
 	}
 

@@ -753,40 +753,6 @@ func TestDefaultPath_FindsLocalDatabase(t *testing.T) {
 	}
 }
 
-// Tests for InitPath function
-
-func TestInitPath_ReturnsCorrectPath(t *testing.T) {
-	// Arrange: Save current directory and change to temp dir
-	originalWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get current working directory: %v", err)
-	}
-	defer os.Chdir(originalWd)
-
-	tempDir := t.TempDir()
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("failed to change to temp directory: %v", err)
-	}
-
-	// Get the actual working directory after chdir (handles /private prefix on macOS)
-	actualWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get actual working directory: %v", err)
-	}
-
-	// Act: Call InitPath
-	path, err := InitPath()
-
-	// Assert: Should return path to tpg.db in .tpg directory
-	if err != nil {
-		t.Errorf("expected no error, got: %v", err)
-	}
-	expectedPath := filepath.Join(actualWd, DataDir, DBFile)
-	if path != expectedPath {
-		t.Errorf("expected path %q, got: %q", expectedPath, path)
-	}
-}
-
 // Tests for parseGitFile function (edge cases not covered by FindWorktreeRoot tests)
 
 func TestParseGitFile_EmptyGitdirPath(t *testing.T) {

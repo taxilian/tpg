@@ -341,7 +341,7 @@ func TestDeleteOldItemsSkipsParentsWithChildren(t *testing.T) {
 	}
 
 	// Now mark parent as done (allowed since child is done)
-	if err := db.UpdateStatus(parentEpic.ID, model.StatusDone, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(parentEpic.ID, model.StatusDone, AgentContext{}, false); err != nil {
 		t.Fatalf("failed to mark parent done: %v", err)
 	}
 

@@ -31,7 +31,7 @@ func TestStart_InProgressWithoutResumeFails(t *testing.T) {
 	item := createTestItem(t, database, "ts-inprog", "In progress task")
 
 	agentCtx := db.AgentContext{ID: "agent-a"}
-	if err := database.UpdateStatus(item.ID, model.StatusInProgress, agentCtx); err != nil {
+	if err := database.UpdateStatus(item.ID, model.StatusInProgress, agentCtx, false); err != nil {
 		t.Fatalf("failed to set in_progress: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestStart_InProgressWithResumeSucceeds(t *testing.T) {
 	item := createTestItem(t, database, "ts-resume", "Resume task")
 
 	agentCtx := db.AgentContext{ID: "agent-a"}
-	if err := database.UpdateStatus(item.ID, model.StatusInProgress, agentCtx); err != nil {
+	if err := database.UpdateStatus(item.ID, model.StatusInProgress, agentCtx, false); err != nil {
 		t.Fatalf("failed to set in_progress: %v", err)
 	}
 

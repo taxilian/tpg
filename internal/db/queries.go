@@ -475,19 +475,6 @@ func (db *DB) GetDistinctTypes() ([]model.ItemType, error) {
 	return types, nil
 }
 
-// FindEpicByBranch finds an epic by its worktree branch name.
-func (db *DB) FindEpicByBranch(branch string) (*model.Item, error) {
-	query := fmt.Sprintf("SELECT %s FROM items WHERE type = 'epic' AND worktree_branch = ?", itemSelectColumns)
-	items, err := db.queryItems(query, branch)
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, fmt.Errorf("epic not found for branch: %s", branch)
-	}
-	return &items[0], nil
-}
-
 // ReadyItemsForEpic returns ready items (open with no unmet dependencies) for a specific epic.
 func (db *DB) ReadyItemsForEpic(epicID string) ([]model.Item, error) {
 	// Get all descendants of the epic

@@ -138,7 +138,7 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 
 // UpdateStatus changes an item's status.
 // UpdateStatus changes an item's status and optionally assigns it to an agent.
-func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext) error {
+func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext, force bool) error {
 	if !status.IsValid() {
 		return fmt.Errorf("invalid status: %s", status)
 	}
@@ -152,6 +152,17 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 		}
 		if openChildren > 0 {
 			return fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
+		}
+
+		if !force {
+			var blockedCount int
+			err = db.QueryRow(`SELECT COUNT(*) FROM deps WHERE depends_on = ?`, id).Scan(&blockedCount)
+			if err != nil {
+				return fmt.Errorf("failed to check dependencies: %w", err)
+			}
+			if blockedCount > 0 {
+				return fmt.Errorf("cannot close %s: %d tasks depend on it (use --force to override)", id, blockedCount)
+			}
 		}
 	}
 
@@ -405,7 +416,8 @@ func (db *DB) UpdatePriority(id string, priority int) error {
 }
 
 // DeleteItem removes an item and its associated logs and dependencies.
-func (db *DB) DeleteItem(id string) error {
+// If force is false, deletion is blocked when other items depend on this item.
+func (db *DB) DeleteItem(id string, force bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -420,6 +432,17 @@ func (db *DB) DeleteItem(id string) error {
 	}
 	if count == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+
+	if !force {
+		var blockedCount int
+		err = tx.QueryRow(`SELECT COUNT(*) FROM deps WHERE depends_on = ?`, id).Scan(&blockedCount)
+		if err != nil {
+			return fmt.Errorf("failed to check dependencies: %w", err)
+		}
+		if blockedCount > 0 {
+			return fmt.Errorf("cannot delete %s: %d tasks depend on it (use --force to delete anyway)", id, blockedCount)
+		}
 	}
 
 	// Delete logs

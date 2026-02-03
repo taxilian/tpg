@@ -67,15 +67,6 @@ func DefaultPath() (string, error) {
 	return GetDatabasePath(wd)
 }
 
-// InitPath returns the database path for initializing a project in the current directory.
-func InitPath() (string, error) {
-	dataDir, err := dataDirFromCwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataDir, DBFile), nil
-}
-
 // FindWorktreeRoot detects if the given directory is in a git worktree and returns
 // the main repository root path. If .git is a directory (regular repo) or doesn't exist,
 // it returns an empty string. If .git is a file (worktree), it parses the gitdir path

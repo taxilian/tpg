@@ -108,7 +108,7 @@ func TestUpdateStatus_SetsAgentID(t *testing.T) {
 	}
 
 	// Start task - should set agent_id
-	if err := db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx); err != nil {
+	if err := db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx, false); err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
 
@@ -135,10 +135,10 @@ func TestUpdateStatus_ClearsAgentID_OnDone(t *testing.T) {
 
 	// Set agent first
 	agentCtx := AgentContext{ID: "agent-123"}
-	db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx)
+	_ = db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx, false)
 
 	// Mark done - should clear agent_id
-	if err := db.UpdateStatus(item.ID, model.StatusDone, agentCtx); err != nil {
+	if err := db.UpdateStatus(item.ID, model.StatusDone, agentCtx, false); err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
 
@@ -158,10 +158,10 @@ func TestUpdateStatus_ClearsAgentID_OnBlocked(t *testing.T) {
 	item := createTestItemWithProject(t, db, "Test task", "test", model.StatusInProgress, 2)
 
 	agentCtx := AgentContext{ID: "agent-123"}
-	db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx)
+	_ = db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx, false)
 
 	// Block - should clear agent_id
-	if err := db.UpdateStatus(item.ID, model.StatusBlocked, agentCtx); err != nil {
+	if err := db.UpdateStatus(item.ID, model.StatusBlocked, agentCtx, false); err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
 
@@ -181,10 +181,10 @@ func TestUpdateStatus_ClearsAgentID_OnCanceled(t *testing.T) {
 	item := createTestItemWithProject(t, db, "Test task", "test", model.StatusInProgress, 2)
 
 	agentCtx := AgentContext{ID: "agent-123"}
-	db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx)
+	_ = db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx, false)
 
 	// Cancel - should clear agent_id
-	if err := db.UpdateStatus(item.ID, model.StatusCanceled, agentCtx); err != nil {
+	if err := db.UpdateStatus(item.ID, model.StatusCanceled, agentCtx, false); err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestUpdateStatus_NoAgentContext(t *testing.T) {
 
 	// Update without agent context
 	emptyCtx := AgentContext{}
-	if err := db.UpdateStatus(item.ID, model.StatusInProgress, emptyCtx); err != nil {
+	if err := db.UpdateStatus(item.ID, model.StatusInProgress, emptyCtx, false); err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestCompleteItem_ClearsAgentID(t *testing.T) {
 
 	// Set agent first
 	agentCtx := AgentContext{ID: "agent-123"}
-	db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx)
+	_ = db.UpdateStatus(item.ID, model.StatusInProgress, agentCtx, false)
 
 	// Complete - should clear agent_id
 	if err := db.CompleteItem(item.ID, "Done", agentCtx); err != nil {
@@ -255,9 +255,9 @@ func TestProjectStatusFiltered_SeparatesAgentWork(t *testing.T) {
 	agent1 := AgentContext{ID: "agent-1"}
 	agent2 := AgentContext{ID: "agent-2"}
 
-	db.UpdateStatus(task1.ID, model.StatusInProgress, agent1)
-	db.UpdateStatus(task2.ID, model.StatusInProgress, agent1)
-	db.UpdateStatus(task3.ID, model.StatusInProgress, agent2)
+	_ = db.UpdateStatus(task1.ID, model.StatusInProgress, agent1, false)
+	_ = db.UpdateStatus(task2.ID, model.StatusInProgress, agent1, false)
+	_ = db.UpdateStatus(task3.ID, model.StatusInProgress, agent2, false)
 
 	// Query as agent-1
 	report, err := db.ProjectStatusFiltered("test", nil, "agent-1")
@@ -286,7 +286,7 @@ func TestProjectStatusFiltered_NoAgentID(t *testing.T) {
 	_ = createTestItemWithProject(t, db, "Task 2", "test", model.StatusInProgress, 2)
 
 	agent1 := AgentContext{ID: "agent-1"}
-	db.UpdateStatus(task1.ID, model.StatusInProgress, agent1)
+	_ = db.UpdateStatus(task1.ID, model.StatusInProgress, agent1, false)
 	// task2 has no agent
 
 	// Query without agent ID
@@ -427,11 +427,11 @@ func TestAgentTakeover(t *testing.T) {
 
 	// Agent 1 starts task
 	agent1 := AgentContext{ID: "agent-1"}
-	db.UpdateStatus(item.ID, model.StatusInProgress, agent1)
+	_ = db.UpdateStatus(item.ID, model.StatusInProgress, agent1, false)
 
 	// Agent 2 takes over (silent takeover - no error)
 	agent2 := AgentContext{ID: "agent-2"}
-	err := db.UpdateStatus(item.ID, model.StatusInProgress, agent2)
+	err := db.UpdateStatus(item.ID, model.StatusInProgress, agent2, false)
 	if err != nil {
 		t.Errorf("Agent takeover should not error, got: %v", err)
 	}

@@ -106,7 +106,7 @@ func TestHasUnmetDeps(t *testing.T) {
 	}
 
 	// Mark task1 as done
-	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}, true); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -240,7 +240,7 @@ func TestAddDep_RevertsInProgressToOpen(t *testing.T) {
 	worker := createTestItem(t, db, "Worker task")
 
 	// Start the worker task
-	if err := db.UpdateStatus(worker.ID, model.StatusInProgress, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(worker.ID, model.StatusInProgress, AgentContext{}, false); err != nil {
 		t.Fatalf("failed to start worker: %v", err)
 	}
 
@@ -284,12 +284,12 @@ func TestAddDep_DoesNotRevertIfDepDone(t *testing.T) {
 	worker := createTestItem(t, db, "Worker task")
 
 	// Complete the blocker first
-	if err := db.UpdateStatus(blocker.ID, model.StatusDone, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(blocker.ID, model.StatusDone, AgentContext{}, false); err != nil {
 		t.Fatalf("failed to complete blocker: %v", err)
 	}
 
 	// Start the worker
-	if err := db.UpdateStatus(worker.ID, model.StatusInProgress, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(worker.ID, model.StatusInProgress, AgentContext{}, false); err != nil {
 		t.Fatalf("failed to start worker: %v", err)
 	}
 

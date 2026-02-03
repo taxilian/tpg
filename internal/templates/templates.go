@@ -219,16 +219,6 @@ func parseGitFile(gitFilePath string) (string, error) {
 	return repoRoot, nil
 }
 
-// FindTemplatesDir returns the first available templates directory (for backward compatibility).
-func FindTemplatesDir() (string, error) {
-	locations := GetTemplateLocations()
-	if len(locations) == 0 {
-		startDir, _ := os.Getwd()
-		return "", fmt.Errorf("no templates directory found in %s or any ancestor, ~/.config/tpg/templates, or ~/.config/opencode/tpg-templates", startDir)
-	}
-	return locations[0].Path, nil
-}
-
 // ListTemplates returns all available templates from all locations.
 // Templates from more local locations override those from more global locations.
 // Searches recursively through subdirectories within each template location.
@@ -442,70 +432,4 @@ func RenderStep(step Step, vars map[string]string) Step {
 		Description: RenderText(step.Description, vars),
 		Depends:     step.Depends,
 	}
-}
-
-// LoadTemplatesWithWorktree loads templates from both local and worktree root directories.
-// It searches local templates first, then worktree root templates, merging the results.
-// Local templates take priority over worktree root templates.
-// If worktreeRoot is empty, only local templates are loaded.
-func LoadTemplatesWithWorktree(localDir, worktreeRoot string) ([]*Template, error) {
-	// Map of template ID to template (local templates take priority)
-	seen := make(map[string]*Template)
-
-	// 1. Load from local directory (highest priority)
-	localTemplatesDir := filepath.Join(localDir, ".tpg", templatesDirName)
-	if info, err := os.Stat(localTemplatesDir); err == nil && info.IsDir() {
-		loadTemplatesFromDir(localTemplatesDir, "project", seen)
-	}
-
-	// 2. Load from worktree root (if provided and different from local)
-	if worktreeRoot != "" && worktreeRoot != localDir {
-		rootTemplatesDir := filepath.Join(worktreeRoot, ".tpg", templatesDirName)
-		if info, err := os.Stat(rootTemplatesDir); err == nil && info.IsDir() {
-			loadTemplatesFromDir(rootTemplatesDir, "project", seen)
-		}
-	}
-
-	// Convert to sorted slice
-	var result []*Template
-	for _, tmpl := range seen {
-		result = append(result, tmpl)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].ID < result[j].ID
-	})
-
-	return result, nil
-}
-
-// loadTemplatesFromDir loads all templates from a directory into the provided map.
-// Templates already in the map are not overwritten (preserving priority).
-func loadTemplatesFromDir(dir, source string, seen map[string]*Template) {
-	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors, continue walking
-		}
-		if info.IsDir() {
-			return nil // Continue into directories
-		}
-
-		ext := strings.ToLower(filepath.Ext(info.Name()))
-		if ext != ".yaml" && ext != ".yml" && ext != ".toml" {
-			return nil
-		}
-
-		id := strings.TrimSuffix(info.Name(), ext)
-		if _, exists := seen[id]; exists {
-			// Already have this template from a higher-priority location
-			return nil
-		}
-
-		tmpl, err := loadTemplateFromPath(path, id, source)
-		if err != nil {
-			// Skip invalid templates
-			return nil
-		}
-		seen[id] = tmpl
-		return nil
-	})
 }

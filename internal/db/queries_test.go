@@ -196,7 +196,7 @@ func TestReadyItems(t *testing.T) {
 	}
 
 	// Complete task1, now task2 should be ready
-	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}, true); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -479,7 +479,7 @@ func TestListItemsFiltered_HasBlockers(t *testing.T) {
 	}
 
 	// Complete task1, now task2 should have no unresolved blockers
-	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}, true); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -529,7 +529,7 @@ func TestListItemsFiltered_NoBlockers(t *testing.T) {
 	}
 
 	// Complete task1, now task2 should also have no unresolved blockers
-	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}); err != nil {
+	if err := db.UpdateStatus(task1.ID, model.StatusDone, AgentContext{}, true); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -885,42 +885,6 @@ func TestWorktreeFields_EmptyByDefault(t *testing.T) {
 	}
 	if got.WorktreeBase != "" {
 		t.Errorf("WorktreeBase should be empty by default, got %q", got.WorktreeBase)
-	}
-}
-
-func TestFindEpicByBranch(t *testing.T) {
-	db := setupTestDB(t)
-
-	// Create an epic with worktree metadata
-	epic := &model.Item{
-		ID:             model.GenerateID(model.ItemTypeEpic),
-		Project:        "test",
-		Type:           model.ItemTypeEpic,
-		Title:          "Worktree Epic",
-		Status:         model.StatusOpen,
-		Priority:       2,
-		WorktreeBranch: "feature/my-epic",
-		WorktreeBase:   "main",
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-	}
-	if err := db.CreateItem(epic); err != nil {
-		t.Fatalf("failed to create epic: %v", err)
-	}
-
-	// Find by branch
-	found, err := db.FindEpicByBranch("feature/my-epic")
-	if err != nil {
-		t.Fatalf("failed to find epic by branch: %v", err)
-	}
-	if found.ID != epic.ID {
-		t.Errorf("found epic ID = %q, want %q", found.ID, epic.ID)
-	}
-
-	// Try non-existent branch
-	_, err = db.FindEpicByBranch("feature/nonexistent")
-	if err == nil {
-		t.Error("expected error for non-existent branch")
 	}
 }
 

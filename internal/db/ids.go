@@ -34,13 +34,3 @@ func (db *DB) GenerateItemID(itemType model.ItemType) (string, error) {
 	}
 	return "", fmt.Errorf("failed to generate unique ID after %d attempts (consider increasing id_length in config)", maxIDRetries)
 }
-
-// GenerateItemIDStatic returns a new item ID without collision checking (for use without DB).
-func GenerateItemIDStatic(itemType model.ItemType) (string, error) {
-	config, err := LoadConfig()
-	if err != nil {
-		return "", err
-	}
-	prefix := config.GetPrefixForType(string(itemType))
-	return model.GenerateIDWithPrefixN(prefix, itemType, config.IDLength), nil
-}

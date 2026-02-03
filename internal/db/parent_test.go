@@ -160,7 +160,7 @@ func TestCannotCloseParentWithOpenChildren(t *testing.T) {
 	}
 
 	// Try to mark parent done - should fail
-	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{})
+	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{}, false)
 	if err == nil {
 		t.Error("expected error when closing parent with open children")
 	}
@@ -205,7 +205,7 @@ func TestCannotCloseParentWithOpenChildren_Canceled(t *testing.T) {
 	}
 
 	// Try to cancel parent - should fail
-	err := db.UpdateStatus(parent.ID, model.StatusCanceled, AgentContext{})
+	err := db.UpdateStatus(parent.ID, model.StatusCanceled, AgentContext{}, false)
 	if err == nil {
 		t.Error("expected error when canceling parent with open children")
 	}
@@ -289,7 +289,7 @@ func TestCanCloseParentWhenChildrenDone(t *testing.T) {
 	}
 
 	// Mark parent done - should succeed
-	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{})
+	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{}, false)
 	if err != nil {
 		t.Errorf("unexpected error when closing parent with done children: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestCanCloseParentWhenChildrenCanceled(t *testing.T) {
 	}
 
 	// Mark parent done - should succeed
-	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{})
+	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{}, false)
 	if err != nil {
 		t.Errorf("unexpected error when closing parent with canceled children: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestCanCloseParentWithNoChildren(t *testing.T) {
 	}
 
 	// Mark parent done - should succeed
-	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{})
+	err := db.UpdateStatus(parent.ID, model.StatusDone, AgentContext{}, false)
 	if err != nil {
 		t.Errorf("unexpected error when closing parent with no children: %v", err)
 	}

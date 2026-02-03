@@ -871,7 +871,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, func() tea.Msg {
-			if err := m.db.UpdateStatus(item.ID, model.StatusBlocked, db.AgentContext{}); err != nil {
+			if err := m.db.UpdateStatus(item.ID, model.StatusBlocked, db.AgentContext{}, false); err != nil {
 				return actionMsg{err: err}
 			}
 			if err := m.db.AddLog(item.ID, "Blocked: "+text); err != nil {
@@ -893,7 +893,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case InputCancel:
 		return m, func() tea.Msg {
-			if err := m.db.UpdateStatus(item.ID, model.StatusCanceled, db.AgentContext{}); err != nil {
+			if err := m.db.UpdateStatus(item.ID, model.StatusCanceled, db.AgentContext{}, false); err != nil {
 				return actionMsg{err: err}
 			}
 			if text != "" {
@@ -1785,22 +1785,6 @@ func (m Model) handleWizardTab() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) getPrefixForType(itemType model.ItemType) string {
-	config, err := db.LoadConfig()
-	if err != nil || config == nil {
-		return string(itemType)
-	}
-
-	prefix := strings.TrimSpace(config.GetPrefixForType(string(itemType)))
-	if prefix == "" {
-		return string(itemType)
-	}
-	if prefix == "it" && itemType != model.ItemTypeTask && itemType != model.ItemTypeEpic {
-		return string(itemType)
-	}
-	return prefix
-}
-
 func (m Model) getAvailableTypes() []TypeOption {
 	config, err := db.LoadConfig()
 	if err != nil {
@@ -2306,7 +2290,7 @@ func (m Model) doStart() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, func() tea.Msg {
-		if err := m.db.UpdateStatus(item.ID, model.StatusInProgress, db.AgentContext{}); err != nil {
+		if err := m.db.UpdateStatus(item.ID, model.StatusInProgress, db.AgentContext{}, false); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Started %s", item.ID)}
@@ -2324,7 +2308,7 @@ func (m Model) doDone() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, func() tea.Msg {
-		if err := m.db.UpdateStatus(item.ID, model.StatusDone, db.AgentContext{}); err != nil {
+		if err := m.db.UpdateStatus(item.ID, model.StatusDone, db.AgentContext{}, false); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Completed %s", item.ID)}
@@ -2338,7 +2322,7 @@ func (m Model) doDelete() (Model, tea.Cmd) {
 	}
 	item := treeNodes[m.cursor].Item
 	return m, func() tea.Msg {
-		if err := m.db.DeleteItem(item.ID); err != nil {
+		if err := m.db.DeleteItem(item.ID, false); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Deleted %s", item.ID)}
@@ -2356,7 +2340,7 @@ func (m Model) doBatchDone() (Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		count := 0
 		for _, id := range selectedIDs {
-			if err := m.db.UpdateStatus(id, model.StatusDone, db.AgentContext{}); err != nil {
+			if err := m.db.UpdateStatus(id, model.StatusDone, db.AgentContext{}, false); err != nil {
 				return actionMsg{err: fmt.Errorf("failed to complete %s: %w", id, err)}
 			}
 			count++
@@ -2392,7 +2376,7 @@ func (m Model) doBatchStatus(statusChar string) (Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		count := 0
 		for _, id := range selectedIDs {
-			if err := m.db.UpdateStatus(id, status, db.AgentContext{}); err != nil {
+			if err := m.db.UpdateStatus(id, status, db.AgentContext{}, false); err != nil {
 				return actionMsg{err: fmt.Errorf("failed to update %s: %w", id, err)}
 			}
 			count++
@@ -2453,59 +2437,6 @@ func getEditor() string {
 		return "nano"
 	}
 	return "vi"
-}
-
-// editDescription opens the current item's description in an external editor.
-// Returns a tea.ExecProcess command that suspends the TUI while editing.
-func (m Model) editDescription() (Model, tea.Cmd) {
-	treeNodes := m.buildTree()
-	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
-		return m, nil
-	}
-	item := treeNodes[m.cursor].Item
-
-	// Create temp file with current description
-	tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
-	if err != nil {
-		m.err = fmt.Errorf("failed to create temp file: %w", err)
-		return m, nil
-	}
-	tmpPath := tmpfile.Name()
-
-	// Write current description
-	if _, err := tmpfile.WriteString(item.Description); err != nil {
-		_ = tmpfile.Close()
-		_ = os.Remove(tmpPath)
-		m.err = fmt.Errorf("failed to write temp file: %w", err)
-		return m, nil
-	}
-	if err := tmpfile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		m.err = fmt.Errorf("failed to close temp file: %w", err)
-		return m, nil
-	}
-
-	// Get original mod time for comparison
-	origStat, err := os.Stat(tmpPath)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		m.err = fmt.Errorf("failed to stat temp file: %w", err)
-		return m, nil
-	}
-
-	editor := getEditor()
-	c := exec.Command(editor, tmpPath)
-
-	// Use tea.ExecProcess to suspend TUI and run editor
-	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return editorFinishedMsg{
-			itemID:   item.ID,
-			target:   "description",
-			tmpPath:  tmpPath,
-			origTime: origStat.ModTime(),
-			err:      err,
-		}
-	})
 }
 
 // handleEditorFinished processes the result of an external editor session.
@@ -2904,165 +2835,6 @@ func (m Model) listView() string {
 	}
 
 	return b.String()
-}
-
-// formatItemLinePlain returns a plain text line without any ANSI styling.
-// Used for selected rows where we apply a single highlight style.
-func (m Model) formatItemLinePlain(item model.Item, width int) string {
-	status := formatStatus(item.Status)
-
-	// Selection indicator
-	selectPrefix := ""
-	selectWidth := 0
-	if m.selectMode {
-		if m.selectedItems[item.ID] {
-			selectPrefix = "✓ "
-		} else {
-			selectPrefix = "  "
-		}
-		selectWidth = 2
-	}
-
-	// Stale indicator
-	stale := ""
-	staleWidth := 0
-	if m.staleItems[item.ID] {
-		stale = "⚠"
-		staleWidth = 2 // ⚠ + space
-	}
-
-	// Agent indicator
-	agent := ""
-	agentWidth := 0
-	if item.AgentID != nil && *item.AgentID != "" {
-		agent = "◈"
-		agentWidth = 2
-	}
-
-	// Type indicator (abbreviated)
-	itemType := string(item.Type)
-	if len(itemType) > 4 {
-		itemType = itemType[:4]
-	}
-	typeWidth := 5 // 4 chars + space
-
-	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
-	statusWidth := 9
-
-	// Format: status type id title [label1] [label2] [project]
-	project := ""
-	projectWidth := 0
-	if item.Project != "" {
-		project = "[" + item.Project + "]"
-		projectWidth = len(project) + 1
-	}
-
-	// Build labels string
-	labels := ""
-	labelsWidth := 0
-	for _, lbl := range item.Labels {
-		labels += " [" + lbl + "]"
-		labelsWidth += len(lbl) + 3 // brackets + space
-	}
-
-	// Calculate available space for title
-	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth
-	titleWidth := width - fixedWidth
-	if titleWidth < 20 {
-		titleWidth = 40
-	}
-
-	title := item.Title
-	if len(title) > titleWidth {
-		title = title[:titleWidth-3] + "..."
-	}
-
-	if agent != "" {
-		return fmt.Sprintf("%s%s%-8s %-4s %s %s %-*s%s %s", selectPrefix, stale, status, itemType, item.ID, agent, titleWidth, title, labels, project)
-	}
-	return fmt.Sprintf("%s%s%-8s %-4s %s  %-*s%s %s", selectPrefix, stale, status, itemType, item.ID, titleWidth, title, labels, project)
-}
-
-// formatItemLineStyled returns a styled line with colors for non-selected rows.
-func (m Model) formatItemLineStyled(item model.Item, width int) string {
-	icon := statusIcon(item.Status)
-	text := statusText(item.Status)
-	color := statusColors[item.Status]
-	statusStyled := lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%-8s", icon+" "+text))
-
-	// Selection indicator
-	selectPrefix := ""
-	selectWidth := 0
-	if m.selectMode {
-		if m.selectedItems[item.ID] {
-			selectPrefix = selectModeStyle.Render("✓") + " "
-		} else {
-			selectPrefix = "  "
-		}
-		selectWidth = 2
-	}
-
-	// Stale indicator
-	stale := ""
-	staleWidth := 0
-	if m.staleItems[item.ID] {
-		stale = staleStyle.Render("⚠ ")
-		staleWidth = 2 // ⚠ + space
-	}
-
-	// Agent indicator
-	agent := ""
-	agentWidth := 0
-	if item.AgentID != nil && *item.AgentID != "" {
-		agent = dimStyle.Render("◈")
-		agentWidth = 2
-	}
-
-	id := dimStyle.Render(item.ID)
-
-	// Type indicator (abbreviated, dimmed)
-	itemType := string(item.Type)
-	if len(itemType) > 4 {
-		itemType = itemType[:4]
-	}
-	typeStyled := dimStyle.Render(fmt.Sprintf("%-4s", itemType))
-	typeWidth := 5 // 4 chars + space
-
-	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
-	statusWidth := 9
-
-	// Format: status type id title [label1] [label2] [project]
-	project := ""
-	projectWidth := 0
-	if item.Project != "" {
-		project = dimStyle.Render("[" + item.Project + "]")
-		projectWidth = len(item.Project) + 3 // brackets + space
-	}
-
-	// Build labels string
-	labels := ""
-	labelsWidth := 0
-	for _, lbl := range item.Labels {
-		labels += " " + labelStyle.Render("["+lbl+"]")
-		labelsWidth += len(lbl) + 3 // brackets + space
-	}
-
-	// Calculate available space for title
-	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth
-	titleWidth := width - fixedWidth
-	if titleWidth < 20 {
-		titleWidth = 40
-	}
-
-	title := item.Title
-	if len(title) > titleWidth {
-		title = title[:titleWidth-3] + "..."
-	}
-
-	if agent != "" {
-		return fmt.Sprintf("%s%s%s %s %s %s %-*s%s %s", selectPrefix, stale, statusStyled, typeStyled, id, agent, titleWidth, title, labels, project)
-	}
-	return fmt.Sprintf("%s%s%s %s %s  %-*s%s %s", selectPrefix, stale, statusStyled, typeStyled, id, titleWidth, title, labels, project)
 }
 
 // formatTreeNodeLinePlain returns a plain text line for a tree node without ANSI styling.

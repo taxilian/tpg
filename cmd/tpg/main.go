@@ -46,6 +46,8 @@ var (
 	flagEpic             bool
 	flagPriority         int
 	flagForce            bool
+	flagDeleteForce      bool
+	flagCancelForce      bool
 	flagParent           string
 	flagBlocks           string
 	flagAfter            string
@@ -326,7 +328,7 @@ Examples:
 
 		// Mark the epic as done
 		agentCtx := db.AgentContext{}
-		if err := database.UpdateStatus(epicID, model.StatusDone, agentCtx); err != nil {
+		if err := database.UpdateStatus(epicID, model.StatusDone, agentCtx, false); err != nil {
 			return fmt.Errorf("failed to mark epic as done: %w", err)
 		}
 
@@ -1054,23 +1056,33 @@ Examples:
 			} else {
 				fmt.Println("No ready tasks")
 			}
-			return nil
+		} else {
+			// Show count
+			if flagReadyEpic != "" {
+				fmt.Printf("(%d ready)\n\n", len(items))
+			}
+
+			// Populate labels for display
+			if err := database.PopulateItemLabels(items); err != nil {
+				return err
+			}
+			if err := renderTemplatesForItems(items); err != nil {
+				return err
+			}
+
+			printReadyTable(items)
 		}
 
-		// Show count
-		if flagReadyEpic != "" {
-			fmt.Printf("(%d ready)\n\n", len(items))
-		}
-
-		// Populate labels for display
-		if err := database.PopulateItemLabels(items); err != nil {
+		// Check for in-progress tasks and show a hint
+		inProgressStatus := model.StatusInProgress
+		inProgressItems, err := database.ListItems(project, &inProgressStatus)
+		if err != nil {
 			return err
 		}
-		if err := renderTemplatesForItems(items); err != nil {
-			return err
+		if len(inProgressItems) > 0 {
+			fmt.Printf("\n(%d task(s) currently in-progress — use 'tpg list --status in_progress' to view)\n", len(inProgressItems))
 		}
 
-		printReadyTable(items)
 		return nil
 	},
 }
@@ -1355,7 +1367,7 @@ Example:
 			_ = database.RecordAgentProjectAccess(agentCtx.ID, item.Project)
 		}
 
-		if err := database.UpdateStatus(args[0], model.StatusInProgress, agentCtx); err != nil {
+		if err := database.UpdateStatus(args[0], model.StatusInProgress, agentCtx, false); err != nil {
 			return err
 		}
 
@@ -1536,7 +1548,8 @@ but close it without marking it as successfully completed.
 
 Example:
   tpg cancel ts-a1b2c3
-  tpg cancel ts-a1b2c3 "Requirements changed, no longer needed"`,
+  tpg cancel ts-a1b2c3 "Requirements changed, no longer needed"
+  tpg cancel ts-a1b2c3 --force   # Cancel even if other tasks depend on it`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -1548,7 +1561,7 @@ Example:
 		id := args[0]
 
 		agentCtx := db.GetAgentContext()
-		if err := database.UpdateStatus(id, model.StatusCanceled, agentCtx); err != nil {
+		if err := database.UpdateStatus(id, model.StatusCanceled, agentCtx, flagCancelForce); err != nil {
 			return err
 		}
 
@@ -1592,7 +1605,7 @@ Example:
 		id := args[0]
 
 		agentCtx := db.GetAgentContext()
-		if err := database.UpdateStatus(id, model.StatusOpen, agentCtx); err != nil {
+		if err := database.UpdateStatus(id, model.StatusOpen, agentCtx, false); err != nil {
 			return err
 		}
 
@@ -1646,7 +1659,7 @@ Example:
 		}
 
 		agentCtx := db.GetAgentContext()
-		if err := database.UpdateStatus(id, status, agentCtx); err != nil {
+		if err := database.UpdateStatus(id, status, agentCtx, flagForce); err != nil {
 			return err
 		}
 
@@ -1749,7 +1762,7 @@ If you must use block (e.g., external dependency with no tpg task), re-run with 
 		reason := strings.Join(args[1:], " ")
 
 		agentCtx := db.GetAgentContext()
-		if err := database.UpdateStatus(id, model.StatusBlocked, agentCtx); err != nil {
+		if err := database.UpdateStatus(id, model.StatusBlocked, agentCtx, false); err != nil {
 			return err
 		}
 		if err := database.AddLog(id, "Blocked: "+reason); err != nil {
@@ -1768,8 +1781,12 @@ var deleteCmd = &cobra.Command{
 This removes the item, its logs, and any dependencies.
 This action cannot be undone.
 
+By default, deletion is blocked if other tasks depend on this item.
+Use --force to delete anyway (dependencies will be removed).
+
 Example:
-  tpg delete ts-a1b2c3`,
+  tpg delete ts-a1b2c3
+  tpg delete ts-a1b2c3 --force   # Remove even if other tasks depend on it`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -1778,7 +1795,7 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		if err := database.DeleteItem(args[0]); err != nil {
+		if err := database.DeleteItem(args[0], flagDeleteForce); err != nil {
 			return err
 		}
 		fmt.Printf("Deleted %s\n", args[0])
@@ -4893,6 +4910,11 @@ func init() {
 	cleanCmd.Flags().IntVar(&flagCleanDays, "days", 30, "Age threshold in days")
 	cleanCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Show what would be deleted without actually deleting")
 	cleanCmd.Flags().BoolVar(&flagForce, "force", false, "Skip confirmation prompt")
+
+	// delete flags
+	deleteCmd.Flags().BoolVar(&flagDeleteForce, "force", false, "Delete even if tasks depend on this item")
+	// cancel flags
+	cancelCmd.Flags().BoolVar(&flagCancelForce, "force", false, "Cancel even if tasks depend on this item")
 
 	rootCmd.AddCommand(initCmd)
 

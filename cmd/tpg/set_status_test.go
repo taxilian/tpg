@@ -88,7 +88,7 @@ func TestSetStatus_WithForceFlag_Succeeds(t *testing.T) {
 
 	// Simulate the status update that would happen with --force
 	newStatus := model.StatusInProgress
-	if err := database.UpdateStatus(task.ID, newStatus, db.AgentContext{}); err != nil {
+	if err := database.UpdateStatus(task.ID, newStatus, db.AgentContext{}, true); err != nil {
 		t.Fatalf("failed to update status with force flag: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestSetStatus_WithForce_PreservesExistingBehavior(t *testing.T) {
 	}
 
 	for _, status := range transitions {
-		if err := database.UpdateStatus(task.ID, status, db.AgentContext{}); err != nil {
+		if err := database.UpdateStatus(task.ID, status, db.AgentContext{}, true); err != nil {
 			t.Fatalf("failed to update status to %s: %v", status, err)
 		}
 
@@ -202,7 +202,7 @@ func TestSetStatus_LogsEntryWhenForceUsed(t *testing.T) {
 	}
 
 	newStatus := model.StatusInProgress
-	if err := database.UpdateStatus(task.ID, newStatus, db.AgentContext{}); err != nil {
+	if err := database.UpdateStatus(task.ID, newStatus, db.AgentContext{}, true); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
@@ -239,7 +239,7 @@ func TestSetStatus_NonexistentTaskFails(t *testing.T) {
 	_ = forceFlag
 
 	// Attempt to update nonexistent task
-	err := database.UpdateStatus("ts-nonexistent", model.StatusDone, db.AgentContext{})
+	err := database.UpdateStatus("ts-nonexistent", model.StatusDone, db.AgentContext{}, true)
 	if err == nil {
 		t.Error("expected error when updating nonexistent task")
 	}

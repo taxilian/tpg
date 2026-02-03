@@ -281,7 +281,7 @@ var doneCmd = &cobra.Command{
     Args:  cobra.ExactArgs(1),
     RunE: func(cmd *cobra.Command, args []string) error {
         // Just updates status, no message required
-        database.UpdateStatus(id, model.StatusDone)
+        database.UpdateStatus(id, model.StatusDone, agentCtx, false)
     },
 }
 ```
