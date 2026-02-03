@@ -37,7 +37,7 @@ type WarningsConfig struct {
 // WorktreeConfig holds settings for Git worktree integration.
 type WorktreeConfig struct {
 	BranchPrefix  string `json:"branch_prefix,omitempty"`   // Default "feature"
-	RequireEpicID bool   `json:"require_epic_id,omitempty"` // Default true
+	RequireEpicID *bool  `json:"require_epic_id,omitempty"` // Default true
 	Root          string `json:"root,omitempty"`            // Default ".worktrees"
 }
 
@@ -101,8 +101,10 @@ func applyDefaults(config *Config, dataDir string) {
 	if config.Worktree.Root == "" {
 		config.Worktree.Root = ".worktrees"
 	}
-	// RequireEpicID defaults to true (zero value is false, so we need to handle this carefully)
-	// The zero value (false) is acceptable since we can check if the config was explicitly set
+	if config.Worktree.RequireEpicID == nil {
+		defaultRequire := true
+		config.Worktree.RequireEpicID = &defaultRequire
+	}
 }
 
 // LoadConfig reads the project config from .tpg/config.json.
@@ -263,9 +265,9 @@ func mergeConfigs(dataDir string, configs []*Config) *Config {
 		if cfg.Worktree.BranchPrefix != "" {
 			merged.Worktree.BranchPrefix = cfg.Worktree.BranchPrefix
 		}
-		// For bool fields, we need to check if explicitly set - use a pointer or track separately
-		// For now, always take the later config's value for RequireEpicID
-		merged.Worktree.RequireEpicID = cfg.Worktree.RequireEpicID
+		if cfg.Worktree.RequireEpicID != nil {
+			merged.Worktree.RequireEpicID = cfg.Worktree.RequireEpicID
+		}
 		if cfg.Worktree.Root != "" {
 			merged.Worktree.Root = cfg.Worktree.Root
 		}
@@ -273,6 +275,14 @@ func mergeConfigs(dataDir string, configs []*Config) *Config {
 
 	applyDefaults(merged, dataDir)
 	return merged
+}
+
+// RequireEpicIDEnabled returns whether explicit branch names must include the epic ID.
+func (c WorktreeConfig) RequireEpicIDEnabled() bool {
+	if c.RequireEpicID == nil {
+		return true
+	}
+	return *c.RequireEpicID
 }
 
 // loadConfigFromPath loads a config from a specific file path.

@@ -1490,7 +1490,9 @@ func TestWorktreeConfig_Defaults(t *testing.T) {
 	if config.Worktree.Root != ".worktrees" {
 		t.Errorf("Root = %q, want %q", config.Worktree.Root, ".worktrees")
 	}
-	// RequireEpicID defaults to false (zero value), but can be set to true explicitly
+	if !config.Worktree.RequireEpicIDEnabled() {
+		t.Errorf("RequireEpicIDEnabled() = false, want true")
+	}
 }
 
 func TestWorktreeConfig_LoadsExistingConfig(t *testing.T) {
@@ -1499,10 +1501,11 @@ func TestWorktreeConfig_LoadsExistingConfig(t *testing.T) {
 	chdir(t, dir)
 
 	// Write config with worktree settings
+	requireFalse := false
 	existingConfig := &Config{
 		Worktree: WorktreeConfig{
 			BranchPrefix:  "wip",
-			RequireEpicID: false,
+			RequireEpicID: &requireFalse,
 			Root:          "worktrees",
 		},
 	}
@@ -1519,6 +1522,9 @@ func TestWorktreeConfig_LoadsExistingConfig(t *testing.T) {
 	if config.Worktree.Root != "worktrees" {
 		t.Errorf("Root = %q, want %q", config.Worktree.Root, "worktrees")
 	}
+	if config.Worktree.RequireEpicIDEnabled() {
+		t.Errorf("RequireEpicIDEnabled() = true, want false")
+	}
 }
 
 func TestWorktreeConfig_RoundTrip(t *testing.T) {
@@ -1527,10 +1533,11 @@ func TestWorktreeConfig_RoundTrip(t *testing.T) {
 	chdir(t, dir)
 
 	// Save config with worktree settings
+	requireTrue := true
 	config := &Config{
 		Worktree: WorktreeConfig{
 			BranchPrefix:  "dev",
-			RequireEpicID: true,
+			RequireEpicID: &requireTrue,
 			Root:          "wt",
 		},
 	}
@@ -1548,8 +1555,8 @@ func TestWorktreeConfig_RoundTrip(t *testing.T) {
 	if loaded.Worktree.BranchPrefix != "dev" {
 		t.Errorf("BranchPrefix = %q, want %q", loaded.Worktree.BranchPrefix, "dev")
 	}
-	if loaded.Worktree.RequireEpicID != true {
-		t.Errorf("RequireEpicID = %v, want %v", loaded.Worktree.RequireEpicID, true)
+	if !loaded.Worktree.RequireEpicIDEnabled() {
+		t.Errorf("RequireEpicIDEnabled() = false, want true")
 	}
 	if loaded.Worktree.Root != "wt" {
 		t.Errorf("Root = %q, want %q", loaded.Worktree.Root, "wt")
@@ -1565,10 +1572,11 @@ func TestWorktreeConfig_Merge(t *testing.T) {
 	chdir(t, worktreeDir)
 
 	// System config: base worktree settings
+	requireTrue := true
 	systemConfig := &Config{
 		Worktree: WorktreeConfig{
 			BranchPrefix:  "sys-feature",
-			RequireEpicID: true,
+			RequireEpicID: &requireTrue,
 			Root:          ".sys-worktrees",
 		},
 	}
@@ -1599,9 +1607,8 @@ func TestWorktreeConfig_Merge(t *testing.T) {
 	if merged.Worktree.BranchPrefix != "work-branch" {
 		t.Errorf("BranchPrefix = %q, want %q", merged.Worktree.BranchPrefix, "work-branch")
 	}
-	// RequireEpicID from worktree (false overrides true)
-	if merged.Worktree.RequireEpicID != false {
-		t.Errorf("RequireEpicID = %v, want %v", merged.Worktree.RequireEpicID, false)
+	if !merged.Worktree.RequireEpicIDEnabled() {
+		t.Errorf("RequireEpicIDEnabled() = false, want true")
 	}
 	// Root from system (empty string doesn't override)
 	if merged.Worktree.Root != ".sys-worktrees" {
