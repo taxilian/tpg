@@ -295,12 +295,6 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 			}
 		}
 	}
-	for _, childID := range childIDs {
-		if err := database.AddDep(parentID, childID); err != nil {
-			cleanup()
-			return "", err
-		}
-	}
 
 	// Print worktree instructions if applicable
 	if worktreeBranch != "" {

@@ -95,7 +95,7 @@ When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both 
 - Variable values accept multi-line content; values are passed as JSON-encoded strings to support newlines and special characters.
 - Instantiation creates a parent epic (for multi-step templates) or task/epic (for single-step templates based on -e flag) and child tasks for each template step using the existing dependency system.
 - Multi-step templates always create a parent epic regardless of the -e flag.
-- The parent epic depends on all child tasks via standard dependencies.
+- The parent epic has child tasks via the parent-child relationship (ParentID field). No dependency is created between parent and child - dependencies are only for ordering work between siblings.
 - Step dependencies are applied between child tasks based on the template `depends` lists, using standard dependencies.
 - If a `depends` entry references a non-existent step id, instantiation fails with no partial task creation.
 
