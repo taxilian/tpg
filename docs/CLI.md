@@ -22,7 +22,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `tpg start <id>` | Set task to in_progress |
+| `tpg start <id> [--resume]` | Set task to in_progress (use `--resume` if already in progress) |
 | `tpg done <id> [message]` | Mark task complete |
 | `tpg cancel <id> [reason]` | Cancel task (close without completing) |
 | `tpg block <id> <reason>` | Mark blocked (requires `--force`; prefer dependencies instead) |
@@ -149,6 +149,7 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 | `--has-blockers` | list | Show only items with unresolved blockers |
 | `--no-blockers` | list | Show only items with no blockers |
 | `--all` | status | Show all ready tasks (default: limit to 10) |
+| `--resume` | start | Resume an already in-progress task |
 
 ## ID Format
 

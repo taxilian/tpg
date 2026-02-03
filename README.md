@@ -88,7 +88,7 @@ tpg add "User Auth" --template tdd --var 'feature_name="user auth"'
 | `tpg status` | Full project overview |
 | `tpg show <id>` | Task details, logs, dependencies |
 | `tpg add <title>` | Create task (or use `--type epic` for epics) |
-| `tpg start <id>` | Claim work |
+| `tpg start <id> [--resume]` | Claim work (use `--resume` if already in progress) |
 | `tpg log <id> <msg>` | Record progress |
 | `tpg done <id> [msg]` | Complete task |
 | `tpg dep <id> blocks <other>` | Set dependency |

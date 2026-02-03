@@ -9,7 +9,7 @@ When the `$AGENT_ID` environment variable is set, tpg tracks which agent is work
 - **Task ownership tracking**: See which agent claimed which task
 - **Multi-agent coordination**: Distinguish between "my work" and "other agents' work"
 - **Agent project history**: Remember which projects each agent last accessed
-- **Silent takeover**: Agents can claim tasks from each other without errors
+- **Explicit takeover**: Agents must use `--resume` to take over in-progress tasks
 
 ## Environment Variables
 
@@ -46,18 +46,22 @@ When a task reaches a terminal state, the agent assignment is cleared:
 - `tpg block <id>` - clears assignment  
 - `tpg cancel <id>` - clears assignment
 
-### Silent Takeover
+### Explicit Resume / Takeover
 
-If Agent A is working on a task and Agent B runs `tpg start` on the same task, Agent B silently takes over. No error is raised - this is intentional to allow agents to freely pick up work.
+If Agent A is working on a task and Agent B tries to start the same task, `tpg start` will fail by default. Agent B must use `--resume` to take over or continue work on an in-progress task.
 
 ```bash
 # Agent A claims task
 export AGENT_ID="agent-a"
 tpg start ts-abc123
 
-# Agent B takes over (no error)
+# Agent B attempts to take over (fails)
 export AGENT_ID="agent-b"
 tpg start ts-abc123
+# Error: task is already in progress (claimed by agent-a). Use --resume to take over or continue work
+
+# Agent B resumes (explicit takeover)
+tpg start ts-abc123 --resume
 # Task is now assigned to agent-b
 ```
 
@@ -134,16 +138,15 @@ CREATE TABLE agent_sessions (
 
 ## Implementation Notes
 
-### Why Silent Takeover?
+### Why Explicit Resume?
 
-We chose silent takeover (no error when claiming an assigned task) because:
+We chose explicit resume (error unless `--resume` is used) because:
 
-1. **Agent autonomy**: Agents should be free to pick up work without coordination
-2. **Stale state**: Previous agent may have crashed or been interrupted
-3. **Simplicity**: No complex locking or reservation system needed
-4. **Trust**: Assumes agents are working in good faith
+1. **Accidental collision prevention**: Avoid two agents unknowingly working the same task
+2. **Explicit intent**: `--resume` makes takeovers intentional and visible
+3. **Stale recovery**: Still allows recovery when the previous agent is gone
 
-If strict task exclusivity is needed in the future, it can be added via a flag or separate mechanism.
+If a more complex reservation system is needed in the future, it can be added separately.
 
 ### Subagent Detection
 

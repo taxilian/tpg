@@ -21,6 +21,7 @@ import (
 	"github.com/taxilian/tpg/internal/prime"
 	"github.com/taxilian/tpg/internal/templates"
 	"github.com/taxilian/tpg/internal/tui"
+	"github.com/taxilian/tpg/internal/worktree"
 )
 
 // version is set via ldflags at build time, or read from module info
@@ -104,8 +105,10 @@ var (
 	flagWorktree       bool
 	flagWorktreeBranch string
 	flagWorktreeBase   string
+	flagWorktreeAllow  bool
 
 	flagDoctorDryRun bool
+	flagResume       bool
 )
 
 func openDB() (*db.DB, error) {
@@ -214,16 +217,26 @@ Examples:
 			return fmt.Errorf("%s is not an epic", epicID)
 		}
 
+		config, _ := db.LoadConfig()
+
 		// Generate branch name if not provided
 		branch := flagWorktreeBranch
 		if branch == "" {
-			branch = generateWorktreeBranch(item.ID, item.Title)
+			branch = generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
+		}
+		if !flagWorktreeAllow && worktreeRequireEpicID(config) && !branchIncludesEpicID(branch, item.ID) {
+			suggested := generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
+			return fmt.Errorf("branch name must include epic id %q (suggested: %s)", item.ID, suggested)
 		}
 
 		// Determine base branch
 		base := flagWorktreeBase
 		if base == "" {
-			base = "main"
+			parentID := ""
+			if item.ParentID != nil {
+				parentID = *item.ParentID
+			}
+			base = resolveWorktreeBase(database, parentID)
 		}
 
 		// Update the epic with worktree metadata
@@ -231,12 +244,29 @@ Examples:
 			return fmt.Errorf("failed to set worktree metadata: %w", err)
 		}
 
-		fmt.Printf("Updated epic %s with worktree metadata:\n", item.ID)
-		fmt.Printf("  Branch: %s\n", branch)
-		fmt.Printf("  Base:   %s\n", base)
-		fmt.Printf("\nWorktree setup instructions:\n")
-		fmt.Printf("  git worktree add -b %s .worktrees/%s %s\n", branch, item.ID, base)
-		fmt.Printf("  cd .worktrees/%s\n", item.ID)
+		fmt.Printf("Updated epic %s (worktree expected)\n", item.ID)
+		fmt.Printf("  Branch: %s (from %s)\n", branch, base)
+
+		ctx, worktrees := detectWorktreeState()
+		repoRoot := ""
+		if ctx != nil {
+			repoRoot = ctx.RepoRoot
+		}
+		location := worktreeLocationForEpic(config, repoRoot, item.ID)
+
+		if worktrees != nil {
+			if path, ok := worktrees[branch]; ok {
+				location = displayWorktreePath(repoRoot, path)
+				fmt.Printf("\nWorktree detected for branch %s:\n", branch)
+				fmt.Printf("  Location: %s\n", location)
+				database.BackupQuiet()
+				return nil
+			}
+		}
+
+		fmt.Printf("\nWorktree not found. Create it with:\n")
+		fmt.Printf("  git worktree add -b %s %s %s\n", branch, location, base)
+		fmt.Printf("  cd %s\n", location)
 
 		database.BackupQuiet()
 		return nil
@@ -304,6 +334,19 @@ Examples:
 
 		// Print cleanup instructions
 		if item.WorktreeBranch != "" {
+			config, _ := db.LoadConfig()
+			ctx, worktrees := detectWorktreeState()
+			repoRoot := ""
+			if ctx != nil {
+				repoRoot = ctx.RepoRoot
+			}
+			location := worktreeLocationForEpic(config, repoRoot, epicID)
+			if worktrees != nil {
+				if path, ok := worktrees[item.WorktreeBranch]; ok {
+					location = displayWorktreePath(repoRoot, path)
+				}
+			}
+
 			fmt.Printf("\nCleanup instructions:\n")
 
 			// Determine merge target
@@ -323,7 +366,7 @@ Examples:
 
 			fmt.Printf("  git checkout %s\n", mergeTarget)
 			fmt.Printf("  git merge %s\n", item.WorktreeBranch)
-			fmt.Printf("  git worktree remove .worktrees/%s\n", epicID)
+			fmt.Printf("  git worktree remove %s\n", location)
 			fmt.Printf("  git branch -d %s\n", item.WorktreeBranch)
 		}
 
@@ -391,10 +434,6 @@ Examples:
 
 		// Handle template instantiation
 		if flagTemplateID != "" {
-			if flagParent != "" || flagBlocks != "" || flagAfter != "" {
-				return fmt.Errorf("--template cannot be combined with --parent, --blocks, or --after")
-			}
-
 			// Handle template vars from stdin (YAML)
 			varPairs := flagTemplateVars
 			if flagTemplateVarsYAML {
@@ -424,6 +463,32 @@ Examples:
 			if err != nil {
 				return err
 			}
+
+			// Set parent if specified
+			if flagParent != "" {
+				if err := database.SetParent(parentID, flagParent); err != nil {
+					return err
+				}
+			}
+
+			// Add blocking relationship if specified
+			if flagBlocks != "" {
+				// This new item blocks the specified item
+				// (the blocked item depends on this new one)
+				if err := database.AddDep(flagBlocks, parentID); err != nil {
+					return err
+				}
+			}
+
+			// Add dependency relationship if specified
+			if flagAfter != "" {
+				// This new item depends on the specified item
+				// (this new item is blocked by the specified one)
+				if err := database.AddDep(parentID, flagAfter); err != nil {
+					return err
+				}
+			}
+
 			for _, labelName := range flagAddLabels {
 				if err := database.AddLabelToItem(parentID, project, labelName); err != nil {
 					return err
@@ -541,6 +606,8 @@ Examples:
 			}
 		}
 
+		config, _ := db.LoadConfig()
+
 		// Handle worktree metadata for epics
 		if flagWorktree || flagWorktreeBranch != "" {
 			if itemType != model.ItemTypeEpic {
@@ -550,13 +617,17 @@ Examples:
 			// Generate branch name if not provided
 			branch := flagWorktreeBranch
 			if branch == "" {
-				branch = generateWorktreeBranch(item.ID, item.Title)
+				branch = generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
+			}
+			if !flagWorktreeAllow && worktreeRequireEpicID(config) && !branchIncludesEpicID(branch, item.ID) {
+				suggested := generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
+				return fmt.Errorf("branch name must include epic id %q (suggested: %s)", item.ID, suggested)
 			}
 
 			// Determine base branch
 			base := flagWorktreeBase
 			if base == "" {
-				base = "main"
+				base = resolveWorktreeBase(database, flagParent)
 			}
 
 			// Update the epic with worktree metadata
@@ -564,17 +635,32 @@ Examples:
 				return fmt.Errorf("failed to set worktree metadata: %w", err)
 			}
 
-			// Print setup instructions
 			fmt.Println(item.ID)
-			fmt.Fprintf(os.Stderr, "\nWorktree setup instructions:\n")
-			fmt.Fprintf(os.Stderr, "  git worktree add -b %s .worktrees/%s %s\n", branch, item.ID, base)
-			fmt.Fprintf(os.Stderr, "  cd .worktrees/%s\n", item.ID)
+			ctx, worktrees := detectWorktreeState()
+			repoRoot := ""
+			if ctx != nil {
+				repoRoot = ctx.RepoRoot
+			}
+			location := worktreeLocationForEpic(config, repoRoot, item.ID)
+
+			if worktrees != nil {
+				if path, ok := worktrees[branch]; ok {
+					location = displayWorktreePath(repoRoot, path)
+					fmt.Fprintf(os.Stderr, "\nWorktree detected for branch %s:\n", branch)
+					fmt.Fprintf(os.Stderr, "  Location: %s\n", location)
+					goto warnings
+				}
+			}
+
+			fmt.Fprintf(os.Stderr, "\nWorktree not found. Create it with:\n")
+			fmt.Fprintf(os.Stderr, "  git worktree add -b %s %s %s\n", branch, location, base)
+			fmt.Fprintf(os.Stderr, "  cd %s\n", location)
 		} else {
 			fmt.Println(item.ID)
 		}
 
 		// Warn if description is very short (but not empty) - configurable
-		config, _ := db.LoadConfig()
+	warnings:
 		if config != nil && config.ShortDescriptionWarningEnabled() {
 			minWords := config.GetMinDescriptionWords()
 			if description != "" && countWords(description) < minWords {
@@ -595,8 +681,8 @@ func countWords(s string) int {
 }
 
 // generateWorktreeBranch generates a branch name from epic ID and title.
-// Format: feature/<epic-id>-<slug> where slug is lowercase title with non-alnum→hyphens
-func generateWorktreeBranch(epicID, title string) string {
+// Format: <prefix>/<epic-id>-<slug> where slug is lowercase title with non-alnum→hyphens.
+func generateWorktreeBranch(epicID, title, prefix string) string {
 	// Convert title to lowercase
 	slug := strings.ToLower(title)
 
@@ -624,7 +710,156 @@ func generateWorktreeBranch(epicID, title string) string {
 		slug = slug[:50]
 	}
 
-	return fmt.Sprintf("feature/%s-%s", epicID, slug)
+	prefix = normalizeWorktreePrefix(prefix)
+	if slug == "" {
+		if prefix == "" {
+			return epicID
+		}
+		return fmt.Sprintf("%s/%s", prefix, epicID)
+	}
+	if prefix == "" {
+		return fmt.Sprintf("%s-%s", epicID, slug)
+	}
+	return fmt.Sprintf("%s/%s-%s", prefix, epicID, slug)
+}
+
+func normalizeWorktreePrefix(prefix string) string {
+	p := strings.TrimSpace(prefix)
+	p = strings.TrimSuffix(p, "/")
+	return p
+}
+
+func worktreeRoot(config *db.Config) string {
+	if config == nil || config.Worktree.Root == "" {
+		return ".worktrees"
+	}
+	return config.Worktree.Root
+}
+
+func worktreePrefix(config *db.Config) string {
+	if config == nil || config.Worktree.BranchPrefix == "" {
+		return "feature"
+	}
+	return config.Worktree.BranchPrefix
+}
+
+func worktreeRequireEpicID(config *db.Config) bool {
+	if config == nil {
+		return true
+	}
+	return config.Worktree.RequireEpicIDEnabled()
+}
+
+func branchIncludesEpicID(branch, epicID string) bool {
+	if branch == "" || epicID == "" {
+		return false
+	}
+	re := regexp.MustCompile(`(?i)(^|[^a-z0-9])` + regexp.QuoteMeta(epicID) + `([^a-z0-9]|$)`) //nolint:gomnd
+	return re.MatchString(branch)
+}
+
+func detectWorktreeState() (*worktree.Context, map[string]string) {
+	ctx, err := worktree.DetectContext("")
+	if err != nil {
+		return nil, nil
+	}
+	if ctx.RepoRoot == "" {
+		return ctx, nil
+	}
+	worktrees, err := worktree.ListWorktrees(ctx.RepoRoot)
+	if err != nil {
+		return ctx, nil
+	}
+	return ctx, worktrees
+}
+
+func displayWorktreePath(repoRoot, path string) string {
+	if path == "" || repoRoot == "" {
+		return path
+	}
+	rel, err := filepath.Rel(repoRoot, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return path
+	}
+	return rel
+}
+
+func worktreeLocationForEpic(config *db.Config, repoRoot, epicID string) string {
+	root := worktreeRoot(config)
+	if repoRoot == "" {
+		return filepath.Join(root, epicID)
+	}
+	return displayWorktreePath(repoRoot, filepath.Join(repoRoot, root, epicID))
+}
+
+func resolveWorktreeBase(database *db.DB, parentID string) string {
+	if parentID != "" {
+		if parent, err := database.GetItem(parentID); err == nil {
+			if parent.WorktreeBranch != "" {
+				return parent.WorktreeBranch
+			}
+		}
+	}
+	ctx, err := worktree.DetectContext("")
+	if err == nil && ctx.CurrentBranch != "" {
+		return ctx.CurrentBranch
+	}
+	return "main"
+}
+
+func buildWorktreeInfo(rootEpic *model.Item, epicPath []model.Item, config *db.Config) *WorktreeInfo {
+	if rootEpic == nil {
+		return nil
+	}
+	info := &WorktreeInfo{
+		EpicID:    rootEpic.ID,
+		EpicTitle: rootEpic.Title,
+		Branch:    rootEpic.WorktreeBranch,
+		Base:      rootEpic.WorktreeBase,
+	}
+	for _, p := range epicPath {
+		info.Path = append(info.Path, p.ID)
+	}
+
+	ctx, worktrees := detectWorktreeState()
+	repoRoot := ""
+	if ctx != nil {
+		repoRoot = ctx.RepoRoot
+	}
+	location := worktreeLocationForEpic(config, repoRoot, rootEpic.ID)
+
+	var actualPath string
+	if worktrees != nil {
+		if path, ok := worktrees[rootEpic.WorktreeBranch]; ok {
+			info.Exists = true
+			actualPath = path
+			location = displayWorktreePath(repoRoot, path)
+		}
+	}
+	info.Location = location
+
+	if info.Exists && actualPath != "" {
+		if cwd, err := os.Getwd(); err == nil {
+			if worktree.IsWithinDir(cwd, actualPath) {
+				info.InWorktree = true
+			}
+		}
+	}
+
+	return info
+}
+
+func worktreeStatusText(info *WorktreeInfo) string {
+	if info == nil {
+		return ""
+	}
+	if info.Exists {
+		if info.InWorktree {
+			return "worktree exists"
+		}
+		return "not in worktree"
+	}
+	return "worktree not found"
 }
 
 var listCmd = &cobra.Command{
@@ -960,17 +1195,19 @@ Example:
 		if err != nil {
 			return err
 		}
+		config, _ := db.LoadConfig()
+		worktreeInfo := buildWorktreeInfo(rootEpic, epicPath, config)
 
 		// Output based on format
 		switch flagShowFormat {
 		case "json":
-			return printItemJSON(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, rootEpic, epicPath)
+			return printItemJSON(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, worktreeInfo)
 		case "yaml":
-			return printItemYAML(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, rootEpic, epicPath)
+			return printItemYAML(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, worktreeInfo)
 		case "markdown":
-			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, rootEpic, epicPath)
+			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, worktreeInfo)
 		default:
-			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars, rootEpic, epicPath)
+			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars, worktreeInfo, epicPath)
 			if flagShowWithParent && len(parentChain) > 0 {
 				fmt.Printf("\nParent Chain:\n")
 				for _, parent := range parentChain {
@@ -1082,8 +1319,10 @@ var startCmd = &cobra.Command{
 Use this when you begin working on a task. Updates the timestamp
 for stale detection.
 
+If the task is already in progress, use --resume to continue or take over.
+
 Example:
-  tpg start ts-a1b2c3`,
+	  tpg start ts-a1b2c3`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -1096,6 +1335,15 @@ Example:
 		item, err := database.GetItem(args[0])
 		if err != nil {
 			return err
+		}
+
+		resuming := item.Status == model.StatusInProgress
+		if resuming && !flagResume {
+			agentInfo := ""
+			if item.AgentID != nil && *item.AgentID != "" {
+				agentInfo = fmt.Sprintf(" (claimed by %s)", *item.AgentID)
+			}
+			return fmt.Errorf("task %s is already in progress%s. Use --resume to take over or continue work", item.ID, agentInfo)
 		}
 
 		agentCtx := db.GetAgentContext()
@@ -1111,26 +1359,47 @@ Example:
 
 		// Auto-log the start event for timeline
 		logMsg := "Started"
+		if resuming {
+			logMsg = "Resumed"
+		}
 		if agentCtx.IsActive() {
-			logMsg = fmt.Sprintf("Started (agent: %s)", agentCtx.ID)
+			logMsg = fmt.Sprintf("%s (agent: %s)", logMsg, agentCtx.ID)
 		}
 		_ = database.AddLog(args[0], logMsg)
 
-		fmt.Printf("Started %s\n", args[0])
+		if resuming {
+			fmt.Printf("Resuming %s (already in progress)\n", args[0])
+		} else {
+			fmt.Printf("Started %s\n", args[0])
+		}
 
 		// Check if task belongs to a worktree epic
-		rootEpic, _, err := database.GetRootEpic(item.ID)
+		rootEpic, epicPath, err := database.GetRootEpic(item.ID)
 		if err != nil {
 			return err
 		}
 
 		if rootEpic != nil {
-			// Task is under a worktree epic
-			fmt.Fprintf(os.Stderr, "\n📁 Worktree: %s - %s\n", rootEpic.ID, rootEpic.Title)
-			fmt.Fprintf(os.Stderr, "   Branch: %s\n", rootEpic.WorktreeBranch)
-			fmt.Fprintf(os.Stderr, "   Location: .worktrees/%s\n", rootEpic.ID)
-			fmt.Fprintf(os.Stderr, "\n   To work in the correct directory:\n")
-			fmt.Fprintf(os.Stderr, "   cd .worktrees/%s\n", rootEpic.ID)
+			config, _ := db.LoadConfig()
+			worktreeInfo := buildWorktreeInfo(rootEpic, epicPath, config)
+			if worktreeInfo != nil && !worktreeInfo.InWorktree {
+				fmt.Fprintf(os.Stderr, "\nWorktree: %s - %s\n", worktreeInfo.EpicID, worktreeInfo.EpicTitle)
+				fmt.Fprintf(os.Stderr, "  Branch: %s\n", worktreeInfo.Branch)
+				fmt.Fprintf(os.Stderr, "  Location: %s\n", worktreeInfo.Location)
+
+				base := worktreeInfo.Base
+				if base == "" {
+					base = "main"
+				}
+				if worktreeInfo.Exists {
+					fmt.Fprintf(os.Stderr, "\n  To work in the correct directory:\n")
+					fmt.Fprintf(os.Stderr, "    cd %s\n", worktreeInfo.Location)
+				} else {
+					fmt.Fprintf(os.Stderr, "\n  Worktree not found. Create it with:\n")
+					fmt.Fprintf(os.Stderr, "    git worktree add -b %s %s %s\n", worktreeInfo.Branch, worktreeInfo.Location, base)
+					fmt.Fprintf(os.Stderr, "    cd %s\n", worktreeInfo.Location)
+				}
+			}
 		}
 
 		return nil
@@ -4508,7 +4777,8 @@ func init() {
 	addCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
 	addCmd.Flags().BoolVar(&flagWorktree, "worktree", false, "Create epic with worktree metadata (generates branch name)")
 	addCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name for worktree (default: auto-generated)")
-	addCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch for worktree (default: main)")
+	addCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch for worktree (default: parent worktree branch or current branch)")
+	addCmd.Flags().BoolVar(&flagWorktreeAllow, "allow-any-branch", false, "Allow branch names that do not include the epic ID")
 
 	// init flags
 	initCmd.Flags().StringVar(&flagInitTaskPrefix, "prefix", "", "Task ID prefix (default: ts)")
@@ -4536,6 +4806,9 @@ func init() {
 
 	// done flags
 	doneCmd.Flags().BoolVar(&flagDoneOverride, "override", false, "Allow completion with unmet dependencies")
+
+	// start flags
+	startCmd.Flags().BoolVar(&flagResume, "resume", false, "Resume an already in-progress task")
 
 	// onboard flags
 	onboardCmd.Flags().BoolVar(&flagForce, "force", false, "Replace existing Task Tracking section")
@@ -4621,7 +4894,8 @@ func init() {
 
 	// epic subcommands and flags
 	epicWorktreeCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name (default: auto-generated)")
-	epicWorktreeCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch (default: main)")
+	epicWorktreeCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch (default: parent worktree branch or current branch)")
+	epicWorktreeCmd.Flags().BoolVar(&flagWorktreeAllow, "allow-any-branch", false, "Allow branch names that do not include the epic ID")
 	epicCmd.AddCommand(epicWorktreeCmd)
 	epicCmd.AddCommand(epicFinishCmd)
 	rootCmd.AddCommand(epicCmd)
@@ -4852,7 +5126,7 @@ type DepEdgeJSON struct {
 	DependsOnStatus string `json:"depends_on_status"`
 }
 
-func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool, rootEpic *model.Item, epicPath []model.Item) {
+func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool, worktreeInfo *WorktreeInfo, epicPath []model.Item) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
@@ -4873,14 +5147,15 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 	}
 
 	// Display worktree information if applicable
-	if rootEpic != nil {
+	if worktreeInfo != nil {
 		fmt.Printf("\nWorktree:\n")
-		fmt.Printf("  Epic:     %s - %s\n", rootEpic.ID, rootEpic.Title)
-		fmt.Printf("  Branch:   %s\n", rootEpic.WorktreeBranch)
-		fmt.Printf("  Location: .worktrees/%s\n", rootEpic.ID)
-
-		// Check if worktree exists (we can't actually check, but we can show instructions)
-		fmt.Printf("  Status:   (check with: git worktree list)\n")
+		fmt.Printf("  Epic:     %s - %s\n", worktreeInfo.EpicID, worktreeInfo.EpicTitle)
+		fmt.Printf("  Branch:   %s\n", worktreeInfo.Branch)
+		if worktreeInfo.Base != "" {
+			fmt.Printf("  Base:     %s\n", worktreeInfo.Base)
+		}
+		fmt.Printf("  Location: %s\n", worktreeInfo.Location)
+		fmt.Printf("  Status:   %s\n", worktreeStatusText(worktreeInfo))
 
 		// Show path from epic to this item
 		if len(epicPath) > 1 {
@@ -4889,14 +5164,23 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 				if i > 0 {
 					fmt.Print(" -> ")
 				}
-				fmt.Print(pathItem.ID)
+				fmt.Printf("%s \"%s\"", pathItem.ID, pathItem.Title)
 			}
 			fmt.Println()
 		}
 
-		fmt.Printf("\n  To create worktree:\n")
-		fmt.Printf("    git worktree add -b %s .worktrees/%s %s\n", rootEpic.WorktreeBranch, rootEpic.ID, rootEpic.WorktreeBase)
-		fmt.Printf("    cd .worktrees/%s\n", rootEpic.ID)
+		base := worktreeInfo.Base
+		if base == "" {
+			base = "main"
+		}
+		if !worktreeInfo.Exists {
+			fmt.Printf("\n  To create worktree:\n")
+			fmt.Printf("    git worktree add -b %s %s %s\n", worktreeInfo.Branch, worktreeInfo.Location, base)
+			fmt.Printf("    cd %s\n", worktreeInfo.Location)
+		} else if !worktreeInfo.InWorktree {
+			fmt.Printf("\n  To work in the correct directory:\n")
+			fmt.Printf("    cd %s\n", worktreeInfo.Location)
+		}
 	}
 
 	fmt.Printf("\nLatest Update:\n")
@@ -4992,15 +5276,17 @@ type ShowData struct {
 
 // WorktreeInfo represents worktree context for an item
 type WorktreeInfo struct {
-	EpicID    string   `json:"epic_id" yaml:"epic_id"`
-	EpicTitle string   `json:"epic_title" yaml:"epic_title"`
-	Branch    string   `json:"branch" yaml:"branch"`
-	Base      string   `json:"base" yaml:"base"`
-	Location  string   `json:"location" yaml:"location"`
-	Path      []string `json:"path,omitempty" yaml:"path,omitempty"`
+	EpicID     string   `json:"epic_id" yaml:"epic_id"`
+	EpicTitle  string   `json:"epic_title" yaml:"epic_title"`
+	Branch     string   `json:"branch" yaml:"branch"`
+	Base       string   `json:"base" yaml:"base"`
+	Location   string   `json:"location" yaml:"location"`
+	Exists     bool     `json:"exists" yaml:"exists"`
+	InWorktree bool     `json:"in_worktree" yaml:"in_worktree"`
+	Path       []string `json:"path,omitempty" yaml:"path,omitempty"`
 }
 
-func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, rootEpic *model.Item, epicPath []model.Item) error {
+func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, worktreeInfo *WorktreeInfo) error {
 	data := ShowData{
 		Item:           item,
 		Logs:           logs,
@@ -5014,20 +5300,8 @@ func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers [
 		DepChain:       depChain,
 	}
 
-	// Add worktree info if applicable
-	if rootEpic != nil {
-		var pathIDs []string
-		for _, p := range epicPath {
-			pathIDs = append(pathIDs, p.ID)
-		}
-		data.Worktree = &WorktreeInfo{
-			EpicID:    rootEpic.ID,
-			EpicTitle: rootEpic.Title,
-			Branch:    rootEpic.WorktreeBranch,
-			Base:      rootEpic.WorktreeBase,
-			Location:  ".worktrees/" + rootEpic.ID,
-			Path:      pathIDs,
-		}
+	if worktreeInfo != nil {
+		data.Worktree = worktreeInfo
 	}
 
 	encoder := json.NewEncoder(os.Stdout)
@@ -5035,7 +5309,7 @@ func printItemJSON(item *model.Item, logs []model.Log, deps []string, blockers [
 	return encoder.Encode(data)
 }
 
-func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, rootEpic *model.Item, epicPath []model.Item) error {
+func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, worktreeInfo *WorktreeInfo) error {
 	data := ShowData{
 		Item:           item,
 		Logs:           logs,
@@ -5049,20 +5323,8 @@ func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers [
 		DepChain:       depChain,
 	}
 
-	// Add worktree info if applicable
-	if rootEpic != nil {
-		var pathIDs []string
-		for _, p := range epicPath {
-			pathIDs = append(pathIDs, p.ID)
-		}
-		data.Worktree = &WorktreeInfo{
-			EpicID:    rootEpic.ID,
-			EpicTitle: rootEpic.Title,
-			Branch:    rootEpic.WorktreeBranch,
-			Base:      rootEpic.WorktreeBase,
-			Location:  ".worktrees/" + rootEpic.ID,
-			Path:      pathIDs,
-		}
+	if worktreeInfo != nil {
+		data.Worktree = worktreeInfo
 	}
 
 	// Simple YAML output - in production would use a YAML library
@@ -5120,6 +5382,8 @@ func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers [
 		fmt.Printf("  branch: %s\n", data.Worktree.Branch)
 		fmt.Printf("  base: %s\n", data.Worktree.Base)
 		fmt.Printf("  location: %s\n", data.Worktree.Location)
+		fmt.Printf("  exists: %v\n", data.Worktree.Exists)
+		fmt.Printf("  in_worktree: %v\n", data.Worktree.InWorktree)
 		if len(data.Worktree.Path) > 0 {
 			fmt.Printf("  path: [%s]\n", strings.Join(data.Worktree.Path, ", "))
 		}
@@ -5127,7 +5391,7 @@ func printItemYAML(item *model.Item, logs []model.Log, deps []string, blockers [
 	return nil
 }
 
-func printItemMarkdown(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, rootEpic *model.Item, epicPath []model.Item) error {
+func printItemMarkdown(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, children []model.Item, parentChain []model.Item, depChain []db.DepEdge, worktreeInfo *WorktreeInfo) error {
 	fmt.Printf("# %s\n\n", item.Title)
 	fmt.Printf("**ID:** %s  \n", item.ID)
 	fmt.Printf("**Type:** %s  \n", item.Type)
@@ -5191,21 +5455,17 @@ func printItemMarkdown(item *model.Item, logs []model.Log, deps []string, blocke
 		fmt.Println()
 	}
 
-	if rootEpic != nil {
+	if worktreeInfo != nil {
 		fmt.Printf("## Worktree\n\n")
-		fmt.Printf("**Epic:** %s - %s  \n", rootEpic.ID, rootEpic.Title)
-		fmt.Printf("**Branch:** %s  \n", rootEpic.WorktreeBranch)
-		fmt.Printf("**Base:** %s  \n", rootEpic.WorktreeBase)
-		fmt.Printf("**Location:** .worktrees/%s  \n", rootEpic.ID)
-		if len(epicPath) > 1 {
-			fmt.Printf("**Path:** ")
-			for i, pathItem := range epicPath {
-				if i > 0 {
-					fmt.Print(" → ")
-				}
-				fmt.Print(pathItem.ID)
-			}
-			fmt.Println()
+		fmt.Printf("**Epic:** %s - %s  \n", worktreeInfo.EpicID, worktreeInfo.EpicTitle)
+		fmt.Printf("**Branch:** %s  \n", worktreeInfo.Branch)
+		if worktreeInfo.Base != "" {
+			fmt.Printf("**Base:** %s  \n", worktreeInfo.Base)
+		}
+		fmt.Printf("**Location:** %s  \n", worktreeInfo.Location)
+		fmt.Printf("**Status:** %s  \n", worktreeStatusText(worktreeInfo))
+		if len(worktreeInfo.Path) > 1 {
+			fmt.Printf("**Path:** %s\n", strings.Join(worktreeInfo.Path, " → "))
 		}
 		fmt.Println()
 	}
