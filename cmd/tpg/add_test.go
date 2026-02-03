@@ -1,11 +1,126 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
 )
+
+func setupAddCommandTest(t *testing.T) *db.DB {
+	t.Helper()
+
+	workDir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatalf("failed to change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+	})
+
+	if _, err := db.InitProject("", ""); err != nil {
+		t.Fatalf("failed to init project: %v", err)
+	}
+
+	dbPath := filepath.Join(workDir, ".tpg", "tpg.db")
+	t.Setenv("TPG_DB", dbPath)
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	if err := database.Init(); err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+
+	return database
+}
+
+func resetAddCmdFlags() {
+	flagTemplateID = ""
+	flagTemplateVars = nil
+	flagTemplateVarsYAML = false
+	flagEpic = false
+	flagType = ""
+	flagPrefix = ""
+	flagDescription = ""
+	flagPriority = 0
+	flagParent = ""
+	flagBlocks = ""
+	flagAfter = ""
+	flagAddLabels = nil
+	flagDryRun = false
+	flagWorktree = false
+	flagWorktreeBranch = ""
+	flagWorktreeBase = ""
+	flagWorktreeAllow = false
+	flagProject = ""
+}
+
+func captureStdoutAndStderr(f func()) (string, string) {
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	stdoutR, stdoutW, _ := os.Pipe()
+	stderrR, stderrW, _ := os.Pipe()
+	defer func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	}()
+
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+	f()
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	_, _ = io.Copy(&stdoutBuf, stdoutR)
+	_, _ = io.Copy(&stderrBuf, stderrR)
+	_ = stdoutR.Close()
+	_ = stderrR.Close()
+
+	return stdoutBuf.String(), stderrBuf.String()
+}
+
+func captureCombinedOutput(f func()) string {
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	defer func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	}()
+
+	os.Stdout = w
+	os.Stderr = w
+	f()
+	_ = w.Close()
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
+	return buf.String()
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
 
 func TestAddCmd_ParentFlag(t *testing.T) {
 	database := setupTestDB(t)
@@ -283,5 +398,144 @@ func TestCountWords(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("countWords(%q) = %d, want %d", tt.input, got, tt.expected)
 		}
+	}
+}
+
+func TestAddCmd_EmptyDescriptionWarnsOnStderr(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	var runErr error
+	stdout, stderr := captureStdoutAndStderr(func() {
+		runErr = addCmd.RunE(addCmd, []string{"Empty description warning"})
+	})
+	if runErr != nil {
+		t.Fatalf("expected add command to succeed, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "WARNING: This description is very short") {
+		t.Fatalf("expected warning on stderr, got %q", stderr)
+	}
+	if strings.Contains(stdout, "WARNING: This description is very short") {
+		t.Fatalf("expected warning to stay on stderr, got stdout %q", stdout)
+	}
+}
+
+func TestAddCmd_EmptyDescriptionWarningPrintedBeforeID(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	var runErr error
+	output := captureCombinedOutput(func() {
+		runErr = addCmd.RunE(addCmd, []string{"Empty description ordering"})
+	})
+	if runErr != nil {
+		t.Fatalf("expected add command to succeed, got %v", runErr)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	warningIndex := -1
+	idIndex := -1
+	idLine := regexp.MustCompile(`^ts-[a-z0-9]+$`)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if warningIndex == -1 && strings.HasPrefix(trimmed, "WARNING: This description is very short") {
+			warningIndex = i
+		}
+		if idIndex == -1 && idLine.MatchString(trimmed) {
+			idIndex = i
+		}
+	}
+	if warningIndex == -1 {
+		t.Fatalf("expected warning line in output, got %q", output)
+	}
+	if idIndex == -1 {
+		t.Fatalf("expected item id line in output, got %q", output)
+	}
+	if warningIndex > idIndex {
+		t.Fatalf("expected warning before item id, got warning at %d and id at %d", warningIndex, idIndex)
+	}
+}
+
+func TestAddCmd_ShortDescriptionWarnsForNonEmptyDescription(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	flagDescription = "Short description"
+
+	var runErr error
+	_, stderr := captureStdoutAndStderr(func() {
+		runErr = addCmd.RunE(addCmd, []string{"Short description warning"})
+	})
+	if runErr != nil {
+		t.Fatalf("expected add command to succeed, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "WARNING: This description is very short") {
+		t.Fatalf("expected warning for short description, got %q", stderr)
+	}
+}
+
+func TestAddCmd_ShortDescriptionWarningDisabledByConfig(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	config := &db.Config{
+		Warnings: db.WarningsConfig{
+			ShortDescription: boolPtr(false),
+		},
+	}
+	if err := db.SaveConfig(config); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	flagDescription = "Short description"
+
+	var runErr error
+	_, stderr := captureStdoutAndStderr(func() {
+		runErr = addCmd.RunE(addCmd, []string{"Short description warning disabled"})
+	})
+	if runErr != nil {
+		t.Fatalf("expected add command to succeed, got %v", runErr)
+	}
+	if strings.Contains(stderr, "WARNING: This description is very short") {
+		t.Fatalf("expected warning to be disabled, got %q", stderr)
+	}
+}
+
+func TestAddCmd_TemplateSkipsShortDescriptionWarning(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	templatesDir := filepath.Join(".tpg", "templates")
+	if err := os.MkdirAll(templatesDir, 0755); err != nil {
+		t.Fatalf("failed to create templates dir: %v", err)
+	}
+
+	content := `title: Template Task
+description: Template description
+steps:
+  - id: step1
+    title: First step
+    description: Do the first thing
+`
+	if err := os.WriteFile(filepath.Join(templatesDir, "simple-template.yaml"), []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write template: %v", err)
+	}
+
+	flagTemplateID = "simple-template"
+
+	var runErr error
+	_, stderr := captureStdoutAndStderr(func() {
+		runErr = addCmd.RunE(addCmd, []string{"Template-based task"})
+	})
+	if runErr != nil {
+		t.Fatalf("expected add command to succeed, got %v", runErr)
+	}
+	if strings.Contains(stderr, "WARNING: This description is very short") {
+		t.Fatalf("expected template instantiation to skip warnings, got %q", stderr)
 	}
 }

@@ -570,6 +570,17 @@ Examples:
 			fmt.Println("\nNo task was created (dry-run mode).")
 			return nil
 		}
+
+		config, _ := db.LoadConfig()
+
+		// Warn if description is very short (including empty) - configurable
+		if config != nil && config.ShortDescriptionWarningEnabled() {
+			minWords := config.GetMinDescriptionWords()
+			if countWords(description) < minWords {
+				fmt.Fprintf(os.Stderr, "\nWARNING: This description is very short (%d words, recommend %d+). Does it include\nall context needed for someone not part of the main discussion to understand the task?\nConsider extending with: tpg edit %s --desc\n", countWords(description), minWords, item.ID)
+			}
+		}
+
 		if err := database.CreateItem(item); err != nil {
 			return err
 		}
@@ -606,8 +617,6 @@ Examples:
 			}
 		}
 
-		config, _ := db.LoadConfig()
-
 		// Handle worktree metadata for epics
 		if flagWorktree || flagWorktreeBranch != "" {
 			if itemType != model.ItemTypeEpic {
@@ -643,29 +652,22 @@ Examples:
 			}
 			location := worktreeLocationForEpic(config, repoRoot, item.ID)
 
+			foundWorktree := false
 			if worktrees != nil {
 				if path, ok := worktrees[branch]; ok {
 					location = displayWorktreePath(repoRoot, path)
 					fmt.Fprintf(os.Stderr, "\nWorktree detected for branch %s:\n", branch)
 					fmt.Fprintf(os.Stderr, "  Location: %s\n", location)
-					goto warnings
+					foundWorktree = true
 				}
 			}
-
-			fmt.Fprintf(os.Stderr, "\nWorktree not found. Create it with:\n")
-			fmt.Fprintf(os.Stderr, "  git worktree add -b %s %s %s\n", branch, location, base)
-			fmt.Fprintf(os.Stderr, "  cd %s\n", location)
+			if !foundWorktree {
+				fmt.Fprintf(os.Stderr, "\nWorktree not found. Create it with:\n")
+				fmt.Fprintf(os.Stderr, "  git worktree add -b %s %s %s\n", branch, location, base)
+				fmt.Fprintf(os.Stderr, "  cd %s\n", location)
+			}
 		} else {
 			fmt.Println(item.ID)
-		}
-
-		// Warn if description is very short (but not empty) - configurable
-	warnings:
-		if config != nil && config.ShortDescriptionWarningEnabled() {
-			minWords := config.GetMinDescriptionWords()
-			if description != "" && countWords(description) < minWords {
-				fmt.Fprintf(os.Stderr, "\nWARNING: This description is very short (%d words, recommend %d+). Does it include\nall context needed for someone not part of the main discussion to understand the task?\nConsider extending with: tpg edit %s --desc\n", countWords(description), minWords, item.ID)
-			}
 		}
 
 		// Backup after successful mutation
