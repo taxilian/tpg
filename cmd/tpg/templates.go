@@ -215,8 +215,10 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 	// Generate worktree metadata if applicable (only for epics)
 	worktreeBranch := ""
 	worktreeBase := "main"
+	config, _ := db.LoadConfig()
 	if useWorktree && parentType == model.ItemTypeEpic {
-		worktreeBranch = generateWorktreeBranch(parentID, title)
+		worktreeBranch = generateWorktreeBranch(parentID, title, worktreePrefix(config))
+		worktreeBase = resolveWorktreeBase(database, "")
 		// Check for custom base branch in variables
 		if base, ok := vars["base_branch"]; ok && base != "" {
 			worktreeBase = base
