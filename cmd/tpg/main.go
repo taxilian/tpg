@@ -3899,13 +3899,15 @@ func installOpencodePlugin(force bool) (bool, bool, bool, error) {
 			return false, false, false, nil
 		}
 
-		// File is unmodified, safe to update
-		if oldVersion == version {
-			// Already up to date
+		// File is unmodified, check if content actually changed
+		newSourceHash := calculatePluginHash(source)
+		if newSourceHash == oldHash {
+			// Source content is identical, no update needed
 			return false, true, false, nil
 		}
 
-		// Need to update - fall through to write
+		// Content changed - this is an upgrade
+		fmt.Printf("\nUpgrading OpenCode plugin from %s to %s\n", oldVersion, version)
 	} else if err != nil {
 		// File doesn't exist, will install
 	}
