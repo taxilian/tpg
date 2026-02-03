@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
 	"github.com/taxilian/tpg/internal/templates"
@@ -155,35 +156,29 @@ type Model struct {
 
 // CreateWizardState holds all data during item creation
 type CreateWizardState struct {
-	// Step 1: Type
+	// Step 1: Type (popup)
 	SelectedType model.ItemType
+	TypeCursor   int
 
-	// Step 2: Basic Config
-	Priority         int
-	Project          string
-	UseCustomProject bool
+	// Step 2: Title
+	Title string
 
-	// Step 3: Relationships
-	ParentID     string
-	Dependencies []string
-	Blockers     []string
+	// Step 3 (epic only): Worktree
+	UseWorktree        bool
+	WorktreeBranch     string
+	WorktreeBase       string
+	WorktreeField      int  // 0 = branch, 1 = base
+	WorktreeBranchAuto bool // true when auto-generated from title
 
-	// Step 4: Worktree (epics only)
-	UseWorktree    bool
-	WorktreeBranch string
-	WorktreeBase   string
-
-	// Step 5: Method
-	UseTemplate      bool
-	SelectedTemplate *templates.Template
-
-	// Step 6: Title/Variables/Labels
-	Title        string
-	Labels       []string
-	TemplateVars map[string]string
-
-	// Step 7: Description
+	// Step 3/4: Description
 	Description string
+}
+
+// TypeOption represents an available item type with metadata.
+type TypeOption struct {
+	Type   model.ItemType
+	Prefix string // e.g., "ts", "ep", "bg"
+	Desc   string // optional description
 }
 
 // graphNode represents a task in the dependency graph view.
@@ -275,6 +270,17 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func trimLastRune(text string) string {
+	if text == "" {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return ""
+	}
+	return string(runes[:len(runes)-1])
 }
 
 // listVisibleHeight returns the number of items that can be displayed in the list view.
@@ -377,9 +383,8 @@ func New(database *db.DB, project string) Model {
 		treeExpanded:     make(map[string]bool),
 		createWizardStep: 0, // 0 = not in wizard
 		createWizardState: CreateWizardState{
-			Priority:     2, // Default medium priority
-			Project:      project,
-			TemplateVars: make(map[string]string),
+			SelectedType: model.ItemTypeTask,
+			TypeCursor:   0,
 		},
 	}
 }
@@ -1128,9 +1133,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewMode = ViewCreateWizard
 		m.createWizardStep = 1
 		m.createWizardState = CreateWizardState{
-			Priority:     2,
-			Project:      m.project,
-			TemplateVars: make(map[string]string),
+			SelectedType: model.ItemTypeTask,
+			TypeCursor:   0,
 		}
 		return m, nil
 
@@ -1698,91 +1702,205 @@ func (m Model) handleGraphKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleCreateWizardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		// Cancel wizard
-		m.viewMode = ViewList
-		m.createWizardStep = 0
-		m.message = "Creation canceled"
-		return m, nil
-
-	case "enter":
-		return m.advanceWizardStep()
-
-	case "left", "h":
-		// Go back
-		if m.createWizardStep > 1 {
-			m.createWizardStep--
-			// Skip worktree step if not an epic
-			if m.createWizardStep == 4 && m.createWizardState.SelectedType != model.ItemTypeEpic {
-				m.createWizardStep = 3
+	if m.isWizardDescriptionStep() {
+		switch msg.String() {
+		case "esc":
+			m.textarea.Blur()
+			if m.createWizardStep > 1 {
+				m.createWizardStep--
 			}
+			return m, nil
+		case "ctrl+s", "ctrl+enter":
+			m.createWizardState.Description = m.textarea.Value()
+			return m.advanceWizardStep()
 		}
-		return m, nil
 
-	case "tab":
-		// Switch between fields in current step
-		return m.handleWizardTab()
-
-	case "up", "k":
-		return m.handleWizardUp()
-
-	case "down", "j":
-		return m.handleWizardDown()
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		m.createWizardState.Description = m.textarea.Value()
+		return m, cmd
 	}
 
-	// Handle character input for text fields
-	if len(msg.String()) == 1 {
-		return m.handleWizardCharInput(msg.String())
+	switch m.createWizardStep {
+	case 1:
+		switch msg.String() {
+		case "esc":
+			m.viewMode = ViewList
+			m.createWizardStep = 0
+			m.message = "Creation canceled"
+			return m, nil
+		case "enter":
+			return m.advanceWizardStep()
+		case "up", "k":
+			return m.handleWizardUp()
+		case "down", "j":
+			return m.handleWizardDown()
+		}
+	case 2:
+		switch msg.String() {
+		case "esc":
+			m.createWizardStep = 1
+			return m, nil
+		case "enter":
+			return m.advanceWizardStep()
+		case "backspace":
+			return m.handleWizardBackspace()
+		}
+		if len(msg.String()) == 1 {
+			return m.handleWizardCharInput(msg.String())
+		}
+	case 3:
+		switch msg.String() {
+		case "esc":
+			m.createWizardStep = 2
+			return m, nil
+		case "enter":
+			return m.advanceWizardStep()
+		case "tab":
+			return m.handleWizardTab()
+		case "up", "k":
+			return m.handleWizardUp()
+		case "down", "j":
+			return m.handleWizardDown()
+		case "backspace":
+			return m.handleWizardBackspace()
+		}
+		if len(msg.String()) == 1 {
+			return m.handleWizardCharInput(msg.String())
+		}
 	}
 
 	return m, nil
 }
 
 func (m Model) handleWizardTab() (tea.Model, tea.Cmd) {
-	// Tab handling depends on current step
-	switch m.createWizardStep {
-	case 1: // Type selection - no tab fields
-	case 2: // Basic config - toggle between priority and project
-		m.createWizardState.UseCustomProject = !m.createWizardState.UseCustomProject
-	case 3: // Relationships - toggle between parent, dependencies, blockers
-		// Cycle through relationship fields
-	case 4: // Worktree - toggle between fields
-	case 5: // Method - toggle between ad-hoc and template
-		m.createWizardState.UseTemplate = !m.createWizardState.UseTemplate
-	case 6: // Title/Variables
-	case 7: // Description
+	if m.createWizardStep != 3 || m.createWizardState.SelectedType != model.ItemTypeEpic || !m.createWizardState.UseWorktree {
+		return m, nil
+	}
+	if m.createWizardState.WorktreeField == 0 {
+		m.createWizardState.WorktreeField = 1
+	} else {
+		m.createWizardState.WorktreeField = 0
 	}
 	return m, nil
+}
+
+func (m Model) getPrefixForType(itemType model.ItemType) string {
+	config, err := db.LoadConfig()
+	if err != nil || config == nil {
+		return string(itemType)
+	}
+
+	prefix := strings.TrimSpace(config.GetPrefixForType(string(itemType)))
+	if prefix == "" {
+		return string(itemType)
+	}
+	if prefix == "it" && itemType != model.ItemTypeTask && itemType != model.ItemTypeEpic {
+		return string(itemType)
+	}
+	return prefix
+}
+
+func (m Model) getAvailableTypes() []TypeOption {
+	config, err := db.LoadConfig()
+	if err != nil {
+		config = nil
+	}
+
+	options := []TypeOption{}
+	seen := make(map[model.ItemType]bool)
+
+	prefixForType := func(itemType model.ItemType) string {
+		if config != nil {
+			return config.GetPrefixForType(string(itemType))
+		}
+		switch itemType {
+		case model.ItemTypeTask:
+			return db.DefaultTaskPrefix
+		case model.ItemTypeEpic:
+			return db.DefaultEpicPrefix
+		default:
+			return "it"
+		}
+	}
+
+	addType := func(itemType model.ItemType, desc string) {
+		if itemType == "" || seen[itemType] {
+			return
+		}
+		options = append(options, TypeOption{
+			Type:   itemType,
+			Prefix: prefixForType(itemType),
+			Desc:   desc,
+		})
+		seen[itemType] = true
+	}
+
+	// Default types
+	addType(model.ItemTypeTask, "Standard task (default)")
+	addType(model.ItemTypeEpic, "Large body of work with child tasks")
+
+	// Config prefixes
+	if config != nil {
+		if config.Prefixes.Task != "" {
+			addType(model.ItemTypeTask, "Standard task (default)")
+		}
+		if config.Prefixes.Epic != "" {
+			addType(model.ItemTypeEpic, "Large body of work with child tasks")
+		}
+		for key := range config.CustomPrefixes {
+			itemType := model.ItemType(strings.TrimSpace(key))
+			addType(itemType, "")
+		}
+	}
+
+	// Database types
+	if m.db != nil {
+		if dbTypes, err := m.db.GetDistinctTypes(); err == nil {
+			for _, itemType := range dbTypes {
+				addType(itemType, "")
+			}
+		}
+	}
+
+	// Sort: task, epic, then alphabetical
+	sort.Slice(options, func(i, j int) bool {
+		order := func(itemType model.ItemType) int {
+			switch itemType {
+			case model.ItemTypeTask:
+				return 0
+			case model.ItemTypeEpic:
+				return 1
+			default:
+				return 2
+			}
+		}
+		left := order(options[i].Type)
+		right := order(options[j].Type)
+		if left != right {
+			return left < right
+		}
+		return string(options[i].Type) < string(options[j].Type)
+	})
+
+	return options
 }
 
 func (m Model) handleWizardUp() (tea.Model, tea.Cmd) {
 	switch m.createWizardStep {
 	case 1: // Type selection
-		types := []model.ItemType{
-			model.ItemTypeTask,
-			model.ItemTypeEpic,
+		types := m.getAvailableTypes()
+		if len(types) == 0 {
+			return m, nil
 		}
-		// Find current index and move up
-		for i, t := range types {
-			if t == m.createWizardState.SelectedType && i > 0 {
-				m.createWizardState.SelectedType = types[i-1]
-				break
-			}
+		if m.createWizardState.TypeCursor > 0 {
+			m.createWizardState.TypeCursor--
+			m.createWizardState.SelectedType = types[m.createWizardState.TypeCursor].Type
 		}
-	case 2: // Priority selection
-		if m.createWizardState.Priority > 1 {
-			m.createWizardState.Priority--
-		}
-	case 5: // Template selection
-		if m.createWizardState.UseTemplate && len(m.templates) > 0 {
-			// Find current template index
-			for i, t := range m.templates {
-				if m.createWizardState.SelectedTemplate != nil && t.ID == m.createWizardState.SelectedTemplate.ID && i > 0 {
-					m.createWizardState.SelectedTemplate = m.templates[i-1]
-					break
-				}
-			}
+	case 3: // Worktree toggle (epics only)
+		if m.createWizardState.SelectedType == model.ItemTypeEpic {
+			m.createWizardState.UseWorktree = true
+			m = m.ensureWizardWorktreeDefaults()
 		}
 	}
 	return m, nil
@@ -1791,54 +1909,56 @@ func (m Model) handleWizardUp() (tea.Model, tea.Cmd) {
 func (m Model) handleWizardDown() (tea.Model, tea.Cmd) {
 	switch m.createWizardStep {
 	case 1: // Type selection
-		types := []model.ItemType{
-			model.ItemTypeTask,
-			model.ItemTypeEpic,
+		types := m.getAvailableTypes()
+		if len(types) == 0 {
+			return m, nil
 		}
-		// Find current index and move down
-		for i, t := range types {
-			if t == m.createWizardState.SelectedType && i < len(types)-1 {
-				m.createWizardState.SelectedType = types[i+1]
-				break
-			}
+		if m.createWizardState.TypeCursor < len(types)-1 {
+			m.createWizardState.TypeCursor++
+			m.createWizardState.SelectedType = types[m.createWizardState.TypeCursor].Type
 		}
-	case 2: // Priority selection
-		if m.createWizardState.Priority < 5 {
-			m.createWizardState.Priority++
-		}
-	case 5: // Template selection
-		if m.createWizardState.UseTemplate && len(m.templates) > 0 {
-			// Find current template index
-			for i, t := range m.templates {
-				if m.createWizardState.SelectedTemplate != nil && t.ID == m.createWizardState.SelectedTemplate.ID && i < len(m.templates)-1 {
-					m.createWizardState.SelectedTemplate = m.templates[i+1]
-					break
-				}
-			}
-			// If no template selected yet, select first
-			if m.createWizardState.SelectedTemplate == nil {
-				m.createWizardState.SelectedTemplate = m.templates[0]
-			}
+	case 3: // Worktree toggle (epics only)
+		if m.createWizardState.SelectedType == model.ItemTypeEpic {
+			m.createWizardState.UseWorktree = false
 		}
 	}
 	return m, nil
 }
 
 func (m Model) handleWizardCharInput(char string) (tea.Model, tea.Cmd) {
-	switch m.createWizardStep {
-	case 2: // Basic config - project input
-		if m.createWizardState.UseCustomProject {
-			m.createWizardState.Project += char
-		}
-	case 3: // Relationships
-	case 4: // Worktree
-		if m.createWizardState.UseWorktree {
-			m.createWizardState.WorktreeBranch += char
-		}
-	case 6: // Title/Variables
+	if m.createWizardStep == 2 {
 		m.createWizardState.Title += char
-	case 7: // Description
-		m.createWizardState.Description += char
+		return m, nil
+	}
+	if m.createWizardStep == 3 && m.createWizardState.SelectedType == model.ItemTypeEpic && m.createWizardState.UseWorktree {
+		if m.createWizardState.WorktreeField == 0 {
+			if m.createWizardState.WorktreeBranchAuto {
+				m.createWizardState.WorktreeBranch = ""
+				m.createWizardState.WorktreeBranchAuto = false
+			}
+			m.createWizardState.WorktreeBranch += char
+		} else {
+			m.createWizardState.WorktreeBase += char
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleWizardBackspace() (tea.Model, tea.Cmd) {
+	switch m.createWizardStep {
+	case 2: // Title input
+		m.createWizardState.Title = trimLastRune(m.createWizardState.Title)
+	case 3: // Worktree toggle (epics only)
+		if m.createWizardState.SelectedType == model.ItemTypeEpic && m.createWizardState.UseWorktree {
+			if m.createWizardState.WorktreeField == 0 {
+				if m.createWizardState.WorktreeBranchAuto {
+					m.createWizardState.WorktreeBranchAuto = false
+				}
+				m.createWizardState.WorktreeBranch = trimLastRune(m.createWizardState.WorktreeBranch)
+			} else {
+				m.createWizardState.WorktreeBase = trimLastRune(m.createWizardState.WorktreeBase)
+			}
+		}
 	}
 	return m, nil
 }
@@ -1848,48 +1968,44 @@ func (m Model) advanceWizardStep() (tea.Model, tea.Cmd) {
 
 	switch m.createWizardStep {
 	case 1: // Type selected
-		if state.SelectedType == "" {
-			state.SelectedType = model.ItemTypeTask // Default
+		types := m.getAvailableTypes()
+		if len(types) == 0 {
+			return m, nil
 		}
+		if state.TypeCursor < 0 || state.TypeCursor >= len(types) {
+			state.TypeCursor = 0
+		}
+		state.SelectedType = types[state.TypeCursor].Type
 		m.createWizardStep = 2
 
-	case 2: // Basic config
-		m.createWizardStep = 3
-
-	case 3: // Relationships
-		// Skip worktree if not epic
-		if state.SelectedType == model.ItemTypeEpic {
-			m.createWizardStep = 4
-		} else {
-			m.createWizardStep = 5
-		}
-
-	case 4: // Worktree (epics only)
-		m.createWizardStep = 5
-
-	case 5: // Method selection
-		if state.UseTemplate && state.SelectedTemplate == nil {
-			// Need to select template first
-			return m, m.loadTemplates()
-		}
-		m.createWizardStep = 6
-
-	case 6: // Title/Variables
-		if state.Title == "" {
+	case 2: // Title
+		if strings.TrimSpace(state.Title) == "" {
 			m.err = fmt.Errorf("title is required")
 			return m, nil
 		}
-		m.createWizardStep = 7
+		m.createWizardStep = 3
+		if state.SelectedType != model.ItemTypeEpic {
+			return m.startWizardDescription()
+		}
 
-	case 7: // Description
-		// Validate description
+	case 3: // Worktree (epics only) or Description (non-epic)
+		if state.SelectedType == model.ItemTypeEpic {
+			m.createWizardStep = 4
+			return m.startWizardDescription()
+		}
 		if !validateDescription(state.Description) {
 			m.err = fmt.Errorf("description must be at least 3 words or 20 characters")
 			return m, nil
 		}
-		m.createWizardStep = 8
+		m.textarea.Blur()
+		return m.createItemFromWizard()
 
-	case 8: // Confirmation
+	case 4: // Description (epic)
+		if !validateDescription(state.Description) {
+			m.err = fmt.Errorf("description must be at least 3 words or 20 characters")
+			return m, nil
+		}
+		m.textarea.Blur()
 		return m.createItemFromWizard()
 	}
 
@@ -1916,65 +2032,95 @@ func validateDescription(desc string) bool {
 	return false
 }
 
+// generateWorktreeBranch generates a branch name from epic ID and title.
+// Format: feature/<epic-id>-<slug> where slug is lowercase title with non-alnum->hyphens
+func generateWorktreeBranch(epicID, title string) string {
+	// Convert title to lowercase
+	slug := strings.ToLower(title)
+
+	// Replace non-alphanumeric characters with hyphens
+	var result strings.Builder
+	for _, r := range slug {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else {
+			result.WriteRune('-')
+		}
+	}
+
+	// Collapse multiple hyphens
+	slug = result.String()
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+
+	// Trim hyphens from ends
+	slug = strings.Trim(slug, "-")
+
+	// Limit length
+	if len(slug) > 50 {
+		slug = slug[:50]
+	}
+
+	return fmt.Sprintf("feature/%s-%s", epicID, slug)
+}
+
+func generateWorktreeBranchPreview(title string) string {
+	return generateWorktreeBranch("ep-xxx", title)
+}
+
+func (m Model) ensureWizardWorktreeDefaults() Model {
+	if m.createWizardState.WorktreeBranch == "" {
+		m.createWizardState.WorktreeBranch = generateWorktreeBranchPreview(m.createWizardState.Title)
+		m.createWizardState.WorktreeBranchAuto = true
+	}
+	if m.createWizardState.WorktreeField < 0 || m.createWizardState.WorktreeField > 1 {
+		m.createWizardState.WorktreeField = 0
+	}
+	return m
+}
+
 func (m Model) createItemFromWizard() (tea.Model, tea.Cmd) {
 	state := m.createWizardState
-
-	return m, func() tea.Msg {
-		// Generate ID
-		itemID, err := m.db.GenerateItemID(state.SelectedType)
-		if err != nil {
-			return actionMsg{err: err}
-		}
-
-		now := time.Now()
-		newItem := &model.Item{
-			ID:             itemID,
-			Project:        state.Project,
-			Type:           state.SelectedType,
-			Title:          state.Title,
-			Description:    state.Description,
-			Status:         model.StatusOpen,
-			Priority:       state.Priority,
-			WorktreeBranch: state.WorktreeBranch,
-			WorktreeBase:   state.WorktreeBase,
-			CreatedAt:      now,
-			UpdatedAt:      now,
-		}
-
-		if err := m.db.CreateItem(newItem); err != nil {
-			return actionMsg{err: err}
-		}
-
-		// Set parent if specified
-		if state.ParentID != "" {
-			if err := m.db.SetParent(itemID, state.ParentID); err != nil {
-				return actionMsg{err: err}
-			}
-		}
-
-		// Add dependencies
-		for _, depID := range state.Dependencies {
-			if err := m.db.AddDep(itemID, depID); err != nil {
-				return actionMsg{err: err}
-			}
-		}
-
-		// Add blockers (reverse dependencies)
-		for _, blockerID := range state.Blockers {
-			if err := m.db.AddDep(blockerID, itemID); err != nil {
-				return actionMsg{err: err}
-			}
-		}
-
-		// Add labels
-		for _, label := range state.Labels {
-			if err := m.db.AddLabelToItem(itemID, state.Project, label); err != nil {
-				return actionMsg{err: err}
-			}
-		}
-
-		return actionMsg{message: fmt.Sprintf("Created %s (%s)", itemID, state.SelectedType)}
+	selectedType := state.SelectedType
+	if selectedType == "" {
+		selectedType = model.ItemTypeTask
 	}
+
+	itemID, err := m.db.GenerateItemID(selectedType)
+	if err != nil {
+		m.err = err
+		return m, nil
+	}
+
+	now := time.Now()
+	item := model.Item{
+		ID:          itemID,
+		Project:     m.project,
+		Type:        selectedType,
+		Title:       state.Title,
+		Description: state.Description,
+		Status:      model.StatusOpen,
+		Priority:    2,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	if selectedType == model.ItemTypeEpic && state.UseWorktree {
+		item.WorktreeBranch = state.WorktreeBranch
+		item.WorktreeBase = state.WorktreeBase
+	}
+
+	if err := m.db.CreateItem(&item); err != nil {
+		m.err = err
+		return m, nil
+	}
+
+	m.viewMode = ViewList
+	m.createWizardStep = 0
+	m.message = fmt.Sprintf("Created %s: %s", selectedType, itemID)
+
+	return m, m.loadItems()
 }
 
 func (m Model) startInput(mode InputMode, label string) (Model, tea.Cmd) {
@@ -2451,6 +2597,128 @@ func (m Model) View() string {
 	return padStyle.Render(b.String())
 }
 
+// renderBaseView renders the current view without input overlays.
+func (m Model) renderBaseView() string {
+	switch m.viewMode {
+	case ViewList:
+		return m.listView()
+	case ViewDetail:
+		return m.detailView()
+	case ViewGraph:
+		return m.graphView()
+	case ViewTemplateList:
+		return m.templateListView()
+	case ViewTemplateDetail:
+		return m.templateDetailView()
+	case ViewConfig:
+		return m.configView()
+	case ViewCreateWizard:
+		return m.wizardPopupBase()
+	default:
+		return ""
+	}
+}
+
+// renderPopup renders content in a centered box over the base view.
+func (m Model) renderPopup(title string, content string, width int) string {
+	base := m.renderBaseView()
+	return m.renderPopupOver(base, title, content, width)
+}
+
+// renderPopupOver renders content in a centered box over the given base view.
+func (m Model) renderPopupOver(base string, title string, content string, width int) string {
+	if width <= 0 {
+		width = 50
+	}
+	contentWidth := m.width - (contentPadding * 2)
+	if contentWidth > 0 && width > contentWidth {
+		width = max(20, contentWidth)
+	}
+
+	var popupContent strings.Builder
+	if title != "" {
+		popupContent.WriteString(titleStyle.Render(title))
+		popupContent.WriteString("\n\n")
+	}
+	popupContent.WriteString(content)
+
+	popupStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 2).
+		Width(width)
+
+	popup := popupStyle.Render(popupContent.String())
+	if base == "" {
+		return popup
+	}
+	return overlayCentered(dimStyle.Render(base), popup, contentWidth, m.height-1)
+}
+
+func overlayCentered(base, popup string, width, height int) string {
+	baseLines := strings.Split(base, "\n")
+	popupLines := strings.Split(popup, "\n")
+
+	baseWidth := maxLineWidth(baseLines)
+	popupWidth := maxLineWidth(popupLines)
+	width = max(width, max(baseWidth, popupWidth))
+	if width == 0 {
+		width = max(baseWidth, popupWidth)
+	}
+
+	baseHeight := len(baseLines)
+	popupHeight := len(popupLines)
+	height = max(height, max(baseHeight, popupHeight))
+	if height == 0 {
+		height = max(baseHeight, popupHeight)
+	}
+
+	for i, line := range baseLines {
+		baseLines[i] = padLine(line, width)
+	}
+	for len(baseLines) < height {
+		baseLines = append(baseLines, strings.Repeat(" ", width))
+	}
+
+	startX := (width - popupWidth) / 2
+	startY := (height - popupHeight) / 2
+
+	for i, line := range popupLines {
+		targetY := startY + i
+		if targetY < 0 || targetY >= len(baseLines) {
+			continue
+		}
+		popupLine := padLine(line, popupWidth)
+		baseLine := baseLines[targetY]
+		left := ansi.Cut(baseLine, 0, startX)
+		right := ansi.Cut(baseLine, startX+popupWidth, width)
+		baseLines[targetY] = left + popupLine + right
+	}
+
+	return strings.Join(baseLines, "\n")
+}
+
+func padLine(line string, width int) string {
+	lineWidth := lipgloss.Width(line)
+	if lineWidth == width {
+		return line
+	}
+	if lineWidth > width {
+		return ansi.Cut(line, 0, width)
+	}
+	return line + strings.Repeat(" ", width-lineWidth)
+}
+
+func maxLineWidth(lines []string) int {
+	maxWidth := 0
+	for _, line := range lines {
+		if w := lipgloss.Width(line); w > maxWidth {
+			maxWidth = w
+		}
+	}
+	return maxWidth
+}
+
 // textareaView renders the textarea editing view.
 func (m Model) textareaView() string {
 	var b strings.Builder
@@ -2490,8 +2758,6 @@ func (m Model) textareaView() string {
 
 // statusMenuView renders the status change confirmation menu.
 func (m Model) statusMenuView() string {
-	var b strings.Builder
-
 	// Get current item info for context
 	var itemInfo string
 	treeNodes := m.buildTree()
@@ -2502,12 +2768,6 @@ func (m Model) statusMenuView() string {
 			itemInfo = itemInfo[:47] + "..."
 		}
 	}
-
-	// Menu box style
-	menuStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("39")).
-		Padding(1, 2)
 
 	// Menu options
 	options := []struct {
@@ -2522,12 +2782,9 @@ func (m Model) statusMenuView() string {
 	}
 
 	var menuContent strings.Builder
-	menuContent.WriteString(titleStyle.Render("Change Status") + "\n")
 	if itemInfo != "" {
-		menuContent.WriteString(dimStyle.Render(itemInfo) + "\n")
+		menuContent.WriteString(dimStyle.Render(itemInfo) + "\n\n")
 	}
-	menuContent.WriteString("\n")
-
 	for i, opt := range options {
 		prefix := "  "
 		if i == m.statusMenuCursor {
@@ -2549,9 +2806,7 @@ func (m Model) statusMenuView() string {
 	menuContent.WriteString("\n")
 	menuContent.WriteString(helpStyle.Render("↑/↓:select  enter:confirm  esc:cancel"))
 
-	b.WriteString(menuStyle.Render(menuContent.String()))
-
-	return b.String()
+	return m.renderPopup("Change Status", menuContent.String(), 50)
 }
 
 func (m Model) listView() string {
@@ -3852,335 +4107,176 @@ func (m Model) configView() string {
 }
 
 func (m Model) createWizardView() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render(fmt.Sprintf(" Create New Item - Step %d/8 ", m.createWizardStep)))
-	b.WriteString("\n\n")
-
 	switch m.createWizardStep {
 	case 1:
-		b.WriteString(m.wizardTypeView())
+		return m.wizardTypeView()
 	case 2:
-		b.WriteString(m.wizardBasicConfigView())
+		return m.wizardTitleView()
 	case 3:
-		b.WriteString(m.wizardRelationshipsView())
-	case 4:
-		b.WriteString(m.wizardWorktreeView())
-	case 5:
-		b.WriteString(m.wizardMethodView())
-	case 6:
-		if m.createWizardState.UseTemplate {
-			b.WriteString(m.wizardTemplateVarsView())
-		} else {
-			b.WriteString(m.wizardTitleView())
+		if m.createWizardState.SelectedType == model.ItemTypeEpic {
+			return m.wizardWorktreeView()
 		}
-	case 7:
-		b.WriteString(m.wizardDescriptionView())
-	case 8:
-		b.WriteString(m.wizardConfirmationView())
+		return m.wizardDescriptionView()
+	case 4:
+		return m.wizardDescriptionView()
+	default:
+		return ""
 	}
+}
 
-	// Help footer
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render(" [←] Back  [Enter] Continue  [Esc] Cancel"))
+func (m Model) isWizardDescriptionStep() bool {
+	if m.createWizardStep == 3 && m.createWizardState.SelectedType != model.ItemTypeEpic {
+		return true
+	}
+	return m.createWizardStep == 4
+}
 
-	return b.String()
+func (m Model) wizardPopupWidth() int {
+	width := 60
+	contentWidth := m.width - (contentPadding * 2)
+	if contentWidth > 0 && width > contentWidth {
+		width = max(30, contentWidth)
+	}
+	if width < 30 {
+		width = 30
+	}
+	return width
+}
+
+func (m Model) wizardPopupTitle() string {
+	selectedType := m.createWizardState.SelectedType
+	if selectedType == "" {
+		selectedType = model.ItemTypeTask
+	}
+	return fmt.Sprintf("Create %s", selectedType)
+}
+
+func (m Model) wizardPopupBase() string {
+	return m.listView()
+}
+
+func (m Model) startWizardDescription() (Model, tea.Cmd) {
+	m.textarea.SetValue(m.createWizardState.Description)
+	m.textarea.Focus()
+	popupWidth := m.wizardPopupWidth()
+	width := max(20, popupWidth-6)
+	height := 5
+	if m.height >= 24 {
+		height = 7
+	} else if m.height <= 16 {
+		height = 4
+	}
+	m.textarea.SetWidth(width)
+	m.textarea.SetHeight(height)
+	return m, textarea.Blink
 }
 
 func (m Model) wizardTypeView() string {
 	var b strings.Builder
 
-	b.WriteString("What type of item would you like to create?\n\n")
-
-	types := []struct {
-		name string
-		desc string
-	}{
-		{"task", "Standard task (default)"},
-		{"epic", "Large body of work with child tasks"},
+	types := m.getAvailableTypes()
+	if m.createWizardState.TypeCursor < 0 || m.createWizardState.TypeCursor >= len(types) {
+		m.createWizardState.TypeCursor = 0
 	}
 
-	for _, t := range types {
-		cursor := "  "
-		if m.createWizardState.SelectedType == model.ItemType(t.name) {
-			cursor = "● "
+	b.WriteString("Select item type:\n\n")
+	for i, t := range types {
+		selected := i == m.createWizardState.TypeCursor
+		icon := "○"
+		if selected {
+			icon = "●"
 		}
-		b.WriteString(fmt.Sprintf("%s%s - %s\n", cursor, t.name, t.desc))
-	}
-
-	return b.String()
-}
-
-func (m Model) wizardBasicConfigView() string {
-	var b strings.Builder
-
-	b.WriteString("Configure basic settings:\n\n")
-
-	// Priority selection
-	b.WriteString("Priority:\n")
-	priorities := []struct {
-		level int
-		desc  string
-	}{
-		{1, "High (P0)"},
-		{2, "Medium (P1)"},
-		{3, "Low (P2)"},
-		{4, "Very Low"},
-		{5, "Lowest"},
-	}
-	for _, p := range priorities {
-		cursor := "  "
-		if m.createWizardState.Priority == p.level {
-			cursor = "● "
+		label := fmt.Sprintf("%s %s (%s-)", icon, t.Type, t.Prefix)
+		if t.Desc != "" {
+			label = fmt.Sprintf("%s - %s", label, t.Desc)
 		}
-		b.WriteString(fmt.Sprintf("%s%d - %s\n", cursor, p.level, p.desc))
+		if selected {
+			b.WriteString(selectedRowStyle.Render(label))
+		} else {
+			b.WriteString(label)
+		}
+		b.WriteString("\n")
 	}
-
 	b.WriteString("\n")
+	b.WriteString(helpStyle.Render(" [↑↓] Navigate  [Enter] Select  [Esc] Cancel"))
 
-	// Project selection
-	b.WriteString("Project:\n")
-	if m.createWizardState.UseCustomProject {
-		b.WriteString("  ○ Use current project\n")
-		b.WriteString(fmt.Sprintf("  ● Custom: %s█\n", m.createWizardState.Project))
-	} else {
-		b.WriteString(fmt.Sprintf("  ● Use current project (%s)\n", m.project))
-		b.WriteString("  ○ Enter custom project\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) wizardRelationshipsView() string {
-	var b strings.Builder
-
-	b.WriteString("Set relationships (optional):\n\n")
-
-	// Parent
-	b.WriteString("Parent Epic:\n")
-	if m.createWizardState.ParentID == "" {
-		b.WriteString("  ● No parent (top-level item)\n")
-	} else {
-		b.WriteString(fmt.Sprintf("  ● Parent: %s\n", m.createWizardState.ParentID))
-	}
-
-	b.WriteString("\n")
-
-	// Dependencies
-	b.WriteString("Dependencies:\n")
-	if len(m.createWizardState.Dependencies) == 0 {
-		b.WriteString("  (none)\n")
-	} else {
-		for _, dep := range m.createWizardState.Dependencies {
-			b.WriteString(fmt.Sprintf("  • %s\n", dep))
-		}
-	}
-
-	b.WriteString("\n")
-
-	// Blockers
-	b.WriteString("Blocks:\n")
-	if len(m.createWizardState.Blockers) == 0 {
-		b.WriteString("  (none)\n")
-	} else {
-		for _, blocker := range m.createWizardState.Blockers {
-			b.WriteString(fmt.Sprintf("  • %s\n", blocker))
-		}
-	}
-
-	return b.String()
+	return m.renderPopup("Create New Item", b.String(), m.wizardPopupWidth())
 }
 
 func (m Model) wizardWorktreeView() string {
 	var b strings.Builder
 
-	b.WriteString("Worktree Configuration (Epic only):\n\n")
+	b.WriteString("Would you like to create a worktree?\n\n")
 
 	// Use worktree toggle
 	if m.createWizardState.UseWorktree {
-		b.WriteString("  ● Create worktree for this epic\n")
 		b.WriteString("  ○ No worktree\n")
+		b.WriteString("  ● Yes, create worktree\n")
 	} else {
-		b.WriteString("  ○ Create worktree for this epic\n")
 		b.WriteString("  ● No worktree\n")
+		b.WriteString("  ○ Yes, create worktree\n")
 	}
 
 	b.WriteString("\n")
 
 	if m.createWizardState.UseWorktree {
-		b.WriteString(fmt.Sprintf("Branch: %s\n", m.createWizardState.WorktreeBranch))
-		b.WriteString(fmt.Sprintf("Base:   %s\n", m.createWizardState.WorktreeBase))
-	}
-
-	return b.String()
-}
-
-func (m Model) wizardMethodView() string {
-	var b strings.Builder
-
-	b.WriteString("Choose creation method:\n\n")
-
-	if m.createWizardState.UseTemplate {
-		b.WriteString("  ○ From Scratch (Ad-hoc)\n")
-		b.WriteString("  ● From Template\n")
-	} else {
-		b.WriteString("  ● From Scratch (Ad-hoc)\n")
-		b.WriteString("  ○ From Template\n")
-	}
-
-	if m.createWizardState.UseTemplate {
-		b.WriteString("\nAvailable Templates:\n")
-		if len(m.templates) == 0 {
-			b.WriteString("  (no templates loaded - press Enter to load)\n")
-		} else {
-			for _, t := range m.templates {
-				cursor := "  "
-				if m.createWizardState.SelectedTemplate != nil && m.createWizardState.SelectedTemplate.ID == t.ID {
-					cursor = "● "
-				}
-				b.WriteString(fmt.Sprintf("%s%s - %s\n", cursor, t.ID, t.Title))
-			}
+		branch := m.createWizardState.WorktreeBranch
+		if branch == "" {
+			branch = generateWorktreeBranchPreview(m.createWizardState.Title)
 		}
+		base := m.createWizardState.WorktreeBase
+		if base == "" {
+			base = "main"
+		}
+		if m.createWizardState.WorktreeField == 0 {
+			branch += "█"
+		} else {
+			base += "█"
+		}
+		b.WriteString(fmt.Sprintf("  Branch: %s\n", branch))
+		b.WriteString(fmt.Sprintf("  Base:   %s\n", base))
 	}
 
-	return b.String()
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render(" [Up/Down] Toggle  [Tab] Switch Field  [Enter] Continue  [Esc] Back"))
+
+	return m.renderPopupOver(m.wizardPopupBase(), m.wizardPopupTitle(), b.String(), m.wizardPopupWidth())
 }
 
 func (m Model) wizardTitleView() string {
 	var b strings.Builder
 
-	b.WriteString("Enter item details:\n\n")
-
-	// Title
-	b.WriteString("Title (required):\n")
-	if m.createWizardState.Title == "" {
-		b.WriteString("  [Enter title]█\n")
+	inputWidth := max(20, m.wizardPopupWidth()-6)
+	value := m.createWizardState.Title
+	var inputText string
+	if value == "" {
+		inputText = dimStyle.Render("Enter title") + "█"
 	} else {
-		b.WriteString(fmt.Sprintf("  %s█\n", m.createWizardState.Title))
+		inputText = value + "█"
 	}
+	inputBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		Width(inputWidth).
+		Render(inputText)
 
-	b.WriteString("\n")
+	b.WriteString("Title:\n")
+	b.WriteString(inputBox)
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render(" [Enter] Continue  [Esc] Cancel"))
 
-	// Labels
-	b.WriteString("Labels (comma-separated, optional):\n")
-	if len(m.createWizardState.Labels) == 0 {
-		b.WriteString("  [none]\n")
-	} else {
-		b.WriteString(fmt.Sprintf("  %s\n", strings.Join(m.createWizardState.Labels, ", ")))
-	}
-
-	return b.String()
-}
-
-func (m Model) wizardTemplateVarsView() string {
-	var b strings.Builder
-
-	if m.createWizardState.SelectedTemplate == nil {
-		b.WriteString("No template selected. Press Enter to go back.\n")
-		return b.String()
-	}
-
-	b.WriteString(fmt.Sprintf("Template: %s\n\n", m.createWizardState.SelectedTemplate.Title))
-
-	// Show template variables
-	if len(m.createWizardState.SelectedTemplate.Variables) > 0 {
-		b.WriteString("Template Variables:\n")
-		for name, v := range m.createWizardState.SelectedTemplate.Variables {
-			optional := ""
-			if v.Optional {
-				optional = " (optional)"
-			}
-			value := m.createWizardState.TemplateVars[name]
-			if value == "" {
-				value = "[not set]"
-			}
-			b.WriteString(fmt.Sprintf("  %s%s: %s\n", name, optional, value))
-		}
-	}
-
-	return b.String()
+	return m.renderPopupOver(m.wizardPopupBase(), m.wizardPopupTitle(), b.String(), m.wizardPopupWidth())
 }
 
 func (m Model) wizardDescriptionView() string {
 	var b strings.Builder
 
-	b.WriteString("Enter description (required):\n\n")
+	b.WriteString("Description (required):\n")
+	b.WriteString(m.textarea.View())
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render(" [Ctrl+S] Save  [Esc] Cancel"))
 
-	if m.createWizardState.Description == "" {
-		b.WriteString("  [Enter detailed description...]\n")
-	} else {
-		// Show first few lines of description
-		lines := strings.Split(m.createWizardState.Description, "\n")
-		for i, line := range lines {
-			if i >= 10 {
-				b.WriteString("  ...\n")
-				break
-			}
-			b.WriteString(fmt.Sprintf("  %s\n", line))
-		}
-	}
-
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("Description must be at least 3 words or 20 characters.\n"))
-
-	return b.String()
-}
-
-func (m Model) wizardConfirmationView() string {
-	var b strings.Builder
-
-	state := m.createWizardState
-
-	b.WriteString("Review and confirm:\n\n")
-
-	// Basic info
-	b.WriteString("Basic Info:\n")
-	b.WriteString(fmt.Sprintf("  Type:     %s\n", state.SelectedType))
-	b.WriteString(fmt.Sprintf("  Title:    %s\n", state.Title))
-	b.WriteString(fmt.Sprintf("  Priority: %d\n", state.Priority))
-	b.WriteString(fmt.Sprintf("  Project:  %s\n", state.Project))
-
-	if len(state.Labels) > 0 {
-		b.WriteString(fmt.Sprintf("  Labels:   %s\n", strings.Join(state.Labels, ", ")))
-	}
-
-	b.WriteString("\n")
-
-	// Relationships
-	if state.ParentID != "" || len(state.Dependencies) > 0 || len(state.Blockers) > 0 {
-		b.WriteString("Relationships:\n")
-		if state.ParentID != "" {
-			b.WriteString(fmt.Sprintf("  Parent: %s\n", state.ParentID))
-		}
-		if len(state.Dependencies) > 0 {
-			b.WriteString(fmt.Sprintf("  Depends on: %s\n", strings.Join(state.Dependencies, ", ")))
-		}
-		if len(state.Blockers) > 0 {
-			b.WriteString(fmt.Sprintf("  Blocks: %s\n", strings.Join(state.Blockers, ", ")))
-		}
-		b.WriteString("\n")
-	}
-
-	// Worktree
-	if state.SelectedType == model.ItemTypeEpic && state.UseWorktree {
-		b.WriteString("Worktree:\n")
-		b.WriteString(fmt.Sprintf("  Branch: %s\n", state.WorktreeBranch))
-		b.WriteString(fmt.Sprintf("  Base:   %s\n", state.WorktreeBase))
-		b.WriteString("\n")
-	}
-
-	// Description preview
-	desc := state.Description
-	if len(desc) > 200 {
-		desc = desc[:200] + "..."
-	}
-	b.WriteString("Description Preview:\n")
-	b.WriteString(fmt.Sprintf("  %s\n", desc))
-
-	b.WriteString("\n")
-	b.WriteString("Press Enter to create this item.\n")
-
-	return b.String()
+	return m.renderPopupOver(m.wizardPopupBase(), m.wizardPopupTitle(), b.String(), m.wizardPopupWidth())
 }
 
 // Run starts the TUI with the given project filter.

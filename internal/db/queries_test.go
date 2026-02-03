@@ -88,6 +88,87 @@ func TestListItems_OrderByPriority(t *testing.T) {
 	}
 }
 
+func TestGetDistinctTypes_Empty(t *testing.T) {
+	db := setupTestDB(t)
+
+	types, err := db.GetDistinctTypes()
+	if err != nil {
+		t.Fatalf("failed to get distinct types: %v", err)
+	}
+
+	if len(types) != 0 {
+		t.Errorf("expected 0 types, got %d", len(types))
+	}
+}
+
+func TestGetDistinctTypes_ReturnsSortedDistinct(t *testing.T) {
+	db := setupTestDB(t)
+
+	items := []*model.Item{
+		{
+			ID:        model.GenerateID(model.ItemTypeTask),
+			Project:   "test",
+			Type:      model.ItemTypeTask,
+			Title:     "Task",
+			Status:    model.StatusOpen,
+			Priority:  2,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+		{
+			ID:        model.GenerateID(model.ItemTypeEpic),
+			Project:   "test",
+			Type:      model.ItemTypeEpic,
+			Title:     "Epic",
+			Status:    model.StatusOpen,
+			Priority:  2,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+		{
+			ID:        model.GenerateID(model.ItemTypeTask),
+			Project:   "test",
+			Type:      model.ItemType("bug"),
+			Title:     "Bug",
+			Status:    model.StatusOpen,
+			Priority:  2,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+		{
+			ID:        model.GenerateID(model.ItemTypeTask),
+			Project:   "test",
+			Type:      model.ItemType("bug"),
+			Title:     "Bug duplicate",
+			Status:    model.StatusOpen,
+			Priority:  2,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+	}
+
+	for _, item := range items {
+		if err := db.CreateItem(item); err != nil {
+			t.Fatalf("failed to create item: %v", err)
+		}
+	}
+
+	types, err := db.GetDistinctTypes()
+	if err != nil {
+		t.Fatalf("failed to get distinct types: %v", err)
+	}
+
+	want := []model.ItemType{"bug", model.ItemTypeEpic, model.ItemTypeTask}
+	if len(types) != len(want) {
+		t.Fatalf("expected %d types, got %d", len(want), len(types))
+	}
+	for i, typ := range want {
+		if types[i] != typ {
+			t.Errorf("type[%d] = %q, want %q", i, types[i], typ)
+		}
+	}
+}
+
 func TestReadyItems(t *testing.T) {
 	db := setupTestDB(t)
 

@@ -453,6 +453,28 @@ func (db *DB) ListProjects() ([]string, error) {
 	return projects, rows.Err()
 }
 
+// GetDistinctTypes returns all unique item types in the database.
+func (db *DB) GetDistinctTypes() ([]model.ItemType, error) {
+	rows, err := db.Query(`SELECT DISTINCT type FROM items ORDER BY type`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query distinct types: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	types := []model.ItemType{}
+	for rows.Next() {
+		var itemType string
+		if err := rows.Scan(&itemType); err != nil {
+			return nil, fmt.Errorf("failed to scan type: %w", err)
+		}
+		types = append(types, model.ItemType(itemType))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return types, nil
+}
+
 // FindEpicByBranch finds an epic by its worktree branch name.
 func (db *DB) FindEpicByBranch(branch string) (*model.Item, error) {
 	query := fmt.Sprintf("SELECT %s FROM items WHERE type = 'epic' AND worktree_branch = ?", itemSelectColumns)
