@@ -45,6 +45,28 @@ tpg add "Title" --template <id> --var 'key="value"'  # Create from template
 
 **Rule:** If a template exists that fits the work, use it. Only create ad-hoc tasks when no template is appropriate.
 
+## Unit Testing
+
+**CRITICAL:** Unit tests MUST NOT write to `.tpg/tpg.db` in the project root.
+
+This project dogfoods tpg for its own task management. The `.tpg/tpg.db` database contains real development tasks. Tests that accidentally write to or read from this database will corrupt project state.
+
+**Required test patterns:**
+- Use `t.TempDir()` for test databases
+- Set `TPG_DB` env var to temp path if testing CLI commands
+- Never `os.Chdir` to the project root without restoring afterward
+- Never call `db.Open()` without an explicit temp path
+
+**Example:**
+```go
+func setupTestDB(t *testing.T) *db.DB {
+    t.Helper()
+    dir := t.TempDir()
+    path := filepath.Join(dir, "test.db")
+    // ... open and init db at path
+}
+```
+
 ## Git Safety
 
 **NEVER** run destructive git commands that discard uncommitted work:
