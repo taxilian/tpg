@@ -209,6 +209,38 @@ func TestDeleteLabel(t *testing.T) {
 	}
 }
 
+func TestDeleteItem_RemovesItemLabels(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	item := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Labelled task",
+		Status:    model.StatusOpen,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+	if err := db.AddLabelToItem(item.ID, "test", "bug"); err != nil {
+		t.Fatalf("failed to add label to item: %v", err)
+	}
+
+	if err := db.DeleteItem(item.ID); err != nil {
+		t.Fatalf("failed to delete item: %v", err)
+	}
+
+	labels, err := db.GetItemLabels(item.ID)
+	if err == nil {
+		if len(labels) != 0 {
+			t.Fatalf("expected no labels for deleted item, got %d", len(labels))
+		}
+	}
+}
+
 func TestAddLabelToItem(t *testing.T) {
 	db := setupTestDB(t)
 
