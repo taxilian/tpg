@@ -103,6 +103,7 @@ var (
 	flagReadyEpic        string
 	flagListAll          bool
 	flagIdsOnly          bool
+	flagListTree         bool
 
 	flagWorktree       bool
 	flagWorktreeBranch string
@@ -877,6 +878,8 @@ Examples:
   tpg list                        # Active items only (excludes done/canceled)
   tpg list --all                  # All items including done/canceled
   tpg list -a                     # Same as --all
+  tpg list -t                     # Hierarchical tree view
+  tpg list --tree --epic ep-abc   # Tree view of an epic's descendants
   tpg list -p myproject
   tpg list --status open
   tpg list --status done          # Explicitly show done items
@@ -971,6 +974,8 @@ Examples:
 
 		if flagIdsOnly {
 			printItemsIDs(items)
+		} else if flagListTree {
+			printItemsTree(items)
 		} else {
 			printItemsTable(items)
 		}
@@ -4817,6 +4822,7 @@ func init() {
 	listCmd.Flags().BoolVar(&flagHasBlockers, "has-blockers", false, "Show only items with unresolved blockers")
 	listCmd.Flags().BoolVar(&flagNoBlockers, "no-blockers", false, "Show only items with no blockers")
 	listCmd.Flags().BoolVar(&flagIdsOnly, "ids-only", false, "Output only IDs, one per line (pipe-friendly)")
+	listCmd.Flags().BoolVarP(&flagListTree, "tree", "t", false, "Show hierarchical tree view (like TUI)")
 	listCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
 
 	// merge flags
@@ -5034,6 +5040,137 @@ func printReadyTable(items []model.Item) {
 			title = formatLabels(item.Labels) + " " + title
 		}
 		fmt.Printf("%-12s %-4d %s\n", item.ID, item.Priority, title)
+	}
+}
+
+// treeNode represents an item in the hierarchical tree view.
+type treeNode struct {
+	Item        model.Item
+	Level       int
+	HasChildren bool
+	IsLastChild bool
+	// ParentLasts tracks whether each ancestor level was a last child.
+	// Used to determine whether to draw │ or space for indentation.
+	ParentLasts []bool
+}
+
+// buildTreeNodes constructs a hierarchical tree from items.
+// Returns flattened list with level information, all nodes expanded.
+func buildTreeNodes(items []model.Item) []treeNode {
+	// Create a map of all items for quick lookup
+	itemMap := make(map[string]model.Item)
+	for _, item := range items {
+		itemMap[item.ID] = item
+	}
+
+	// Create a map of parent -> children relationships
+	childrenMap := make(map[string][]model.Item)
+	for _, item := range items {
+		if item.ParentID != nil {
+			childrenMap[*item.ParentID] = append(childrenMap[*item.ParentID], item)
+		}
+	}
+
+	var nodes []treeNode
+
+	// Find root items (no parent or parent not in filtered list)
+	for _, item := range items {
+		isRoot := item.ParentID == nil
+		if item.ParentID != nil {
+			if _, hasParent := itemMap[*item.ParentID]; !hasParent {
+				isRoot = true // Parent not in filtered list, treat as root
+			}
+		}
+
+		if isRoot {
+			nodes = append(nodes, treeNode{
+				Item:        item,
+				Level:       0,
+				HasChildren: len(childrenMap[item.ID]) > 0,
+			})
+			// Recursively add all children (always expanded in CLI)
+			nodes = append(nodes, getChildNodes(item.ID, 1, childrenMap, nil)...)
+		}
+	}
+
+	return nodes
+}
+
+// getChildNodes recursively gets child nodes for a parent.
+func getChildNodes(parentID string, level int, childrenMap map[string][]model.Item, parentLasts []bool) []treeNode {
+	var nodes []treeNode
+	children := childrenMap[parentID]
+
+	for i, child := range children {
+		isLast := i == len(children)-1
+		nodes = append(nodes, treeNode{
+			Item:        child,
+			Level:       level,
+			HasChildren: len(childrenMap[child.ID]) > 0,
+			IsLastChild: isLast,
+			ParentLasts: parentLasts,
+		})
+		// Recursively add grandchildren, passing down current node's last-child status
+		childParentLasts := append(append([]bool{}, parentLasts...), isLast)
+		nodes = append(nodes, getChildNodes(child.ID, level+1, childrenMap, childParentLasts)...)
+	}
+
+	return nodes
+}
+
+// buildTreePrefix creates the indentation and branch indicators for a tree node.
+func buildTreePrefix(node treeNode) string {
+	if node.Level == 0 {
+		// Root level - indicator only
+		if node.HasChildren {
+			return "▼ "
+		}
+		return "○ "
+	}
+
+	// Build indentation based on level, using ParentLasts to determine │ vs space
+	prefix := ""
+	for i := 0; i < node.Level-1; i++ {
+		if i < len(node.ParentLasts) && node.ParentLasts[i] {
+			prefix += "   " // Parent was last child, no line continuation
+		} else {
+			prefix += "│  "
+		}
+	}
+
+	// Add branch connector
+	if node.IsLastChild {
+		prefix += "└─ "
+	} else {
+		prefix += "├─ "
+	}
+
+	// Add indicator for nodes with children
+	if node.HasChildren {
+		prefix += "▼ "
+	} else {
+		prefix += "○ "
+	}
+
+	return prefix
+}
+
+func printItemsTree(items []model.Item) {
+	if len(items) == 0 {
+		fmt.Println("No items")
+		return
+	}
+
+	nodes := buildTreeNodes(items)
+
+	fmt.Printf("%-12s %-12s %-4s %s\n", "ID", "STATUS", "PRI", "TITLE")
+	for _, node := range nodes {
+		title := node.Item.Title
+		if len(node.Item.Labels) > 0 {
+			title = formatLabels(node.Item.Labels) + " " + title
+		}
+		prefix := buildTreePrefix(node)
+		fmt.Printf("%-12s %-12s %-4d %s%s\n", node.Item.ID, node.Item.Status, node.Item.Priority, prefix, title)
 	}
 }
 
