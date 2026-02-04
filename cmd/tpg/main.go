@@ -103,7 +103,7 @@ var (
 	flagReadyEpic        string
 	flagListAll          bool
 	flagIdsOnly          bool
-	flagListTree         bool
+	flagListFlat         bool
 
 	flagWorktree       bool
 	flagWorktreeBranch string
@@ -872,14 +872,14 @@ var listCmd = &cobra.Command{
 	Short: "List tasks",
 	Long: `List tasks, optionally filtered by various criteria.
 
-By default, excludes done and canceled items. Use --all to show everything.
+By default shows hierarchical tree view and excludes done/canceled items.
 
 Examples:
-  tpg list                        # Active items only (excludes done/canceled)
-  tpg list --all                  # All items including done/canceled
-  tpg list -a                     # Same as --all
-  tpg list -t                     # Hierarchical tree view
-  tpg list --tree --epic ep-abc   # Tree view of an epic's descendants
+  tpg list                        # Tree view of active items
+  tpg list --all                  # Tree view including done/canceled
+  tpg list -f                     # Flat list (no hierarchy)
+  tpg list --flat                 # Same as -f
+  tpg list --epic ep-abc          # Tree view of an epic's descendants
   tpg list -p myproject
   tpg list --status open
   tpg list --status done          # Explicitly show done items
@@ -974,10 +974,10 @@ Examples:
 
 		if flagIdsOnly {
 			printItemsIDs(items)
-		} else if flagListTree {
-			printItemsTree(items)
-		} else {
+		} else if flagListFlat {
 			printItemsTable(items)
+		} else {
+			printItemsTree(items)
 		}
 		return nil
 	},
@@ -4822,7 +4822,7 @@ func init() {
 	listCmd.Flags().BoolVar(&flagHasBlockers, "has-blockers", false, "Show only items with unresolved blockers")
 	listCmd.Flags().BoolVar(&flagNoBlockers, "no-blockers", false, "Show only items with no blockers")
 	listCmd.Flags().BoolVar(&flagIdsOnly, "ids-only", false, "Output only IDs, one per line (pipe-friendly)")
-	listCmd.Flags().BoolVarP(&flagListTree, "tree", "t", false, "Show hierarchical tree view (like TUI)")
+	listCmd.Flags().BoolVarP(&flagListFlat, "flat", "f", false, "Show flat list instead of tree view")
 	listCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
 
 	// merge flags
