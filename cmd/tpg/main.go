@@ -3790,33 +3790,6 @@ Examples:
 	},
 }
 
-var parentCmd = &cobra.Command{
-	Use:   "parent <id> <epic-id>",
-	Short: "Set a task's parent epic",
-	Long: `Set the parent epic for a task.
-
-This establishes a hierarchical relationship where tasks belong to epics.
-The parent must be an epic (created with 'tpg epic add').
-
-Example:
-  tpg parent ts-a1b2c3 ep-d4e5f6
-  # ts-a1b2c3 is now a child of ep-d4e5f6`,
-	Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		if err := database.SetParent(args[0], args[1]); err != nil {
-			return err
-		}
-		fmt.Printf("%s is now under %s\n", args[0], args[1])
-		return nil
-	},
-}
-
 var projectCmd = &cobra.Command{
 	Use:   "project <id> <project>",
 	Short: "Set a task's project",
@@ -5947,7 +5920,6 @@ func init() {
 	rootCmd.AddCommand(appendCmd)
 	rootCmd.AddCommand(descCmd)
 	rootCmd.AddCommand(editCmd)
-	rootCmd.AddCommand(parentCmd)
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(depCmd)
 	rootCmd.AddCommand(blocksCmd)
