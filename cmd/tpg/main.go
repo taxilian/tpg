@@ -2388,7 +2388,9 @@ but close it without marking it as successfully completed.
 Example:
   tpg cancel ts-a1b2c3
   tpg cancel ts-a1b2c3 "Requirements changed, no longer needed"
-  tpg cancel ts-a1b2c3 --force   # Cancel even if other tasks depend on it`,
+  tpg cancel ts-a1b2c3 --force   # Cancel even if other tasks depend on it
+
+See also: 'tpg delete' to remove a task entirely (no history preserved).`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -2625,7 +2627,9 @@ Use --force to delete anyway (dependencies will be removed).
 
 Example:
   tpg delete ts-a1b2c3
-  tpg delete ts-a1b2c3 --force   # Remove even if other tasks depend on it`,
+  tpg delete ts-a1b2c3 --force   # Remove even if other tasks depend on it
+
+See also: 'tpg cancel' to close a task while preserving history.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -2881,13 +2885,26 @@ Examples:
 var graphCmd = &cobra.Command{
 	Use:   "graph",
 	Short: "Show dependency graph",
-	Long: `Show all task dependencies as a graph.
+	Long: `Show all task dependencies as an ASCII tree.
 
-Displays which tasks are blocked by other tasks.
+Displays dependency relationships between tasks: which tasks block others
+and must be completed first. Each blocked task is shown with its blockers
+indented below it.
+
+Output format:
+  ts-abc [status] Task that is blocked
+    └── ts-xyz [status] Task that blocks ts-abc (must complete first)
+    └── ts-def [status] Another blocker for ts-abc
+
+Status values: open, in_progress, done, blocked, canceled
+
+The graph includes ALL tasks with dependencies (including completed ones).
+Use 'tpg dep <id> list' to see dependencies for a specific task.
+Use 'tpg ready' to see only unblocked tasks available to start.
 
 Examples:
-  tpg graph
-  tpg graph -p myproject`,
+  tpg graph              # Show full dependency graph
+  tpg graph -p myproject # Show graph for specific project`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -3738,6 +3755,16 @@ Actions:
   after <other-id>      Mark this task as depending on another (this cannot start until other is done)
   list                  Show all dependencies for this task
   remove <other-id>     Remove a dependency relationship
+
+Understanding blocks vs after:
+
+  tpg dep ts-a blocks ts-b    # ts-a must finish before ts-b can start
+  tpg dep ts-b after ts-a     # Same thing, different perspective
+
+  ts-a  ───►  ts-b
+  (blocker)   (blocked)
+
+The arrow shows execution order: the blocker must complete first.
 
 Examples:
   tpg dep ts-a1b2c3 blocks ts-d4e5f6     # ts-d4e5f6 waits for ts-a1b2c3
