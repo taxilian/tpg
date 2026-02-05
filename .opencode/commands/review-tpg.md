@@ -50,8 +50,7 @@ If a task dictates implementation details — function names, algorithms, intern
 
 1. Explore the actual codebase thoroughly (use an explore agent — do this FIRST)
 2. Get the lay of the land:
-   - `tpg tree` — see all epics and their task counts
-   - `tpg list` — see active items across the project
+   - `tpg list` — see all epics and their task counts (tree view by default, use `--flat` for flat list)
    - Identify which epics have open work that needs review
 3. For each epic with open work:
    - `tpg plan <epic-id>` — tree structure, progress, blockers

@@ -6,8 +6,10 @@
   "custom_prefixes": null,
   "default_project": "tpg",
   "id_length": 3,
-  "warnings": {
-    "short_description": true,
-    "min_description_words": 15
+  "warnings": {},
+  "worktree": {
+    "branch_prefix": "feature",
+    "require_epic_id": true,
+    "root": ".worktrees"
   }
 }

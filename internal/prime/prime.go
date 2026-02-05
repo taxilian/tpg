@@ -228,9 +228,18 @@ Use:
 No templates found. Create templates in .tpg/templates/ to standardize workflows.
 {{end -}}
 
+## Epics
+
+Epics group related tasks. They auto-complete when all children are done.
+
+  tpg epic add "Title"             # Create epic
+  tpg add "Task" --parent <epic>   # Task under epic
+  tpg ready --epic <id>            # Filter work by epic
+
 ## Key Commands
 
   tpg ready                        # Available work
+  tpg ready --epic <id>            # Work in specific epic
   tpg show <id>                    # Task details
   tpg start <id>                   # Claim task
   tpg done <id>                    # Complete

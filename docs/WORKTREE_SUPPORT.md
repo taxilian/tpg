@@ -131,11 +131,11 @@ If `require_epic_id` is true, any explicit `--branch` must include the epic id (
 
 ## Command Changes
 
-### `tpg add -e --worktree` (Modified)
+### `tpg epic add --worktree` (Modified)
 
 Create an epic with worktree metadata.
 
-**New flags (when `-e` is used):**
+**New flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -154,7 +154,7 @@ Create an epic with worktree metadata.
 
 ```bash
 # Create new epic and register worktree metadata
-$ tpg add "Implement worktree support" -e --worktree
+$ tpg epic add "Implement worktree support" --worktree
 Created epic ep-abc123 (worktree expected)
   Branch: feature/ep-abc123-worktree-support (from main)
 
@@ -166,7 +166,7 @@ Then:
   tpg ready
 
 # Branch already exists with worktree - show it
-$ tpg add "Another epic" -e --worktree --branch feature/ep-abc123-worktree-support
+$ tpg epic add "Another epic" --worktree --branch feature/ep-abc123-worktree-support
 Worktree detected for branch feature/ep-abc123-worktree-support:
   Location: .worktrees/ep-abc123/
   
@@ -177,7 +177,7 @@ Epic ep-def456 created and linked to detected worktree.
 
 ```bash
 # Branch doesn't include epic id (when require_epic_id is true)
-$ tpg add "Big Feature" -e --worktree --branch feature/my-feature
+$ tpg epic add "Big Feature" --worktree --branch feature/my-feature
 Error: Branch name must include epic id "ep-abc123" (or use --allow-any-branch)
 
 Suggested: feature/ep-abc123-my-feature
@@ -540,8 +540,8 @@ tpg never creates directories or worktrees; this is a hint shown to the user.
 | Not in git repo | Worktree feature disabled; commands work normally |
 | Task moved to different epic | Worktree stays with original epic; task now in different epic without worktree |
 | Nested epics | Each epic can have its own worktree; auto-detection finds the one matching current branch |
-| Branch already exists with worktree | `tpg add -e --worktree` shows detected worktree location |
-| Branch already exists without worktree | `tpg add -e --worktree` prints instructions to create a worktree |
+| Branch already exists with worktree | `tpg epic add --worktree` shows detected worktree location |
+| Branch already exists without worktree | `tpg epic add --worktree` prints instructions to create a worktree |
 | Dirty repo | tpg does not check; `git worktree add` may fail if there are uncommitted changes |
 | Multiple epics same branch | Auto-detection disabled (shows all tasks); use `--epic` explicitly |
 | On worktree branch but not in worktree | `tpg ready` shows hint, displays all tasks; `tpg show` shows "⚠ not in worktree" |
@@ -557,7 +557,7 @@ tpg never creates directories or worktrees; this is a hint shown to the user.
 | 4 | DB queries: FindEpicByBranch, ReadyItemsForEpic, GetRootEpic, FindEpicsWithWorktreeButNoWorktree | 1, 2 |
 | 5 | `tpg list --ids-only` | None |
 | 6 | `tpg edit` expansion: multiple IDs, --select filters, remove set-status/parent | 5 |
-| 7 | `tpg add -e --worktree` | 2, 3 |
+| 7 | `tpg epic add --worktree` | 2, 3 |
 | 8 | `tpg ready --epic` filtering | 3, 4 |
 | 9 | `tpg show` epic context with status indicators | 3, 4 |
 | 10 | `tpg start` worktree guidance | 3, 4 |
@@ -588,9 +588,9 @@ tpg done ts-abc  # (no change)
 tpg edit --select-label feature-x --parent ep-xyz
 
 # Create epic with worktree metadata
-tpg add "Big Feature" -e --worktree
+tpg epic add "Big Feature" --worktree
 # (then follow printed instructions to create worktree)
 
 # Use existing branch/worktree
-tpg add "Another epic" -e --worktree --branch feature-x
+tpg epic add "Another epic" --worktree --branch feature-x
 ```

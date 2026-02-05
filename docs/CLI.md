@@ -7,7 +7,7 @@
 | `tpg init` | Initialize the database |
 | `tpg onboard` | Set up tpg integration for Opencode |
 | `tpg add <title>` | Create a work item (returns ID) |
-| `tpg add -e <title>` | Create an epic (with optional `--worktree` flag) |
+| `tpg epic add <title>` | Create an epic (see Epics section) |
 | `tpg list` | List all tasks |
 | `tpg list --ids-only` | Output just IDs (useful for scripting) |
 | `tpg show <id>` | Show task details, logs, deps, suggested concepts |
@@ -47,23 +47,55 @@
 
 ## Epics
 
+Epics are containers that group related tasks. They **auto-complete** when all children are done or canceled—you don't mark them done manually.
+
 | Command | Description |
 |---------|-------------|
-| `tpg add "<title>" -e --worktree` | Create epic with worktree metadata |
-| `tpg add "<title>" -e --branch <name> --base <branch>` | Create epic with custom branch/base |
+| `tpg epic add <title>` | Create a new epic |
+| `tpg epic edit <id>` | Edit title, context, or on-close instructions |
+| `tpg epic list [epic-id]` | List all epics, or descendants of a specific epic |
+| `tpg epic replace <id> <title>` | Replace an existing item with an epic |
+| `tpg epic finish <id>` | Show closing instructions and cleanup commands |
 | `tpg epic worktree <id>` | Set up worktree metadata for existing epic |
-| `tpg epic worktree <id> --branch <name> --base <branch>` | Set up with custom branch/base |
-| `tpg epic finish <id>` | Complete epic: validate descendants done, print cleanup instructions |
+
+### Epic Fields
+
+- **`--context`**: Shared context visible to all descendant tasks. Use for guidelines, API docs, patterns.
+- **`--on-close`**: Instructions shown when the epic auto-completes (via `tpg epic finish`).
+
+```bash
+# Create epic with shared context
+tpg epic add "Payment integration" --context - <<EOF
+Use Stripe API v3. See docs/stripe-guide.md for patterns.
+All payment handlers must include idempotency keys.
+EOF
+
+# Create epic with multiple fields via YAML
+tpg epic add "Auth system" --from-yaml <<EOF
+context: |
+  JWT-based authentication. See RFC 7519.
+on_close: |
+  Update CHANGELOG.md before closing.
+EOF
+```
+
+### Epic Behavior
+
+- **Auto-complete**: Epics automatically transition to `done` when all children are done/canceled.
+- **Cannot start epics with children**: `tpg start` prevents starting an epic that has child tasks—work on the children instead.
+- **Replace existing items**: Use `tpg epic replace` to convert a task into an epic, preserving relationships.
+
+### Worktrees
 
 Epics can have associated Git worktrees for isolated development:
 
 ```bash
 # Create an epic with worktree (auto-generates branch name)
-tpg add "Implement user authentication" -e --worktree
+tpg epic add "Implement user authentication" --worktree
 # → Creates ep-abc123 with worktree_branch="feature/ep-abc123-implement-user-authentication"
 
 # Create epic with custom branch
-tpg add "Fix API bugs" -e --worktree --branch feature/api-fixes --base develop
+tpg epic add "Fix API bugs" --worktree --branch feature/api-fixes --base develop
 
 # Set up worktree for existing epic
 tpg epic worktree ep-abc123
@@ -71,10 +103,10 @@ tpg epic worktree ep-abc123
 # Set up with custom branch
 tpg epic worktree ep-abc123 --branch feature/custom-name --base main
 
-# Complete the epic and cleanup
+# Show closing instructions and cleanup commands
 tpg epic finish ep-abc123
-# → Validates all descendants are done/canceled
-# → Prints merge and cleanup instructions
+# → Shows on-close instructions (if set)
+# → Prints merge and cleanup commands
 # → For nested epics: merges to parent epic's branch
 ```
 
@@ -131,15 +163,18 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 
 | Flag | Commands | Description |
 |------|----------|-------------|
+| `--from-yaml` | all | Read flag values from stdin as YAML (keys use underscores, e.g. `desc: value`) |
 | `--project` | all | Filter/set project scope |
 | `-p, --priority` | add | Priority: 1=high, 2=medium (default), 3=low |
 | `--type <type>` | add | Create item with custom type (task, epic, bug, story, etc.) |
 | `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
 | `--parent <id>` | add, list | Set parent item at creation / filter by parent (any type can have children) |
 | `--blocks` | add | Set task this will block at creation |
-| `--worktree` | add | Create epic with worktree metadata (use with `-e`) |
-| `--branch` | add, epic worktree | Custom branch name for worktree (default: auto-generated) |
-| `--base` | add, epic worktree | Base branch for worktree (default: main) |
+| `--worktree` | epic add | Create epic with worktree metadata |
+| `--branch` | epic add, epic worktree | Custom branch name for worktree (default: auto-generated) |
+| `--base` | epic add, epic worktree | Base branch for worktree (default: main) |
+| `--context` | epic add, epic edit, epic replace | Shared context for all descendants (use `-` for stdin) |
+| `--on-close` | epic add, epic edit, epic replace | Instructions shown when epic auto-completes (use `-` for stdin) |
 | `--status` | list | Filter by status |
 | `--epic <id>` | list, ready | Filter by parent epic |
 | `--ids-only` | list | Output just IDs, one per line |
@@ -182,6 +217,7 @@ The following commands have been removed. Use these alternatives:
 
 | Removed | Replacement |
 |---------|-------------|
+| `tpg add -e <title>` | `tpg epic add <title>` |
 | `tpg parent <id> <epic-id>` | `tpg edit <id> --parent <epic-id>` |
 | `tpg set-status <id> <status>` | `tpg done <id>`, `tpg cancel <id>`, `tpg block <id>` |
 
@@ -189,7 +225,7 @@ The following commands have been removed. Use these alternatives:
 
 ```bash
 # 1. Create an epic with worktree
-tpg add "Implement OAuth2 authentication" -e --worktree
+tpg epic add "Implement OAuth2 authentication" --worktree
 # → Creates ep-abc123 with worktree_branch="feature/ep-abc123-implement-oauth2-authentication"
 # → Prints worktree setup instructions:
 #    git worktree add -b feature/ep-abc123-implement-oauth2-authentication .worktrees/ep-abc123 main
@@ -230,9 +266,9 @@ tpg show ts-def456
 #     git worktree add -b feature/ep-abc123-implement-oauth2-authentication .worktrees/ep-abc123 main
 #     cd .worktrees/ep-abc123
 
-# 6. Complete all tasks, then finish the epic
+# 6. When all tasks are done, epic auto-completes. Show cleanup instructions:
 tpg epic finish ep-abc123
-# Epic ep-abc123 marked as done.
+# → Shows closing instructions (if set via --on-close)
 #
 # Cleanup instructions:
 #   # Merge to main:

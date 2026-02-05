@@ -52,7 +52,7 @@ The worktree feature itself will be the first use case of worktrees for its own 
 **Purpose:** Worktree-specific commands
 **Depends on:** WORKTREE-2 (git helpers), WORKTREE-3 (db queries)
 **Work:**
-- tpg add -e --worktree
+- tpg epic add --worktree
 - tpg epic worktree
 - tpg epic finish
 - tpg ready --epic
@@ -100,7 +100,7 @@ Issues:
 
 ### Group 5: Worktree Commands (WORKTREE-5)
 Issues:
-- WORKTREE-5.1: tpg add -e --worktree flag and metadata storage
+- WORKTREE-5.1: tpg epic add --worktree flag and metadata storage
 - WORKTREE-5.2: Branch name generation with epic id
 - WORKTREE-5.3: tpg epic worktree subcommand
 - WORKTREE-5.4: tpg epic finish subcommand

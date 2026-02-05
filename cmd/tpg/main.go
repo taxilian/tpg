@@ -210,6 +210,9 @@ var epicWorktreeCmd = &cobra.Command{
 If --branch is not specified, a branch name will be auto-generated.
 If --base is not specified, "main" will be used.
 
+Note: This command only stores worktree metadata in tpg. It does NOT create
+the actual git worktree. Run 'git worktree add' separately.
+
 Examples:
   tpg epic worktree ep-abc123
   tpg epic worktree ep-abc123 --branch feature/my-custom-branch
@@ -808,11 +811,12 @@ Examples:
 
 var epicFinishCmd = &cobra.Command{
 	Use:   "finish <id>",
-	Short: "Show closing instructions and cleanup info for an epic",
+	Short: "Show cleanup steps for an epic (does not complete it)",
 	Long: `Show the closing instructions (if any) and worktree cleanup commands for an epic.
 
-This does NOT mark the epic as done - epics auto-complete when all children are done.
-Use this to see what cleanup steps are needed before or after completion.
+Epics auto-complete when all children are done or canceled - this command does NOT
+complete the epic. Use it to see cleanup steps (merge PR, delete worktree, etc.)
+that should be done before or after the epic auto-completes.
 
 Examples:
   tpg epic finish ep-abc123`,
@@ -961,6 +965,14 @@ Examples:
   requirements: |
     - Validate email format
     - Hash passwords with bcrypt
+  EOF
+
+  # Create task with multiple fields via YAML:
+  tpg add "Task title" --from-yaml <<EOF
+  desc: |
+    Detailed description here
+  priority: 1
+  parent: ep-abc123
   EOF`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -2279,7 +2291,10 @@ Examples:
   EOF
 
   # Override dependency check
-  tpg done ts-a1b2c3 --override "Work superseded by different approach"`,
+  tpg done ts-a1b2c3 --override "Work superseded by different approach"
+
+Note: Completing a task with zero log entries will trigger a warning.
+Consider logging progress milestones before marking done.`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -2795,6 +2810,15 @@ var logCmd = &cobra.Command{
 	Long: `Add a timestamped log entry to a task's audit trail.
 
 Updates the task's timestamp (affects stale detection).
+
+WHEN TO LOG (do this immediately when it happens):
+  • Discovered a blocker or created a dependency
+  • Chose between alternatives (log what and why)
+  • Found existing code/patterns that change your approach
+  • Hit something unexpected (error, missing API, wrong assumption)
+  • Finished a key milestone (core logic works, tests pass)
+
+DO NOT LOG routine actions (opened file, read docs, ran command).
 
 Progress logs: Start message with "progress:" to mark major milestones.
 Progress logs appear in the "Latest Update" section of tpg show, visible
@@ -3656,7 +3680,7 @@ var parentCmd = &cobra.Command{
 	Long: `Set the parent epic for a task.
 
 This establishes a hierarchical relationship where tasks belong to epics.
-The parent must be an epic (created with -e flag).
+The parent must be an epic (created with 'tpg epic add').
 
 Example:
   tpg parent ts-a1b2c3 ep-d4e5f6
