@@ -389,10 +389,16 @@ func New(database *db.DB, project string) Model {
 	}
 }
 
+// Refresh interval for auto-refresh
+const refreshInterval = 5 * time.Second
+
 // Messages
+type tickMsg time.Time
+
 type itemsMsg struct {
-	items []model.Item
-	err   error
+	items      []model.Item
+	err        error
+	preserveID string // ID to preserve cursor position on
 }
 
 type detailMsg struct {
@@ -436,17 +442,29 @@ type editorFinishedMsg struct {
 
 // loadItems loads items from the database, filtered by the current project.
 func (m Model) loadItems() tea.Cmd {
+	return m.loadItemsPreserving("")
+}
+
+// loadItemsPreserving loads items and tries to preserve cursor on the given ID.
+func (m Model) loadItemsPreserving(preserveID string) tea.Cmd {
 	return func() tea.Msg {
 		items, err := m.db.ListItemsFiltered(db.ListFilter{Project: m.project})
 		if err != nil {
-			return itemsMsg{items: items, err: err}
+			return itemsMsg{items: items, err: err, preserveID: preserveID}
 		}
 		// Populate labels for display
 		if err := m.db.PopulateItemLabels(items); err != nil {
-			return itemsMsg{items: items, err: err}
+			return itemsMsg{items: items, err: err, preserveID: preserveID}
 		}
-		return itemsMsg{items: items, err: nil}
+		return itemsMsg{items: items, err: nil, preserveID: preserveID}
 	}
+}
+
+// tickCmd returns a command that sends a tick after the refresh interval.
+func tickCmd() tea.Cmd {
+	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 // loadStaleItems loads stale items and returns a command.
@@ -559,7 +577,7 @@ func (m *Model) applyFilters() {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadItems(), m.loadStaleItems())
+	return tea.Batch(m.loadItems(), m.loadStaleItems(), tickCmd())
 }
 
 // Update implements tea.Model.
@@ -576,13 +594,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
+	case tickMsg:
+		// Auto-refresh: skip if user is in input mode, textarea, or certain views
+		if m.inputMode != InputNone {
+			return m, tickCmd() // Just reschedule, don't refresh
+		}
+		if m.viewMode == ViewCreateWizard || m.viewMode == ViewConfig {
+			return m, tickCmd() // Skip refresh in wizard/config views
+		}
+		// Get current item ID to preserve selection
+		var preserveID string
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			preserveID = treeNodes[m.cursor].Item.ID
+		}
+		return m, tea.Batch(m.loadItemsPreserving(preserveID), m.loadStaleItems(), tickCmd())
+
 	case itemsMsg:
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
 		}
+		// Save current ID before applying filters
+		var currentID string
+		if msg.preserveID != "" {
+			currentID = msg.preserveID
+		}
 		m.items = msg.items
 		m.applyFilters()
+		// Restore cursor position if we have a preserved ID
+		if currentID != "" {
+			treeNodes := m.buildTree()
+			for i, node := range treeNodes {
+				if node.Item.ID == currentID {
+					m.cursor = i
+					break
+				}
+			}
+		}
 		return m, nil
 
 	case detailMsg:

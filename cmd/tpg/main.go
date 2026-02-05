@@ -3755,6 +3755,7 @@ Actions:
   after <other-id>      Mark this task as depending on another (this cannot start until other is done)
   list                  Show all dependencies for this task
   remove <other-id>     Remove a dependency relationship
+  unblock <other-id>    Alias for remove (symmetric with blocks)
 
 Understanding blocks vs after:
 
@@ -3770,7 +3771,8 @@ Examples:
   tpg dep ts-a1b2c3 blocks ts-d4e5f6     # ts-d4e5f6 waits for ts-a1b2c3
   tpg dep ts-d4e5f6 after ts-a1b2c3      # same thing, other direction
   tpg dep ts-a1b2c3 list                  # show all deps for ts-a1b2c3
-  tpg dep ts-a1b2c3 remove ts-d4e5f6     # remove dependency between them`,
+  tpg dep ts-a1b2c3 remove ts-d4e5f6     # remove dependency between them
+  tpg dep ts-a1b2c3 unblock ts-d4e5f6    # same as remove`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
@@ -3805,7 +3807,7 @@ Examples:
 			}
 			fmt.Printf("%s now depends on %s\n", id, otherID)
 
-		case "remove":
+		case "remove", "unblock":
 			if len(args) < 3 {
 				return fmt.Errorf("usage: tpg dep <id> remove <other-id>")
 			}
