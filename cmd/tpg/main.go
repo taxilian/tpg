@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
 	"github.com/taxilian/tpg/internal/plugin"
@@ -64,7 +65,6 @@ var (
 	flagEditTitle        string
 	flagContext          string
 	flagOnClose          string
-	flagStdinYAML        bool
 	flagStatusAll        bool
 	flagLearnConcept     []string
 	flagLearnFile        []string
@@ -116,6 +116,7 @@ var (
 
 	flagDoctorDryRun bool
 	flagResume       bool
+	flagFromYAML     bool
 )
 
 func openDB() (*db.DB, error) {
@@ -159,6 +160,14 @@ Quick start:
   tpg start <id>
   tpg log <id> "progress: made progress on X"
   tpg done <id> "Completed X, results in Y"
+
+Multi-field input: Use --from-yaml to set multiple flags from stdin YAML.
+  tpg epic add "Title" --from-yaml <<EOF
+  context: |
+    Shared context for tasks
+  on_close: |
+    Instructions when done
+  EOF
 
 Use 'tpg [command] --help' for detailed help on any command.`,
 }
@@ -291,13 +300,13 @@ children are done.
 Use --context to provide context shared with all descendant tasks.
 Use --on-close for instructions shown when the epic completes.
 
-For single fields, use '-' to read from stdin:
+Use '-' to read a field from stdin:
   tpg epic add "Title" --context - <<EOF
   context here
   EOF
 
-For multiple fields, use --stdin-yaml to read YAML:
-  tpg epic add "Title" --stdin-yaml <<EOF
+For multiple fields from stdin, use --from-yaml instead of individual flags:
+  tpg epic add "Title" --from-yaml <<EOF
   context: |
     Shared context for all tasks
   on_close: |
@@ -318,16 +327,6 @@ Examples:
 
   # Epic with worktree for isolated development
   tpg epic add "New feature" --worktree
-
-  # Epic with multiple fields from YAML
-  tpg epic add "Refactor" --stdin-yaml <<EOF
-  context: |
-    Refactoring the auth module. See RFC-123.
-  on_close: |
-    Before merging:
-    1. Run full test suite
-    2. Update CHANGELOG.md
-  EOF
 
   # With parent epic
   tpg epic add "Sub-feature" --parent ep-abc123 --worktree`,
@@ -362,60 +361,39 @@ Examples:
 		context := flagContext
 		onClose := flagOnClose
 
-		// Handle --stdin-yaml: read all fields from YAML
-		if flagStdinYAML {
-			if description == "-" || context == "-" || onClose == "-" {
-				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
-			}
-			fields, err := parseItemFieldsYAML()
+		// Handle single-field stdin markers
+		stdinUsed := false
+
+		if description == "-" {
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to read from stdin: %w", err)
 			}
-			// YAML values override flags (if non-empty)
-			if fields.Desc != "" {
-				description = fields.Desc
-			}
-			if fields.Context != "" {
-				context = fields.Context
-			}
-			if fields.OnClose != "" {
-				onClose = fields.OnClose
-			}
-		} else {
-			// Handle single-field stdin markers
-			stdinUsed := false
+			description = strings.TrimSpace(string(data))
+			stdinUsed = true
+		}
 
-			if description == "-" {
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				description = strings.TrimSpace(string(data))
-				stdinUsed = true
+		if context == "-" {
+			if stdinUsed {
+				return fmt.Errorf("cannot use stdin for multiple flags; use --from-yaml instead")
 			}
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
+			}
+			context = strings.TrimSpace(string(data))
+			stdinUsed = true
+		}
 
-			if context == "-" {
-				if stdinUsed {
-					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
-				}
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				context = strings.TrimSpace(string(data))
-				stdinUsed = true
+		if onClose == "-" {
+			if stdinUsed {
+				return fmt.Errorf("cannot use stdin for multiple flags; use --from-yaml instead")
 			}
-
-			if onClose == "-" {
-				if stdinUsed {
-					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
-				}
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				onClose = strings.TrimSpace(string(data))
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
 			}
+			onClose = strings.TrimSpace(string(data))
 		}
 
 		item := &model.Item{
@@ -511,8 +489,8 @@ var epicEditCmd = &cobra.Command{
 	Short: "Edit an epic's settings",
 	Long: `Edit an epic's title, context, or on-close instructions.
 
-Use '-' with --context or --on-close to read from stdin.
-For multiple fields, use --stdin-yaml to read YAML.
+Use '-' with --context or --on-close to read a single field from stdin.
+For multiple fields, use --from-yaml instead of individual flags.
 
 Examples:
   tpg epic edit ep-abc123 --title "New title"
@@ -523,12 +501,14 @@ Examples:
   All tasks should follow the new API patterns.
   EOF
 
-  # Update multiple fields at once
-  tpg epic edit ep-abc123 --stdin-yaml <<EOF
+  # Update multiple fields at once via YAML
+  tpg epic edit ep-abc123 --from-yaml <<EOF
+  title: Updated epic title
   context: |
-    Updated shared context
+    New shared context for all tasks.
+    Use the updated API patterns.
   on_close: |
-    New closing instructions
+    Run the full test suite before closing.
   EOF
 
   # Clear context
@@ -562,72 +542,47 @@ Examples:
 			updated = true
 		}
 
-		// Handle --stdin-yaml for multiple fields
-		if flagStdinYAML {
-			if flagContext == "-" || flagOnClose == "-" {
-				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
+		// Handle single-field stdin markers
+		stdinUsed := false
+
+		if cmd.Flags().Changed("context") {
+			context := flagContext
+			if context == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				context = strings.TrimSpace(string(data))
+				stdinUsed = true
 			}
-			fields, err := parseItemFieldsYAML()
-			if err != nil {
+			if err := database.SetSharedContext(id, context); err != nil {
 				return err
 			}
-			if fields.Context != "" {
-				if err := database.SetSharedContext(id, fields.Context); err != nil {
-					return err
-				}
-				fmt.Printf("Updated shared context for %s\n", id)
-				updated = true
-			}
-			if fields.OnClose != "" {
-				if err := database.SetClosingInstructions(id, fields.OnClose); err != nil {
-					return err
-				}
-				fmt.Printf("Updated closing instructions for %s\n", id)
-				updated = true
-			}
-		} else {
-			// Handle single-field stdin markers
-			stdinUsed := false
+			fmt.Printf("Updated shared context for %s\n", id)
+			updated = true
+		}
 
-			if cmd.Flags().Changed("context") {
-				context := flagContext
-				if context == "-" {
-					data, err := io.ReadAll(os.Stdin)
-					if err != nil {
-						return fmt.Errorf("failed to read from stdin: %w", err)
-					}
-					context = strings.TrimSpace(string(data))
-					stdinUsed = true
+		if cmd.Flags().Changed("on-close") {
+			instructions := flagOnClose
+			if instructions == "-" {
+				if stdinUsed {
+					return fmt.Errorf("cannot use stdin for multiple flags; use --from-yaml instead")
 				}
-				if err := database.SetSharedContext(id, context); err != nil {
-					return err
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
 				}
-				fmt.Printf("Updated shared context for %s\n", id)
-				updated = true
+				instructions = strings.TrimSpace(string(data))
 			}
-
-			if cmd.Flags().Changed("on-close") {
-				instructions := flagOnClose
-				if instructions == "-" {
-					if stdinUsed {
-						return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
-					}
-					data, err := io.ReadAll(os.Stdin)
-					if err != nil {
-						return fmt.Errorf("failed to read from stdin: %w", err)
-					}
-					instructions = strings.TrimSpace(string(data))
-				}
-				if err := database.SetClosingInstructions(id, instructions); err != nil {
-					return err
-				}
-				fmt.Printf("Updated closing instructions for %s\n", id)
-				updated = true
+			if err := database.SetClosingInstructions(id, instructions); err != nil {
+				return err
 			}
+			fmt.Printf("Updated closing instructions for %s\n", id)
+			updated = true
 		}
 
 		if !updated {
-			return fmt.Errorf("no changes specified (use --title, --context, --on-close, or --stdin-yaml)")
+			return fmt.Errorf("no changes specified (use --title, --context, or --on-close)")
 		}
 
 		database.BackupQuiet()
@@ -728,13 +683,8 @@ The new epic does NOT inherit:
   - Labels (must be re-added if needed)
   - Status (new epic starts as open)
 
-For multiple fields, use --stdin-yaml to read YAML:
-  tpg epic replace ts-abc "New epic" --stdin-yaml <<EOF
-  context: |
-    Shared context for all tasks
-  on_close: |
-    Instructions when done
-  EOF
+Use '-' with a flag to read a single field from stdin.
+For multiple fields, use --from-yaml instead of individual flags.
 
 Examples:
   # Replace a task with an epic
@@ -744,6 +694,15 @@ Examples:
   tpg epic replace ts-abc123 "Feature epic" --context - <<EOF
   This epic replaces a single task with a multi-step workflow.
   See design doc at docs/feature-design.md
+  EOF
+
+  # Replace with multiple fields via YAML
+  tpg epic replace ts-abc123 "Feature epic" --from-yaml <<EOF
+  context: |
+    Context shared with all descendant tasks.
+  on_close: |
+    Remember to update the changelog.
+  priority: 1
   EOF`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -779,59 +738,39 @@ Examples:
 		context := flagContext
 		onClose := flagOnClose
 
-		// Handle --stdin-yaml: read all fields from YAML
-		if flagStdinYAML {
-			if description == "-" || context == "-" || onClose == "-" {
-				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
-			}
-			fields, err := parseItemFieldsYAML()
+		// Handle single-field stdin markers
+		stdinUsed := false
+
+		if description == "-" {
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to read from stdin: %w", err)
 			}
-			if fields.Desc != "" {
-				description = fields.Desc
-			}
-			if fields.Context != "" {
-				context = fields.Context
-			}
-			if fields.OnClose != "" {
-				onClose = fields.OnClose
-			}
-		} else {
-			// Handle single-field stdin markers
-			stdinUsed := false
+			description = strings.TrimSpace(string(data))
+			stdinUsed = true
+		}
 
-			if description == "-" {
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				description = strings.TrimSpace(string(data))
-				stdinUsed = true
+		if context == "-" {
+			if stdinUsed {
+				return fmt.Errorf("cannot use stdin for multiple flags; use --from-yaml instead")
 			}
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
+			}
+			context = strings.TrimSpace(string(data))
+			stdinUsed = true
+		}
 
-			if context == "-" {
-				if stdinUsed {
-					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
-				}
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				context = strings.TrimSpace(string(data))
-				stdinUsed = true
+		if onClose == "-" {
+			if stdinUsed {
+				return fmt.Errorf("cannot use stdin for multiple flags; use --from-yaml instead")
 			}
-
-			if onClose == "-" {
-				if stdinUsed {
-					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
-				}
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				onClose = strings.TrimSpace(string(data))
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
 			}
+			onClose = strings.TrimSpace(string(data))
 		}
 
 		newItem := &model.Item{
@@ -1242,13 +1181,8 @@ The new item does NOT inherit:
 Constraints:
   - Cannot replace an epic-with-children with a task (tasks can't have children)
 
-For epics with multiple fields, use --stdin-yaml to read YAML:
-  tpg replace ts-abc "New epic" -e --stdin-yaml <<EOF
-  context: |
-    Shared context for all tasks
-  on_close: |
-    Instructions when done
-  EOF
+Use '-' with a flag to read a single field from stdin.
+For multiple fields, use --from-yaml instead of individual flags.
 
 Examples:
   # Replace a task with a new task
@@ -1260,6 +1194,14 @@ Examples:
   # Replace with description from stdin
   tpg replace ts-abc123 "New task" --desc - <<EOF
   Updated requirements and context
+  EOF
+
+  # Replace with multiple fields via YAML
+  tpg replace ts-abc123 "New task" --from-yaml <<EOF
+  desc: |
+    Updated requirements and context.
+    See design doc for details.
+  priority: 1
   EOF
 
   # Replace with different type/priority
@@ -1305,59 +1247,39 @@ Examples:
 		context := flagContext
 		onClose := flagOnClose
 
-		// Handle --stdin-yaml: read all fields from YAML
-		if flagStdinYAML {
-			if description == "-" || context == "-" || onClose == "-" {
-				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
-			}
-			fields, err := parseItemFieldsYAML()
+		// Handle single-field stdin markers
+		stdinUsed := false
+
+		if description == "-" {
+			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to read from stdin: %w", err)
 			}
-			if fields.Desc != "" {
-				description = fields.Desc
-			}
-			if fields.Context != "" {
-				context = fields.Context
-			}
-			if fields.OnClose != "" {
-				onClose = fields.OnClose
-			}
-		} else {
-			// Handle single-field stdin markers
-			stdinUsed := false
+			description = strings.TrimSpace(string(data))
+			stdinUsed = true
+		}
 
-			if description == "-" {
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				description = strings.TrimSpace(string(data))
-				stdinUsed = true
+		if context == "-" {
+			if stdinUsed {
+				return fmt.Errorf("cannot use stdin for multiple flags; use --from-yaml instead")
 			}
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
+			}
+			context = strings.TrimSpace(string(data))
+			stdinUsed = true
+		}
 
-			if context == "-" {
-				if stdinUsed {
-					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
-				}
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				context = strings.TrimSpace(string(data))
-				stdinUsed = true
+		if onClose == "-" {
+			if stdinUsed {
+				return fmt.Errorf("cannot use stdin for multiple flags; use --from-yaml instead")
 			}
-
-			if onClose == "-" {
-				if stdinUsed {
-					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
-				}
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				onClose = strings.TrimSpace(string(data))
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
 			}
+			onClose = strings.TrimSpace(string(data))
 		}
 
 		newItem := &model.Item{
@@ -1393,26 +1315,163 @@ Examples:
 	},
 }
 
-// itemFieldsYAML represents fields that can be read from stdin as YAML.
-// Used by --stdin-yaml flag for epic add/edit/replace commands.
-type itemFieldsYAML struct {
-	Desc    string `yaml:"desc"`
-	Context string `yaml:"context"`
-	OnClose string `yaml:"on_close"`
-}
-
-// parseItemFieldsYAML reads and parses YAML from stdin for item fields.
-// Returns parsed fields. Caller should merge non-empty values with flag values.
-func parseItemFieldsYAML() (*itemFieldsYAML, error) {
+// applyYAMLFlags reads YAML from stdin and sets corresponding flag values.
+// Keys in YAML use underscores (e.g., "some_flag"), which are converted to
+// hyphens (e.g., "--some-flag") for flag lookup.
+// Supports types: string, int, bool, []string (StringArray).
+func applyYAMLFlags(cmd *cobra.Command) error {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read from stdin: %w", err)
+		return fmt.Errorf("failed to read from stdin: %w", err)
 	}
-	var fields itemFieldsYAML
-	if err := yaml.Unmarshal(data, &fields); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML from stdin: %w", err)
+	if len(data) == 0 {
+		return nil // No input, nothing to do
 	}
-	return &fields, nil
+
+	var yamlData map[string]interface{}
+	if err := yaml.Unmarshal(data, &yamlData); err != nil {
+		return fmt.Errorf("failed to parse YAML from stdin: %w", err)
+	}
+
+	return applyYAMLFlagsFromData(cmd, yamlData)
+}
+
+// applyYAMLFlagsFromData applies YAML data (as a map) to command flags.
+// This is the testable core of applyYAMLFlags.
+func applyYAMLFlagsFromData(cmd *cobra.Command, yamlData map[string]interface{}) error {
+	for key, value := range yamlData {
+		// Convert underscores to hyphens for flag name
+		flagName := strings.ReplaceAll(key, "_", "-")
+
+		// Look up the flag in the command's flag set (including persistent flags)
+		flag := cmd.Flags().Lookup(flagName)
+		if flag == nil {
+			// Try just the local flags
+			flag = cmd.LocalFlags().Lookup(flagName)
+		}
+		if flag == nil {
+			// Try persistent flags from parent
+			flag = cmd.InheritedFlags().Lookup(flagName)
+		}
+		if flag == nil {
+			return fmt.Errorf("unknown flag from YAML: %q (converted from %q)", flagName, key)
+		}
+
+		// Set the flag value based on its type
+		if err := setFlagFromYAML(flag, value); err != nil {
+			return fmt.Errorf("failed to set flag %q: %w", flagName, err)
+		}
+	}
+
+	return nil
+}
+
+// setFlagFromYAML sets a flag's value from a YAML-parsed interface{} value.
+// Handles type conversion for string, int, bool, and []string (StringArray).
+// Also marks the flag as Changed so cmd.Flags().Changed() returns true.
+func setFlagFromYAML(flag *pflag.Flag, value interface{}) error {
+	if value == nil {
+		return nil // Skip nil values
+	}
+
+	var err error
+	switch flag.Value.Type() {
+	case "string":
+		strVal, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("expected string, got %T", value)
+		}
+		err = flag.Value.Set(strVal)
+		if err == nil {
+			flag.Changed = true
+		}
+		return err
+
+	case "int":
+		switch v := value.(type) {
+		case int:
+			err = flag.Value.Set(fmt.Sprintf("%d", v))
+		case int64:
+			err = flag.Value.Set(fmt.Sprintf("%d", v))
+		case float64:
+			// YAML often parses integers as float64
+			err = flag.Value.Set(fmt.Sprintf("%d", int(v)))
+		default:
+			return fmt.Errorf("expected int, got %T", value)
+		}
+		if err == nil {
+			flag.Changed = true
+		}
+		return err
+
+	case "bool":
+		boolVal, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("expected bool, got %T", value)
+		}
+		if boolVal {
+			err = flag.Value.Set("true")
+		} else {
+			err = flag.Value.Set("false")
+		}
+		if err == nil {
+			flag.Changed = true
+		}
+		return err
+
+	case "stringArray":
+		// Handle both single string and array of strings
+		switch v := value.(type) {
+		case string:
+			err = flag.Value.Set(v)
+			if err == nil {
+				flag.Changed = true
+			}
+			return err
+		case []interface{}:
+			for _, item := range v {
+				strItem, ok := item.(string)
+				if !ok {
+					return fmt.Errorf("expected string array element, got %T", item)
+				}
+				if err := flag.Value.Set(strItem); err != nil {
+					return err
+				}
+			}
+			flag.Changed = true
+			return nil
+		case []string:
+			for _, strItem := range v {
+				if err := flag.Value.Set(strItem); err != nil {
+					return err
+				}
+			}
+			flag.Changed = true
+			return nil
+		default:
+			return fmt.Errorf("expected string or string array, got %T", value)
+		}
+
+	default:
+		return fmt.Errorf("unsupported flag type: %s", flag.Value.Type())
+	}
+}
+
+// findStdinMarkerFlag checks if any flag value is '-' (stdin marker).
+// Returns the flag name if found, empty string otherwise.
+// This is used to detect conflicts with --from-yaml which also reads from stdin.
+func findStdinMarkerFlag(cmd *cobra.Command) string {
+	var found string
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if found != "" {
+			return // Already found one
+		}
+		// Only check string flags that have been explicitly set
+		if f.Value.Type() == "string" && f.Changed && f.Value.String() == "-" {
+			found = f.Name
+		}
+	})
+	return found
 }
 
 // countWords returns the number of words in a string
@@ -3384,6 +3443,9 @@ Without flags, opens the description in your configured editor.
 
 Uses $TPG_EDITOR if set, otherwise defaults to nvim, then nano, then vi.
 
+Use '-' with a flag to read a single field from stdin.
+For multiple fields, use --from-yaml instead of individual flags.
+
 For epics, prefer 'tpg epic edit' which has the same options.
 
 Examples:
@@ -3399,6 +3461,15 @@ Examples:
   # Epic on-close instructions
   tpg edit ep-abc123 --on-close - <<EOF
   Run make test && make lint before merging.
+  EOF
+
+  # Update multiple epic fields via YAML
+  tpg edit ep-abc123 --from-yaml <<EOF
+  title: Updated title
+  context: |
+    Updated guidelines for all tasks.
+  on_close: |
+    Ensure all tests pass.
   EOF`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -5473,9 +5544,24 @@ func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&flagProject, "project", "", "Project scope")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Show agent context and other debug info")
+	rootCmd.PersistentFlags().BoolVar(&flagFromYAML, "from-yaml", false, "Read flag values from stdin as YAML (keys use underscores, e.g. desc: value)")
 
-	// Show agent context when verbose
-	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+	// Handle --from-yaml and show agent context when verbose
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Handle --from-yaml: read YAML from stdin and set flag values
+		if flagFromYAML {
+			// Check for conflicting '-' stdin markers on any flag
+			if flagName := findStdinMarkerFlag(cmd); flagName != "" {
+				return fmt.Errorf("cannot use --from-yaml with '-' stdin marker on --%s\n"+
+					"Use YAML key '%s: |' in stdin instead of --%s -",
+					flagName, strings.ReplaceAll(flagName, "-", "_"), flagName)
+			}
+			if err := applyYAMLFlags(cmd); err != nil {
+				return err
+			}
+		}
+
+		// Show agent context when verbose
 		if flagVerbose {
 			agentID := os.Getenv("AGENT_ID")
 			agentType := os.Getenv("AGENT_TYPE")
@@ -5483,6 +5569,7 @@ func init() {
 				fmt.Fprintf(os.Stderr, "[agent] ID=%s TYPE=%s\n", agentID, agentType)
 			}
 		}
+		return nil
 	}
 
 	// add flags
@@ -5632,7 +5719,6 @@ func init() {
 	epicAddCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
 	epicAddCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
 	epicAddCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
-	epicAddCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read desc, context, on_close from stdin as YAML")
 	epicAddCmd.Flags().BoolVar(&flagWorktree, "worktree", false, "Create epic with worktree metadata (generates branch name)")
 	epicAddCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name for worktree (default: auto-generated)")
 	epicAddCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch for worktree (default: parent worktree branch or current branch)")
@@ -5642,7 +5728,6 @@ func init() {
 	epicEditCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title for the epic")
 	epicEditCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
 	epicEditCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
-	epicEditCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read context, on_close from stdin as YAML")
 
 	// epicReplaceCmd flags
 	epicReplaceCmd.Flags().IntVarP(&flagPriority, "priority", "p", 2, "Priority (1=high, 2=medium, 3=low)")
@@ -5651,7 +5736,6 @@ func init() {
 	epicReplaceCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
 	epicReplaceCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
 	epicReplaceCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
-	epicReplaceCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read desc, context, on_close from stdin as YAML")
 
 	epicCmd.AddCommand(epicAddCmd)
 	epicCmd.AddCommand(epicEditCmd)
@@ -5672,7 +5756,6 @@ func init() {
 	replaceCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
 	replaceCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin, epics only)")
 	replaceCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
-	replaceCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read desc, context, on_close from stdin as YAML")
 	rootCmd.AddCommand(replaceCmd)
 
 	rootCmd.AddCommand(listCmd)
