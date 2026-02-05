@@ -451,9 +451,9 @@ func TestSetParent_NotFound(t *testing.T) {
 }
 
 func TestSchemaVersion(t *testing.T) {
-	// Verify SchemaVersion is set to 4
-	if SchemaVersion != 4 {
-		t.Errorf("SchemaVersion = %d, want 4", SchemaVersion)
+	// Verify SchemaVersion is set to 5
+	if SchemaVersion != 5 {
+		t.Errorf("SchemaVersion = %d, want 5", SchemaVersion)
 	}
 }
 
@@ -532,13 +532,13 @@ func TestMigrationV4_ExistingDataPreserved(t *testing.T) {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
-	// Verify version is now 4
+	// Verify version is now 5
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("schema version = %d, want 4", version)
+	if version != 5 {
+		t.Errorf("schema version = %d, want 5", version)
 	}
 
 	// Verify existing data is preserved

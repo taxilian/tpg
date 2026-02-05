@@ -46,14 +46,14 @@ func (db *DB) CreateItem(item *model.Item) error {
 		INSERT INTO items (
 			id, project, type, title, description, status, priority, parent_id,
 			template_id, step_index, variables, template_hash, results,
-			worktree_branch, worktree_base,
+			worktree_branch, worktree_base, shared_context, closing_instructions,
 			created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Project, item.Type, item.Title, item.Description,
 		item.Status, item.Priority, item.ParentID,
 		item.TemplateID, item.StepIndex, varsJSON, item.TemplateHash, item.Results,
-		item.WorktreeBranch, item.WorktreeBase,
+		item.WorktreeBranch, item.WorktreeBase, item.SharedContext, item.ClosingInstructions,
 		sqlTime(item.CreatedAt), sqlTime(item.UpdatedAt),
 	)
 	if err != nil {
@@ -68,7 +68,7 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 		SELECT id, project, type, title, description, status, priority, parent_id,
 			agent_id, agent_last_active,
 			template_id, step_index, variables, template_hash, results,
-			worktree_branch, worktree_base,
+			worktree_branch, worktree_base, shared_context, closing_instructions,
 			created_at, updated_at
 		FROM items WHERE id = ?`, id)
 
@@ -83,12 +83,14 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	var results sql.NullString
 	var worktreeBranch sql.NullString
 	var worktreeBase sql.NullString
+	var sharedContext sql.NullString
+	var closingInstructions sql.NullString
 	err := row.Scan(
 		&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
 		&item.Status, &item.Priority, &parentID,
 		&agentID, &agentLastActive,
 		&templateID, &stepIndex, &variables, &templateHash, &results,
-		&worktreeBranch, &worktreeBase,
+		&worktreeBranch, &worktreeBase, &sharedContext, &closingInstructions,
 		&item.CreatedAt, &item.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -132,6 +134,12 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	}
 	if worktreeBase.Valid {
 		item.WorktreeBase = worktreeBase.String
+	}
+	if sharedContext.Valid {
+		item.SharedContext = sharedContext.String
+	}
+	if closingInstructions.Valid {
+		item.ClosingInstructions = closingInstructions.String
 	}
 	return item, nil
 }
@@ -237,6 +245,68 @@ func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
 	return nil
 }
 
+// EpicCompletionInfo contains information about an epic ready to be auto-completed.
+type EpicCompletionInfo struct {
+	Epic                *model.Item
+	ClosingInstructions string
+	WorktreeBranch      string
+	WorktreeBase        string
+}
+
+// CheckParentEpicCompletion checks if the parent epic of the given item should be auto-completed.
+// Returns nil if there is no parent, the parent still has open children, or the parent is already done.
+func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, error) {
+	// Get the item to find its parent
+	item, err := db.GetItem(itemID)
+	if err != nil {
+		return nil, err
+	}
+
+	if item.ParentID == nil {
+		return nil, nil // No parent
+	}
+
+	parent, err := db.GetItem(*item.ParentID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Already done or canceled
+	if parent.Status == model.StatusDone || parent.Status == model.StatusCanceled {
+		return nil, nil
+	}
+
+	// Check if all children are done
+	var openChildren int
+	err = db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, parent.ID).Scan(&openChildren)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check children: %w", err)
+	}
+
+	if openChildren > 0 {
+		return nil, nil // Still has open children
+	}
+
+	return &EpicCompletionInfo{
+		Epic:                parent,
+		ClosingInstructions: parent.ClosingInstructions,
+		WorktreeBranch:      parent.WorktreeBranch,
+		WorktreeBase:        parent.WorktreeBase,
+	}, nil
+}
+
+// AutoCompleteEpic marks an epic as done with an auto-generated results message.
+func (db *DB) AutoCompleteEpic(epicID string) error {
+	// Get children stats for the results message
+	total, _, _, done, err := db.GetChildrenStats(epicID)
+	if err != nil {
+		return err
+	}
+
+	results := fmt.Sprintf("All %d child tasks completed (%d done)", total, done)
+	return db.CompleteItem(epicID, results, AgentContext{})
+}
+
 // AppendDescription appends text to an item's description.
 func (db *DB) AppendDescription(id string, text string) error {
 	result, err := db.Exec(`
@@ -338,6 +408,46 @@ func (db *DB) SetTitle(id string, title string) error {
 		title, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to set title: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	return nil
+}
+
+// SetSharedContext sets the shared context for an epic.
+// Shared context is displayed to all descendants in 'tpg show'.
+func (db *DB) SetSharedContext(id string, context string) error {
+	result, err := db.Exec(`
+		UPDATE items
+		SET shared_context = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		context, sqlTime(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("failed to set shared context: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	return nil
+}
+
+// SetClosingInstructions sets the closing instructions for an epic.
+// These are displayed when the epic auto-completes (all children done).
+func (db *DB) SetClosingInstructions(id string, instructions string) error {
+	result, err := db.Exec(`
+		UPDATE items
+		SET closing_instructions = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		instructions, sqlTime(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("failed to set closing instructions: %w", err)
 	}
 
 	rows, _ := result.RowsAffected()
@@ -482,6 +592,48 @@ func (db *DB) GetChildren(parentID string) ([]model.Item, error) {
 	return db.queryItems(query, parentID)
 }
 
+// HasChildren returns true if the item has any children.
+func (db *DB) HasChildren(itemID string) (bool, error) {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM items WHERE parent_id = ?", itemID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to count children: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GetChildrenStats returns counts of children by status.
+func (db *DB) GetChildrenStats(itemID string) (total, open, inProgress, done int, err error) {
+	rows, err := db.Query(`
+		SELECT status, COUNT(*) as cnt
+		FROM items
+		WHERE parent_id = ?
+		GROUP BY status`, itemID)
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("failed to query children stats: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var status string
+		var cnt int
+		if err := rows.Scan(&status, &cnt); err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("failed to scan children stats: %w", err)
+		}
+		total += cnt
+		switch model.Status(status) {
+		case model.StatusOpen:
+			open += cnt
+		case model.StatusInProgress:
+			inProgress += cnt
+		case model.StatusDone:
+			done += cnt
+			// blocked and canceled are counted in total but not explicitly tracked
+		}
+	}
+	return total, open, inProgress, done, rows.Err()
+}
+
 // GetEpics returns all epics for a project (or all projects if empty).
 func (db *DB) GetEpics(project string) ([]model.Item, error) {
 	query := fmt.Sprintf("SELECT %s FROM items WHERE type = 'epic'", itemSelectColumns)
@@ -546,4 +698,128 @@ func (db *DB) GetParentChain(itemID string) ([]model.Item, error) {
 		ORDER BY (SELECT depth FROM ancestors WHERE id = items.id) DESC
 	`, itemSelectColumns)
 	return db.queryItems(query, itemID)
+}
+
+// SharedContextEntry represents shared context from an ancestor epic.
+type SharedContextEntry struct {
+	EpicID        string
+	EpicTitle     string
+	SharedContext string
+}
+
+// GetAncestorSharedContext returns shared context from all ancestors with context set.
+// Returns entries in order from root to nearest parent (top-down).
+func (db *DB) GetAncestorSharedContext(itemID string) ([]SharedContextEntry, error) {
+	ancestors, err := db.GetParentChain(itemID)
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []SharedContextEntry
+	for _, ancestor := range ancestors {
+		if ancestor.SharedContext != "" {
+			entries = append(entries, SharedContextEntry{
+				EpicID:        ancestor.ID,
+				EpicTitle:     ancestor.Title,
+				SharedContext: ancestor.SharedContext,
+			})
+		}
+	}
+	return entries, nil
+}
+
+// ReplaceItem replaces an existing item with a new one, preserving relationships.
+// The new item gets a new ID but inherits: parent, children, dependencies (both directions).
+// Labels are NOT inherited. Returns the new item's ID.
+func (db *DB) ReplaceItem(oldID string, newItem *model.Item) (string, error) {
+	// Get the old item first
+	oldItem, err := db.GetItem(oldID)
+	if err != nil {
+		return "", err
+	}
+
+	// If replacing with a task, ensure old item has no children
+	if newItem.Type == model.ItemTypeTask {
+		hasChildren, err := db.HasChildren(oldID)
+		if err != nil {
+			return "", err
+		}
+		if hasChildren {
+			return "", fmt.Errorf("cannot replace %s with a task: it has children (tasks cannot have children)", oldID)
+		}
+	}
+
+	// Start transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 1. Create the new item
+	varsJSON, err := marshalTemplateVars(newItem.TemplateVars)
+	if err != nil {
+		return "", err
+	}
+
+	_, err = tx.Exec(`
+		INSERT INTO items (
+			id, project, type, title, description, status, priority, parent_id,
+			template_id, step_index, variables, template_hash, results,
+			worktree_branch, worktree_base, shared_context, closing_instructions,
+			created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newItem.ID, newItem.Project, newItem.Type, newItem.Title, newItem.Description,
+		newItem.Status, newItem.Priority, oldItem.ParentID,
+		newItem.TemplateID, newItem.StepIndex, varsJSON, newItem.TemplateHash, newItem.Results,
+		newItem.WorktreeBranch, newItem.WorktreeBase, newItem.SharedContext, newItem.ClosingInstructions,
+		sqlTime(newItem.CreatedAt), sqlTime(newItem.UpdatedAt),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create replacement item: %w", err)
+	}
+
+	// 2. Update children to point to new parent
+	_, err = tx.Exec(`UPDATE items SET parent_id = ? WHERE parent_id = ?`, newItem.ID, oldID)
+	if err != nil {
+		return "", fmt.Errorf("failed to update children: %w", err)
+	}
+
+	// 3. Update dependencies where old item was the dependent (item_id)
+	_, err = tx.Exec(`UPDATE deps SET item_id = ? WHERE item_id = ?`, newItem.ID, oldID)
+	if err != nil {
+		return "", fmt.Errorf("failed to update outgoing dependencies: %w", err)
+	}
+
+	// 4. Update dependencies where old item was the dependency (depends_on)
+	_, err = tx.Exec(`UPDATE deps SET depends_on = ? WHERE depends_on = ?`, newItem.ID, oldID)
+	if err != nil {
+		return "", fmt.Errorf("failed to update incoming dependencies: %w", err)
+	}
+
+	// 5. Copy logs from old item to new item
+	_, err = tx.Exec(`UPDATE logs SET item_id = ? WHERE item_id = ?`, newItem.ID, oldID)
+	if err != nil {
+		return "", fmt.Errorf("failed to transfer logs: %w", err)
+	}
+
+	// 6. Delete item_labels associations (labels are NOT inherited)
+	_, err = tx.Exec(`DELETE FROM item_labels WHERE item_id = ?`, oldID)
+	if err != nil {
+		return "", fmt.Errorf("failed to remove old item labels: %w", err)
+	}
+
+	// 7. Delete the old item
+	_, err = tx.Exec(`DELETE FROM items WHERE id = ?`, oldID)
+	if err != nil {
+		return "", fmt.Errorf("failed to delete old item: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return newItem.ID, nil
 }

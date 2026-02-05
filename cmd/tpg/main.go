@@ -22,6 +22,7 @@ import (
 	"github.com/taxilian/tpg/internal/templates"
 	"github.com/taxilian/tpg/internal/tui"
 	"github.com/taxilian/tpg/internal/worktree"
+	"gopkg.in/yaml.v3"
 )
 
 // version is set via ldflags at build time, or read from module info
@@ -61,6 +62,9 @@ var (
 	flagHasBlockers      bool
 	flagNoBlockers       bool
 	flagEditTitle        string
+	flagContext          string
+	flagOnClose          string
+	flagStdinYAML        bool
 	flagStatusAll        bool
 	flagLearnConcept     []string
 	flagLearnFile        []string
@@ -276,13 +280,600 @@ Examples:
 	},
 }
 
+var epicAddCmd = &cobra.Command{
+	Use:   "add <title>",
+	Short: "Create a new epic",
+	Long: `Create a new epic for organizing related tasks.
+
+Epics are containers that group related tasks. They auto-complete when all
+children are done.
+
+Use --context to provide context shared with all descendant tasks.
+Use --on-close for instructions shown when the epic completes.
+
+For single fields, use '-' to read from stdin:
+  tpg epic add "Title" --context - <<EOF
+  context here
+  EOF
+
+For multiple fields, use --stdin-yaml to read YAML:
+  tpg epic add "Title" --stdin-yaml <<EOF
+  context: |
+    Shared context for all tasks
+  on_close: |
+    Instructions when done
+  desc: |
+    Optional description
+  EOF
+
+Examples:
+  # Simple epic
+  tpg epic add "Auth system redesign"
+
+  # Epic with context shared to all descendant tasks
+  tpg epic add "Payment integration" --context - <<EOF
+  Use Stripe API v3. See docs/stripe-guide.md for patterns.
+  All payment handlers must include idempotency keys.
+  EOF
+
+  # Epic with worktree for isolated development
+  tpg epic add "New feature" --worktree
+
+  # Epic with multiple fields from YAML
+  tpg epic add "Refactor" --stdin-yaml <<EOF
+  context: |
+    Refactoring the auth module. See RFC-123.
+  on_close: |
+    Before merging:
+    1. Run full test suite
+    2. Update CHANGELOG.md
+  EOF
+
+  # With parent epic
+  tpg epic add "Sub-feature" --parent ep-abc123 --worktree`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		project, err := resolveProject()
+		if err != nil {
+			return err
+		}
+
+		itemType := model.ItemTypeEpic
+
+		// Generate ID with custom prefix if provided
+		var itemID string
+		if flagPrefix != "" {
+			itemID = model.GenerateIDWithPrefixN(flagPrefix, itemType, model.DefaultIDLength)
+		} else {
+			itemID, err = database.GenerateItemID(itemType)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Initialize from flags
+		description := flagDescription
+		context := flagContext
+		onClose := flagOnClose
+
+		// Handle --stdin-yaml: read all fields from YAML
+		if flagStdinYAML {
+			if description == "-" || context == "-" || onClose == "-" {
+				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
+			}
+			fields, err := parseItemFieldsYAML()
+			if err != nil {
+				return err
+			}
+			// YAML values override flags (if non-empty)
+			if fields.Desc != "" {
+				description = fields.Desc
+			}
+			if fields.Context != "" {
+				context = fields.Context
+			}
+			if fields.OnClose != "" {
+				onClose = fields.OnClose
+			}
+		} else {
+			// Handle single-field stdin markers
+			stdinUsed := false
+
+			if description == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				description = strings.TrimSpace(string(data))
+				stdinUsed = true
+			}
+
+			if context == "-" {
+				if stdinUsed {
+					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
+				}
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				context = strings.TrimSpace(string(data))
+				stdinUsed = true
+			}
+
+			if onClose == "-" {
+				if stdinUsed {
+					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
+				}
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				onClose = strings.TrimSpace(string(data))
+			}
+		}
+
+		item := &model.Item{
+			ID:                  itemID,
+			Project:             project,
+			Type:                itemType,
+			Title:               strings.Join(args, " "),
+			Description:         description,
+			Status:              model.StatusOpen,
+			Priority:            flagPriority,
+			SharedContext:       context,
+			ClosingInstructions: onClose,
+			CreatedAt:           time.Now(),
+			UpdatedAt:           time.Now(),
+		}
+
+		if err := database.CreateItem(item); err != nil {
+			return err
+		}
+
+		// Set parent if specified
+		if flagParent != "" {
+			if err := database.SetParent(item.ID, flagParent); err != nil {
+				return err
+			}
+		}
+
+		// Add labels if specified
+		for _, labelName := range flagAddLabels {
+			if err := database.AddLabelToItem(item.ID, item.Project, labelName); err != nil {
+				return err
+			}
+		}
+
+		// Handle worktree metadata
+		if flagWorktree || flagWorktreeBranch != "" {
+			config, _ := db.LoadConfig()
+
+			// Generate branch name if not provided
+			branch := flagWorktreeBranch
+			if branch == "" {
+				branch = generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
+			}
+			if !flagWorktreeAllow && worktreeRequireEpicID(config) && !branchIncludesEpicID(branch, item.ID) {
+				suggested := generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
+				return fmt.Errorf("branch name must include epic id %q (suggested: %s)", item.ID, suggested)
+			}
+
+			// Determine base branch
+			base := flagWorktreeBase
+			if base == "" {
+				base = resolveWorktreeBase(database, flagParent)
+			}
+
+			// Update the epic with worktree metadata
+			if err := database.SetWorktreeMetadata(item.ID, branch, base); err != nil {
+				return fmt.Errorf("failed to set worktree metadata: %w", err)
+			}
+
+			fmt.Println(item.ID)
+			ctx, worktrees := detectWorktreeState()
+			repoRoot := ""
+			if ctx != nil {
+				repoRoot = ctx.RepoRoot
+			}
+			location := worktreeLocationForEpic(config, repoRoot, item.ID)
+
+			foundWorktree := false
+			if worktrees != nil {
+				if path, ok := worktrees[branch]; ok {
+					location = displayWorktreePath(repoRoot, path)
+					fmt.Fprintf(os.Stderr, "\nWorktree detected for branch %s:\n", branch)
+					fmt.Fprintf(os.Stderr, "  Location: %s\n", location)
+					foundWorktree = true
+				}
+			}
+			if !foundWorktree {
+				fmt.Fprintf(os.Stderr, "\nWorktree not found. Create it with:\n")
+				fmt.Fprintf(os.Stderr, "  git worktree add -b %s %s %s\n", branch, location, base)
+				fmt.Fprintf(os.Stderr, "  cd %s\n", location)
+			}
+		} else {
+			fmt.Println(item.ID)
+		}
+
+		database.BackupQuiet()
+		return nil
+	},
+}
+
+var epicEditCmd = &cobra.Command{
+	Use:   "edit <id>",
+	Short: "Edit an epic's settings",
+	Long: `Edit an epic's title, context, or on-close instructions.
+
+Use '-' with --context or --on-close to read from stdin.
+For multiple fields, use --stdin-yaml to read YAML.
+
+Examples:
+  tpg epic edit ep-abc123 --title "New title"
+
+  # Update context shared with all descendants
+  tpg epic edit ep-abc123 --context - <<EOF
+  Updated guidelines for this epic.
+  All tasks should follow the new API patterns.
+  EOF
+
+  # Update multiple fields at once
+  tpg epic edit ep-abc123 --stdin-yaml <<EOF
+  context: |
+    Updated shared context
+  on_close: |
+    New closing instructions
+  EOF
+
+  # Clear context
+  tpg epic edit ep-abc123 --context ""`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		id := args[0]
+
+		// Verify it's an epic
+		item, err := database.GetItem(id)
+		if err != nil {
+			return err
+		}
+		if item.Type != model.ItemTypeEpic {
+			return fmt.Errorf("%s is not an epic (use 'tpg edit' for tasks)", id)
+		}
+
+		updated := false
+
+		if flagEditTitle != "" {
+			if err := database.SetTitle(id, flagEditTitle); err != nil {
+				return err
+			}
+			fmt.Printf("Updated title for %s\n", id)
+			updated = true
+		}
+
+		// Handle --stdin-yaml for multiple fields
+		if flagStdinYAML {
+			if flagContext == "-" || flagOnClose == "-" {
+				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
+			}
+			fields, err := parseItemFieldsYAML()
+			if err != nil {
+				return err
+			}
+			if fields.Context != "" {
+				if err := database.SetSharedContext(id, fields.Context); err != nil {
+					return err
+				}
+				fmt.Printf("Updated shared context for %s\n", id)
+				updated = true
+			}
+			if fields.OnClose != "" {
+				if err := database.SetClosingInstructions(id, fields.OnClose); err != nil {
+					return err
+				}
+				fmt.Printf("Updated closing instructions for %s\n", id)
+				updated = true
+			}
+		} else {
+			// Handle single-field stdin markers
+			stdinUsed := false
+
+			if cmd.Flags().Changed("context") {
+				context := flagContext
+				if context == "-" {
+					data, err := io.ReadAll(os.Stdin)
+					if err != nil {
+						return fmt.Errorf("failed to read from stdin: %w", err)
+					}
+					context = strings.TrimSpace(string(data))
+					stdinUsed = true
+				}
+				if err := database.SetSharedContext(id, context); err != nil {
+					return err
+				}
+				fmt.Printf("Updated shared context for %s\n", id)
+				updated = true
+			}
+
+			if cmd.Flags().Changed("on-close") {
+				instructions := flagOnClose
+				if instructions == "-" {
+					if stdinUsed {
+						return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
+					}
+					data, err := io.ReadAll(os.Stdin)
+					if err != nil {
+						return fmt.Errorf("failed to read from stdin: %w", err)
+					}
+					instructions = strings.TrimSpace(string(data))
+				}
+				if err := database.SetClosingInstructions(id, instructions); err != nil {
+					return err
+				}
+				fmt.Printf("Updated closing instructions for %s\n", id)
+				updated = true
+			}
+		}
+
+		if !updated {
+			return fmt.Errorf("no changes specified (use --title, --context, --on-close, or --stdin-yaml)")
+		}
+
+		database.BackupQuiet()
+		return nil
+	},
+}
+
+var epicListCmd = &cobra.Command{
+	Use:   "list [epic-id]",
+	Short: "List epics or descendants of an epic",
+	Long: `List all epics, or show descendants of a specific epic.
+
+Without arguments, lists all epics (equivalent to 'tpg list --type epic').
+With an epic ID, shows all descendants (equivalent to 'tpg list --epic <id>').
+
+Examples:
+  tpg epic list              # All epics
+  tpg epic list ep-abc123    # Descendants of ep-abc123`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		project, err := resolveProject()
+		if err != nil {
+			return err
+		}
+
+		var items []model.Item
+
+		if len(args) == 1 {
+			// Show descendants of specific epic
+			descendants, err := database.GetDescendants(args[0])
+			if err != nil {
+				return fmt.Errorf("failed to get descendants: %w", err)
+			}
+			// Filter out done/canceled by default
+			for _, d := range descendants {
+				if d.Status != model.StatusDone && d.Status != model.StatusCanceled {
+					items = append(items, d)
+				}
+			}
+		} else {
+			// Show all epics
+			filter := db.ListFilter{
+				Project: project,
+				Type:    string(model.ItemTypeEpic),
+			}
+			var err error
+			items, err = database.ListItemsFiltered(filter)
+			if err != nil {
+				return err
+			}
+			// Filter out done/canceled by default
+			filtered := make([]model.Item, 0, len(items))
+			for _, item := range items {
+				if item.Status != model.StatusDone && item.Status != model.StatusCanceled {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
+		}
+
+		if len(items) == 0 {
+			if len(args) == 1 {
+				fmt.Println("No active descendants found for this epic")
+			} else {
+				fmt.Println("No active epics found")
+			}
+			return nil
+		}
+
+		// Populate labels for display
+		if err := database.PopulateItemLabels(items); err != nil {
+			return err
+		}
+
+		printItemsTree(items)
+		return nil
+	},
+}
+
+var epicReplaceCmd = &cobra.Command{
+	Use:   "replace <id> <title>",
+	Short: "Replace an existing item with an epic",
+	Long: `Replace an existing task or epic with a new epic, preserving relationships.
+
+The new epic inherits the old item's:
+  - Parent
+  - Children
+  - Dependencies (both blocking and blocked-by)
+  - Logs
+
+The new epic does NOT inherit:
+  - Labels (must be re-added if needed)
+  - Status (new epic starts as open)
+
+For multiple fields, use --stdin-yaml to read YAML:
+  tpg epic replace ts-abc "New epic" --stdin-yaml <<EOF
+  context: |
+    Shared context for all tasks
+  on_close: |
+    Instructions when done
+  EOF
+
+Examples:
+  # Replace a task with an epic
+  tpg epic replace ts-abc123 "Now an epic"
+
+  # Replace with context (use heredoc for detailed context)
+  tpg epic replace ts-abc123 "Feature epic" --context - <<EOF
+  This epic replaces a single task with a multi-step workflow.
+  See design doc at docs/feature-design.md
+  EOF`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		project, err := resolveProject()
+		if err != nil {
+			return err
+		}
+
+		oldID := args[0]
+		title := strings.Join(args[1:], " ")
+
+		itemType := model.ItemTypeEpic
+
+		// Generate ID with custom prefix if provided
+		var newItemID string
+		if flagPrefix != "" {
+			newItemID = model.GenerateIDWithPrefixN(flagPrefix, itemType, model.DefaultIDLength)
+		} else {
+			newItemID, err = database.GenerateItemID(itemType)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Initialize from flags
+		description := flagDescription
+		context := flagContext
+		onClose := flagOnClose
+
+		// Handle --stdin-yaml: read all fields from YAML
+		if flagStdinYAML {
+			if description == "-" || context == "-" || onClose == "-" {
+				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
+			}
+			fields, err := parseItemFieldsYAML()
+			if err != nil {
+				return err
+			}
+			if fields.Desc != "" {
+				description = fields.Desc
+			}
+			if fields.Context != "" {
+				context = fields.Context
+			}
+			if fields.OnClose != "" {
+				onClose = fields.OnClose
+			}
+		} else {
+			// Handle single-field stdin markers
+			stdinUsed := false
+
+			if description == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				description = strings.TrimSpace(string(data))
+				stdinUsed = true
+			}
+
+			if context == "-" {
+				if stdinUsed {
+					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
+				}
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				context = strings.TrimSpace(string(data))
+				stdinUsed = true
+			}
+
+			if onClose == "-" {
+				if stdinUsed {
+					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
+				}
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				onClose = strings.TrimSpace(string(data))
+			}
+		}
+
+		newItem := &model.Item{
+			ID:                  newItemID,
+			Project:             project,
+			Type:                itemType,
+			Title:               title,
+			Description:         description,
+			Status:              model.StatusOpen,
+			Priority:            flagPriority,
+			SharedContext:       context,
+			ClosingInstructions: onClose,
+			CreatedAt:           time.Now(),
+			UpdatedAt:           time.Now(),
+		}
+
+		// Perform the replacement
+		resultID, err := database.ReplaceItem(oldID, newItem)
+		if err != nil {
+			return err
+		}
+
+		// Add labels if specified
+		for _, labelName := range flagAddLabels {
+			if err := database.AddLabelToItem(resultID, project, labelName); err != nil {
+				return err
+			}
+		}
+
+		fmt.Println(resultID)
+		database.BackupQuiet()
+		return nil
+	},
+}
+
 var epicFinishCmd = &cobra.Command{
 	Use:   "finish <id>",
-	Short: "Mark an epic as done and print cleanup instructions",
-	Long: `Validate that all descendants are done/canceled, mark the epic as done,
-and print instructions for cleaning up the worktree.
+	Short: "Show closing instructions and cleanup info for an epic",
+	Long: `Show the closing instructions (if any) and worktree cleanup commands for an epic.
 
-For nested epics, merges to the parent epic's branch instead of main.
+This does NOT mark the epic as done - epics auto-complete when all children are done.
+Use this to see what cleanup steps are needed before or after completion.
 
 Examples:
   tpg epic finish ep-abc123`,
@@ -305,37 +896,45 @@ Examples:
 			return fmt.Errorf("%s is not an epic", epicID)
 		}
 
-		// Get all descendants
-		descendants, err := database.GetDescendants(epicID)
+		// Show progress stats
+		total, open, inProgress, done, err := database.GetChildrenStats(epicID)
 		if err != nil {
-			return fmt.Errorf("failed to get descendants: %w", err)
+			return fmt.Errorf("failed to get children stats: %w", err)
 		}
 
-		// Check if all descendants are done or canceled
-		var openDescendants []string
-		for _, d := range descendants {
-			if d.Status != model.StatusDone && d.Status != model.StatusCanceled {
-				openDescendants = append(openDescendants, d.ID)
+		fmt.Printf("Epic: %s\n", item.Title)
+		fmt.Printf("Status: %s\n", item.Status)
+		if total > 0 {
+			fmt.Printf("Progress: %d/%d done", done, total)
+			if inProgress > 0 {
+				fmt.Printf(", %d in progress", inProgress)
+			}
+			if open > 0 {
+				fmt.Printf(", %d open", open)
+			}
+			fmt.Println()
+		}
+
+		// If not all children are done, show what remains
+		if open > 0 || inProgress > 0 {
+			fmt.Printf("\nRemaining work:\n")
+			descendants, err := database.GetDescendants(epicID)
+			if err != nil {
+				return fmt.Errorf("failed to get descendants: %w", err)
+			}
+			for _, d := range descendants {
+				if d.Status != model.StatusDone && d.Status != model.StatusCanceled {
+					fmt.Printf("  [%s] %s: %s\n", d.Status, d.ID, d.Title)
+				}
 			}
 		}
 
-		if len(openDescendants) > 0 {
-			fmt.Fprintf(os.Stderr, "Cannot finish epic: %d open descendants:\n", len(openDescendants))
-			for _, id := range openDescendants {
-				fmt.Fprintf(os.Stderr, "  %s\n", id)
-			}
-			return fmt.Errorf("all descendants must be done or canceled before finishing epic")
+		// Show closing instructions if any
+		if item.ClosingInstructions != "" {
+			fmt.Printf("\nClosing instructions:\n%s\n", item.ClosingInstructions)
 		}
 
-		// Mark the epic as done
-		agentCtx := db.AgentContext{}
-		if err := database.UpdateStatus(epicID, model.StatusDone, agentCtx, false); err != nil {
-			return fmt.Errorf("failed to mark epic as done: %w", err)
-		}
-
-		fmt.Printf("Epic %s marked as done.\n", epicID)
-
-		// Print cleanup instructions
+		// Print worktree cleanup instructions if applicable
 		if item.WorktreeBranch != "" {
 			config, _ := db.LoadConfig()
 			ctx, worktrees := detectWorktreeState()
@@ -350,7 +949,7 @@ Examples:
 				}
 			}
 
-			fmt.Printf("\nCleanup instructions:\n")
+			fmt.Printf("\nWorktree cleanup:\n")
 
 			// Determine merge target
 			mergeTarget := "main"
@@ -373,18 +972,24 @@ Examples:
 			fmt.Printf("  git branch -d %s\n", item.WorktreeBranch)
 		}
 
-		database.BackupQuiet()
+		if item.ClosingInstructions == "" && item.WorktreeBranch == "" {
+			fmt.Println("\nNo closing instructions or worktree configured for this epic.")
+		}
+
 		return nil
 	},
 }
 
 var addCmd = &cobra.Command{
 	Use:   "add <title>",
-	Short: "Create a new task or epic",
-	Long: `Create a new task (or epic with -e flag).
+	Short: "Create a new task",
+	Long: `Create a new task.
 
-Returns the generated ID (ts-XXXXXX for tasks, ep-XXXXXX for epics). It is likely that current context
-will be unknown when the task is executed, so provide full explanation of the task.
+Returns the generated ID (e.g., ts-XXXXXX). Provide a detailed description since
+future context may be unknown when the task is executed.
+
+To create an epic (a container for organizing related tasks that auto-completes
+when all children are done), use 'tpg epic add' instead.
 
 Examples:
   # Simple task
@@ -401,11 +1006,7 @@ Examples:
   Requirements: JWT tokens, refresh support
   Context: Replace auth/legacy.go
   Constraints: Use bcrypt, 1hr expiry
-	(other detailed instructions defining the task and providing needed context)
   EOF
-
-  # Epic grouping related tasks
-  tpg add "Auth system" -e
 
   # Task with metadata
   tpg add "Critical fix" --priority 1 --parent ep-abc123 -l bug
@@ -455,9 +1056,6 @@ Examples:
 
 			// Determine item type for template parent
 			parentType := model.ItemTypeTask
-			if flagEpic {
-				parentType = model.ItemTypeEpic
-			}
 			if flagType != "" {
 				parentType = model.ItemType(flagType)
 			}
@@ -503,9 +1101,6 @@ Examples:
 		}
 
 		itemType := model.ItemTypeTask
-		if flagEpic {
-			itemType = model.ItemTypeEpic
-		}
 		if flagType != "" {
 			itemType = model.ItemType(flagType)
 		}
@@ -620,64 +1215,204 @@ Examples:
 			}
 		}
 
-		// Handle worktree metadata for epics
-		if flagWorktree || flagWorktreeBranch != "" {
-			if itemType != model.ItemTypeEpic {
-				return fmt.Errorf("--worktree and --branch can only be used with epics (use -e flag)")
-			}
-
-			// Generate branch name if not provided
-			branch := flagWorktreeBranch
-			if branch == "" {
-				branch = generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
-			}
-			if !flagWorktreeAllow && worktreeRequireEpicID(config) && !branchIncludesEpicID(branch, item.ID) {
-				suggested := generateWorktreeBranch(item.ID, item.Title, worktreePrefix(config))
-				return fmt.Errorf("branch name must include epic id %q (suggested: %s)", item.ID, suggested)
-			}
-
-			// Determine base branch
-			base := flagWorktreeBase
-			if base == "" {
-				base = resolveWorktreeBase(database, flagParent)
-			}
-
-			// Update the epic with worktree metadata
-			if err := database.SetWorktreeMetadata(item.ID, branch, base); err != nil {
-				return fmt.Errorf("failed to set worktree metadata: %w", err)
-			}
-
-			fmt.Println(item.ID)
-			ctx, worktrees := detectWorktreeState()
-			repoRoot := ""
-			if ctx != nil {
-				repoRoot = ctx.RepoRoot
-			}
-			location := worktreeLocationForEpic(config, repoRoot, item.ID)
-
-			foundWorktree := false
-			if worktrees != nil {
-				if path, ok := worktrees[branch]; ok {
-					location = displayWorktreePath(repoRoot, path)
-					fmt.Fprintf(os.Stderr, "\nWorktree detected for branch %s:\n", branch)
-					fmt.Fprintf(os.Stderr, "  Location: %s\n", location)
-					foundWorktree = true
-				}
-			}
-			if !foundWorktree {
-				fmt.Fprintf(os.Stderr, "\nWorktree not found. Create it with:\n")
-				fmt.Fprintf(os.Stderr, "  git worktree add -b %s %s %s\n", branch, location, base)
-				fmt.Fprintf(os.Stderr, "  cd %s\n", location)
-			}
-		} else {
-			fmt.Println(item.ID)
-		}
+		fmt.Println(item.ID)
 
 		// Backup after successful mutation
 		database.BackupQuiet()
 
 		return nil
 	},
+}
+
+var replaceCmd = &cobra.Command{
+	Use:   "replace <id> <title>",
+	Short: "Replace an existing task/epic with a new one",
+	Long: `Replace an existing task or epic with a new one, preserving relationships.
+
+The new item inherits the old item's:
+  - Parent
+  - Children (if replacing with an epic)
+  - Dependencies (both blocking and blocked-by)
+  - Logs
+
+The new item does NOT inherit:
+  - Labels (must be re-added if needed)
+  - Status (new item starts as open)
+
+Constraints:
+  - Cannot replace an epic-with-children with a task (tasks can't have children)
+
+For epics with multiple fields, use --stdin-yaml to read YAML:
+  tpg replace ts-abc "New epic" -e --stdin-yaml <<EOF
+  context: |
+    Shared context for all tasks
+  on_close: |
+    Instructions when done
+  EOF
+
+Examples:
+  # Replace a task with a new task
+  tpg replace ts-abc123 "Better task title"
+
+  # Replace a task with an epic
+  tpg replace ts-abc123 "Now an epic" -e
+
+  # Replace with description from stdin
+  tpg replace ts-abc123 "New task" --desc - <<EOF
+  Updated requirements and context
+  EOF
+
+  # Replace with different type/priority
+  tpg replace ts-abc123 "Bug fix" --type bug --priority 1`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		project, err := resolveProject()
+		if err != nil {
+			return err
+		}
+
+		oldID := args[0]
+		title := strings.Join(args[1:], " ")
+
+		// Determine item type
+		itemType := model.ItemTypeTask
+		if flagEpic {
+			itemType = model.ItemTypeEpic
+		}
+		if flagType != "" {
+			itemType = model.ItemType(flagType)
+		}
+
+		// Generate ID with custom prefix if provided
+		var newItemID string
+		if flagPrefix != "" {
+			newItemID = model.GenerateIDWithPrefixN(flagPrefix, itemType, model.DefaultIDLength)
+		} else {
+			newItemID, err = database.GenerateItemID(itemType)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Initialize from flags
+		description := flagDescription
+		context := flagContext
+		onClose := flagOnClose
+
+		// Handle --stdin-yaml: read all fields from YAML
+		if flagStdinYAML {
+			if description == "-" || context == "-" || onClose == "-" {
+				return fmt.Errorf("cannot use --stdin-yaml with '-' stdin markers")
+			}
+			fields, err := parseItemFieldsYAML()
+			if err != nil {
+				return err
+			}
+			if fields.Desc != "" {
+				description = fields.Desc
+			}
+			if fields.Context != "" {
+				context = fields.Context
+			}
+			if fields.OnClose != "" {
+				onClose = fields.OnClose
+			}
+		} else {
+			// Handle single-field stdin markers
+			stdinUsed := false
+
+			if description == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				description = strings.TrimSpace(string(data))
+				stdinUsed = true
+			}
+
+			if context == "-" {
+				if stdinUsed {
+					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
+				}
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				context = strings.TrimSpace(string(data))
+				stdinUsed = true
+			}
+
+			if onClose == "-" {
+				if stdinUsed {
+					return fmt.Errorf("cannot use stdin for multiple flags; use --stdin-yaml instead")
+				}
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				onClose = strings.TrimSpace(string(data))
+			}
+		}
+
+		newItem := &model.Item{
+			ID:                  newItemID,
+			Project:             project,
+			Type:                itemType,
+			Title:               title,
+			Description:         description,
+			Status:              model.StatusOpen,
+			Priority:            flagPriority,
+			SharedContext:       context,
+			ClosingInstructions: onClose,
+			CreatedAt:           time.Now(),
+			UpdatedAt:           time.Now(),
+		}
+
+		// Perform the replacement
+		resultID, err := database.ReplaceItem(oldID, newItem)
+		if err != nil {
+			return err
+		}
+
+		// Add labels if specified
+		for _, labelName := range flagAddLabels {
+			if err := database.AddLabelToItem(resultID, project, labelName); err != nil {
+				return err
+			}
+		}
+
+		fmt.Println(resultID)
+		database.BackupQuiet()
+		return nil
+	},
+}
+
+// itemFieldsYAML represents fields that can be read from stdin as YAML.
+// Used by --stdin-yaml flag for epic add/edit/replace commands.
+type itemFieldsYAML struct {
+	Desc    string `yaml:"desc"`
+	Context string `yaml:"context"`
+	OnClose string `yaml:"on_close"`
+}
+
+// parseItemFieldsYAML reads and parses YAML from stdin for item fields.
+// Returns parsed fields. Caller should merge non-empty values with flag values.
+func parseItemFieldsYAML() (*itemFieldsYAML, error) {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read from stdin: %w", err)
+	}
+	var fields itemFieldsYAML
+	if err := yaml.Unmarshal(data, &fields); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML from stdin: %w", err)
+	}
+	return &fields, nil
 }
 
 // countWords returns the number of words in a string
@@ -1217,6 +1952,12 @@ Example:
 		config, _ := db.LoadConfig()
 		worktreeInfo := buildWorktreeInfo(rootEpic, epicPath, config)
 
+		// Get shared context from ancestors
+		sharedContext, err := database.GetAncestorSharedContext(item.ID)
+		if err != nil {
+			return err
+		}
+
 		// Output based on format
 		switch flagShowFormat {
 		case "json":
@@ -1226,7 +1967,7 @@ Example:
 		case "markdown":
 			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, worktreeInfo)
 		default:
-			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars, worktreeInfo, epicPath)
+			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars, worktreeInfo, epicPath, sharedContext)
 			if flagShowWithParent && len(parentChain) > 0 {
 				fmt.Printf("\nParent Chain:\n")
 				for _, parent := range parentChain {
@@ -1354,6 +2095,19 @@ Example:
 		item, err := database.GetItem(args[0])
 		if err != nil {
 			return err
+		}
+
+		// Check if this is an epic with children - epics are containers, not workable items
+		hasChildren, err := database.HasChildren(item.ID)
+		if err != nil {
+			return err
+		}
+		if hasChildren {
+			return fmt.Errorf(`cannot start %s: epics with children cannot be worked on directly
+
+An epic is a container that organizes related tasks. Work on its children instead:
+  tpg ready --epic %s    # Find ready tasks within this epic
+  tpg list --epic %s     # See all tasks in this epic`, item.ID, item.ID, item.ID)
 		}
 
 		resuming := item.Status == model.StatusInProgress
@@ -1530,6 +2284,12 @@ Triggers that should always produce a log entry:
 		_ = database.AddLog(id, "Completed")
 
 		fmt.Printf("Completed %s\n", id)
+
+		// Check if parent epic should be auto-completed
+		if err := autoCompleteParentEpics(database, id); err != nil {
+			// Log but don't fail - the main task was completed successfully
+			fmt.Fprintf(os.Stderr, "Warning: failed to check parent epic completion: %v\n", err)
+		}
 
 		// Prompt reflection
 		fmt.Println(`
@@ -2070,116 +2830,6 @@ Examples:
 		printDepGraph(edges)
 		return nil
 	},
-}
-
-var treeCmd = &cobra.Command{
-	Use:   "tree [epic-id]",
-	Short: "Show epic/task hierarchy",
-	Long: "Show epic→task hierarchy with status.\n\n" +
-		"Without argument: Shows all epics with task counts.\n" +
-		"With argument: Shows that epic and all its children recursively.\n\n" +
-		"Format:\n" +
-		"  ep-abc [in_progress] Epic Title\n" +
-		"  ├── ts-a1 [open] Task 1\n" +
-		"  └── ts-a2 [done] Task 2\n\n" +
-		"Examples:\n" +
-		"  tpg tree              # All epics with counts\n" +
-		"  tpg tree ep-abc123    # Specific epic with children",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		project, err := resolveProject()
-		if err != nil {
-			return err
-		}
-
-		if len(args) == 0 {
-			// Show all epics with counts
-			epics, err := database.GetEpics(project)
-			if err != nil {
-				return err
-			}
-
-			if len(epics) == 0 {
-				fmt.Println("No epics found")
-				return nil
-			}
-
-			// Get task counts for each epic
-			for _, epic := range epics {
-				children, err := database.GetChildren(epic.ID)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("%s [%s] %s (%d tasks)\n", epic.ID, epic.Status, epic.Title, len(children))
-			}
-		} else {
-			// Show specific epic with tree
-			epicID := args[0]
-			epic, err := database.GetItem(epicID)
-			if err != nil {
-				return err
-			}
-
-			if epic.Type != model.ItemTypeEpic {
-				return fmt.Errorf("%s is not an epic (type: %s)", epicID, epic.Type)
-			}
-
-			// Print the epic as root
-			fmt.Printf("%s [%s] %s\n", epic.ID, epic.Status, epic.Title)
-
-			// Recursively print children
-			if err := printTreeRecursive(database, epic.ID, ""); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	},
-}
-
-// printTreeRecursive prints children of a parent with proper tree indentation.
-func printTreeRecursive(database *db.DB, parentID string, prefix string) error {
-	children, err := database.GetChildren(parentID)
-	if err != nil {
-		return err
-	}
-
-	if len(children) == 0 {
-		return nil
-	}
-
-	for i, child := range children {
-		isLast := i == len(children)-1
-
-		// Determine the branch character
-		branch := "├──"
-		if isLast {
-			branch = "└──"
-		}
-
-		// Print the current child
-		fmt.Printf("%s%s %s [%s] %s\n", prefix, branch, child.ID, child.Status, child.Title)
-
-		// Prepare prefix for children of this node
-		childPrefix := prefix
-		if isLast {
-			childPrefix += "    "
-		} else {
-			childPrefix += "│   "
-		}
-
-		// Recursively print this child's children
-		if err := printTreeRecursive(database, child.ID, childPrefix); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 var planCmd = &cobra.Command{
@@ -2724,18 +3374,32 @@ Examples:
 
 var editCmd = &cobra.Command{
 	Use:   "edit <id>",
-	Short: "Edit a task's title or description",
-	Long: `Edit a task's title or description.
+	Short: "Edit a task's title, description, or epic settings",
+	Long: `Edit a task's title, description, or epic settings.
 
 With --title, updates the title directly without opening an editor.
+With --context, sets context shared with all descendants (epics only).
+With --on-close, sets instructions shown when epic auto-completes (epics only).
 Without flags, opens the description in your configured editor.
 
 Uses $TPG_EDITOR if set, otherwise defaults to nvim, then nano, then vi.
 
+For epics, prefer 'tpg epic edit' which has the same options.
+
 Examples:
-  tpg edit ts-a1b2c3                     # Edit description in editor
-  tpg edit ts-a1b2c3 --title "New title" # Update title directly
-  TPG_EDITOR=code tpg edit ts-a1b2c3    # Use VS Code as editor`,
+  tpg edit ts-a1b2c3                      # Edit description in editor
+  tpg edit ts-a1b2c3 --title "New title"  # Update title directly
+  TPG_EDITOR=code tpg edit ts-a1b2c3      # Use VS Code as editor
+
+  # Epic context (use heredoc for detailed context)
+  tpg edit ep-abc123 --context - <<EOF
+  All tasks in this epic should follow docs/style.md.
+  EOF
+
+  # Epic on-close instructions
+  tpg edit ep-abc123 --on-close - <<EOF
+  Run make test && make lint before merging.
+  EOF`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -2752,6 +3416,40 @@ Examples:
 				return err
 			}
 			fmt.Printf("Updated title for %s\n", id)
+			return nil
+		}
+
+		// If --context flag is set, update shared context
+		if cmd.Flags().Changed("context") {
+			context := flagContext
+			if context == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				context = strings.TrimSpace(string(data))
+			}
+			if err := database.SetSharedContext(id, context); err != nil {
+				return err
+			}
+			fmt.Printf("Updated shared context for %s\n", id)
+			return nil
+		}
+
+		// If --on-close flag is set, update closing instructions
+		if cmd.Flags().Changed("on-close") {
+			instructions := flagOnClose
+			if instructions == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				instructions = strings.TrimSpace(string(data))
+			}
+			if err := database.SetClosingInstructions(id, instructions); err != nil {
+				return err
+			}
+			fmt.Printf("Updated closing instructions for %s\n", id)
 			return nil
 		}
 
@@ -4788,7 +5486,6 @@ func init() {
 	}
 
 	// add flags
-	addCmd.Flags().BoolVarP(&flagEpic, "epic", "e", false, "Create an epic instead of a task")
 	addCmd.Flags().IntVarP(&flagPriority, "priority", "p", 2, "Priority (1=high, 2=medium, 3=low)")
 	addCmd.Flags().StringVar(&flagParent, "parent", "", "Parent epic ID")
 	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block (it depends on this)")
@@ -4799,12 +5496,8 @@ func init() {
 	addCmd.Flags().BoolVar(&flagTemplateVarsYAML, "vars-yaml", false, "Read template variables from stdin as YAML")
 	addCmd.Flags().StringVar(&flagDescription, "desc", "", "Description (use '-' for stdin)")
 	addCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview what would be created without actually creating")
-	addCmd.Flags().StringVar(&flagType, "type", "", "Item type (default: task, or epic if -e flag used)")
+	addCmd.Flags().StringVar(&flagType, "type", "", "Item type (default: task)")
 	addCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
-	addCmd.Flags().BoolVar(&flagWorktree, "worktree", false, "Create epic with worktree metadata (generates branch name)")
-	addCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name for worktree (default: auto-generated)")
-	addCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch for worktree (default: parent worktree branch or current branch)")
-	addCmd.Flags().BoolVar(&flagWorktreeAllow, "allow-any-branch", false, "Allow branch names that do not include the epic ID")
 
 	// init flags
 	initCmd.Flags().StringVar(&flagInitTaskPrefix, "prefix", "", "Task ID prefix (default: ts)")
@@ -4842,6 +5535,8 @@ func init() {
 
 	// edit flags
 	editCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title for the task")
+	editCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin, epics only)")
+	editCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
 
 	// ready flags
 	readyCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
@@ -4928,11 +5623,58 @@ func init() {
 	epicWorktreeCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name (default: auto-generated)")
 	epicWorktreeCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch (default: parent worktree branch or current branch)")
 	epicWorktreeCmd.Flags().BoolVar(&flagWorktreeAllow, "allow-any-branch", false, "Allow branch names that do not include the epic ID")
+
+	// epicAddCmd flags
+	epicAddCmd.Flags().IntVarP(&flagPriority, "priority", "p", 2, "Priority (1=high, 2=medium, 3=low)")
+	epicAddCmd.Flags().StringVar(&flagParent, "parent", "", "Parent epic ID")
+	epicAddCmd.Flags().StringArrayVarP(&flagAddLabels, "label", "l", nil, "Label to attach (can be repeated)")
+	epicAddCmd.Flags().StringVar(&flagDescription, "desc", "", "Description (use '-' for stdin)")
+	epicAddCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
+	epicAddCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
+	epicAddCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
+	epicAddCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read desc, context, on_close from stdin as YAML")
+	epicAddCmd.Flags().BoolVar(&flagWorktree, "worktree", false, "Create epic with worktree metadata (generates branch name)")
+	epicAddCmd.Flags().StringVar(&flagWorktreeBranch, "branch", "", "Custom branch name for worktree (default: auto-generated)")
+	epicAddCmd.Flags().StringVar(&flagWorktreeBase, "base", "", "Base branch for worktree (default: parent worktree branch or current branch)")
+	epicAddCmd.Flags().BoolVar(&flagWorktreeAllow, "allow-any-branch", false, "Allow branch names that do not include the epic ID")
+
+	// epicEditCmd flags
+	epicEditCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title for the epic")
+	epicEditCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
+	epicEditCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
+	epicEditCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read context, on_close from stdin as YAML")
+
+	// epicReplaceCmd flags
+	epicReplaceCmd.Flags().IntVarP(&flagPriority, "priority", "p", 2, "Priority (1=high, 2=medium, 3=low)")
+	epicReplaceCmd.Flags().StringArrayVarP(&flagAddLabels, "label", "l", nil, "Label to attach (can be repeated)")
+	epicReplaceCmd.Flags().StringVar(&flagDescription, "desc", "", "Description (use '-' for stdin)")
+	epicReplaceCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
+	epicReplaceCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
+	epicReplaceCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
+	epicReplaceCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read desc, context, on_close from stdin as YAML")
+
+	epicCmd.AddCommand(epicAddCmd)
+	epicCmd.AddCommand(epicEditCmd)
+	epicCmd.AddCommand(epicListCmd)
+	epicCmd.AddCommand(epicReplaceCmd)
 	epicCmd.AddCommand(epicWorktreeCmd)
 	epicCmd.AddCommand(epicFinishCmd)
 	rootCmd.AddCommand(epicCmd)
 
 	rootCmd.AddCommand(addCmd)
+
+	// replace flags (subset of add flags that make sense for replacement)
+	replaceCmd.Flags().BoolVarP(&flagEpic, "epic", "e", false, "Replace with an epic instead of a task")
+	replaceCmd.Flags().IntVarP(&flagPriority, "priority", "p", 2, "Priority (1=high, 2=medium, 3=low)")
+	replaceCmd.Flags().StringArrayVarP(&flagAddLabels, "label", "l", nil, "Label to attach (can be repeated)")
+	replaceCmd.Flags().StringVar(&flagDescription, "desc", "", "Description (use '-' for stdin)")
+	replaceCmd.Flags().StringVar(&flagType, "type", "", "Item type (default: task, or epic if -e flag used)")
+	replaceCmd.Flags().StringVar(&flagPrefix, "prefix", "", "Custom ID prefix (overrides auto-generated prefix)")
+	replaceCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin, epics only)")
+	replaceCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
+	replaceCmd.Flags().BoolVar(&flagStdinYAML, "stdin-yaml", false, "Read desc, context, on_close from stdin as YAML")
+	rootCmd.AddCommand(replaceCmd)
+
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(readyCmd)
 	rootCmd.AddCommand(showCmd)
@@ -4953,7 +5695,6 @@ func init() {
 	rootCmd.AddCommand(summaryCmd)
 	rootCmd.AddCommand(projectsCmd)
 	rootCmd.AddCommand(graphCmd)
-	rootCmd.AddCommand(treeCmd)
 	rootCmd.AddCommand(planCmd)
 	rootCmd.AddCommand(appendCmd)
 	rootCmd.AddCommand(descCmd)
@@ -5205,6 +5946,61 @@ func isProgressMessage(message string) bool {
 	return strings.HasPrefix(trimmed, "progress:")
 }
 
+// autoCompleteParentEpics recursively checks and completes parent epics when all children are done.
+func autoCompleteParentEpics(database *db.DB, itemID string) error {
+	for {
+		info, err := database.CheckParentEpicCompletion(itemID)
+		if err != nil {
+			return err
+		}
+		if info == nil {
+			return nil // No more parents to complete
+		}
+
+		epic := info.Epic
+
+		// Show closing instructions if any
+		hasInstructions := info.ClosingInstructions != "" || info.WorktreeBranch != ""
+
+		if hasInstructions {
+			fmt.Printf("\n─── Epic %s: %s ───\n", epic.ID, epic.Title)
+			fmt.Println("All child tasks completed. Before closing this epic:")
+		}
+
+		if info.ClosingInstructions != "" {
+			fmt.Printf("\n%s\n", info.ClosingInstructions)
+		}
+
+		if info.WorktreeBranch != "" {
+			base := info.WorktreeBase
+			if base == "" {
+				base = "main"
+			}
+			fmt.Printf(`
+Worktree cleanup:
+  1. Review and commit any remaining changes in the worktree
+  2. Push the branch: git push -u origin %s
+  3. Create a pull request to merge into %s
+  4. After merge, remove the worktree: git worktree remove <path>
+  5. Delete the branch if no longer needed: git branch -d %s
+
+Note: If AGENTS.md has specific merge instructions for this project, follow those instead.
+`, info.WorktreeBranch, base, info.WorktreeBranch)
+		}
+
+		// Auto-complete the epic
+		if err := database.AutoCompleteEpic(epic.ID); err != nil {
+			return fmt.Errorf("failed to auto-complete epic %s: %w", epic.ID, err)
+		}
+		_ = database.AddLog(epic.ID, "Auto-completed (all children done)")
+
+		fmt.Printf("\nAuto-completed epic %s: %s\n", epic.ID, epic.Title)
+
+		// Continue up the chain to check grandparent epics
+		itemID = epic.ID
+	}
+}
+
 func latestProgressLog(logs []model.Log) *model.Log {
 	for i := len(logs) - 1; i >= 0; i-- {
 		if isProgressMessage(logs[i].Message) {
@@ -5289,7 +6085,7 @@ type DepEdgeJSON struct {
 	DependsOnStatus string `json:"depends_on_status"`
 }
 
-func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool, worktreeInfo *WorktreeInfo, epicPath []model.Item) {
+func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool, worktreeInfo *WorktreeInfo, epicPath []model.Item, sharedContext []db.SharedContextEntry) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
@@ -5365,6 +6161,15 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 	}
 	if templateNotice != "" {
 		fmt.Printf("  Template: %s\n", templateNotice)
+	}
+
+	// Show shared context from ancestor epics
+	if len(sharedContext) > 0 {
+		fmt.Printf("\nShared Context (from parent epics):\n")
+		for _, entry := range sharedContext {
+			fmt.Printf("── %s: %s ──\n", entry.EpicID, entry.EpicTitle)
+			fmt.Printf("%s\n", entry.SharedContext)
+		}
 	}
 
 	// Show template variables only with --vars flag, otherwise show description
