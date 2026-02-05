@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -447,6 +448,144 @@ func TestSetParent_NotFound(t *testing.T) {
 	err = db.SetParent(task.ID, "nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent parent")
+	}
+}
+
+func TestSetSharedContext(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create an epic
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Test Epic",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	// Set context on epic - should succeed
+	err := db.SetSharedContext(epic.ID, "shared context for all tasks")
+	if err != nil {
+		t.Errorf("SetSharedContext on epic failed: %v", err)
+	}
+
+	// Verify it was set
+	got, err := db.GetItem(epic.ID)
+	if err != nil {
+		t.Fatalf("failed to get epic: %v", err)
+	}
+	if got.SharedContext != "shared context for all tasks" {
+		t.Errorf("SharedContext = %q, want %q", got.SharedContext, "shared context for all tasks")
+	}
+}
+
+func TestSetSharedContext_NonEpic(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a task (not an epic)
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Test Task",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	// Set context on task - should fail
+	err := db.SetSharedContext(task.ID, "context")
+	if err == nil {
+		t.Error("expected error when setting shared context on non-epic")
+	}
+	if !strings.Contains(err.Error(), "only be set on epics") {
+		t.Errorf("error message should mention epics: %v", err)
+	}
+}
+
+func TestSetSharedContext_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	err := db.SetSharedContext("nonexistent", "context")
+	if err == nil {
+		t.Error("expected error for nonexistent item")
+	}
+}
+
+func TestSetClosingInstructions(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create an epic
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Test Epic",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	// Set instructions on epic - should succeed
+	err := db.SetClosingInstructions(epic.ID, "run tests before merging")
+	if err != nil {
+		t.Errorf("SetClosingInstructions on epic failed: %v", err)
+	}
+
+	// Verify it was set
+	got, err := db.GetItem(epic.ID)
+	if err != nil {
+		t.Fatalf("failed to get epic: %v", err)
+	}
+	if got.ClosingInstructions != "run tests before merging" {
+		t.Errorf("ClosingInstructions = %q, want %q", got.ClosingInstructions, "run tests before merging")
+	}
+}
+
+func TestSetClosingInstructions_NonEpic(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a task (not an epic)
+	task := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Test Task",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	// Set instructions on task - should fail
+	err := db.SetClosingInstructions(task.ID, "instructions")
+	if err == nil {
+		t.Error("expected error when setting closing instructions on non-epic")
+	}
+	if !strings.Contains(err.Error(), "only be set on epics") {
+		t.Errorf("error message should mention epics: %v", err)
+	}
+}
+
+func TestSetClosingInstructions_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	err := db.SetClosingInstructions("nonexistent", "instructions")
+	if err == nil {
+		t.Error("expected error for nonexistent item")
 	}
 }
 

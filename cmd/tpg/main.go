@@ -109,6 +109,15 @@ var (
 	flagIdsOnly          bool
 	flagListFlat         bool
 
+	// Edit command flags
+	flagEditPriority  int
+	flagEditParent    string
+	flagEditAddLabels []string
+	flagEditRmLabels  []string
+	flagEditDesc      string
+	flagEditStatus    string
+	flagEditParentSet bool // tracks if --parent was explicitly set (to allow empty string)
+
 	flagWorktree       bool
 	flagWorktreeBranch string
 	flagWorktreeBase   string
@@ -3423,46 +3432,35 @@ Examples:
 }
 
 var editCmd = &cobra.Command{
-	Use:   "edit <id>",
-	Short: "Edit a task's title, description, or epic settings",
-	Long: `Edit a task's title, description, or epic settings.
+	Use:   "edit [id...] [flags]",
+	Short: "Edit task fields",
+	Long: `Edit one or more tasks' fields.
 
-With --title, updates the title directly without opening an editor.
-With --context, sets context shared with all descendants (epics only).
-With --on-close, sets instructions shown when epic auto-completes (epics only).
-Without flags, opens the description in your configured editor.
+SELECTION:
+  Provide item IDs as arguments, or use --select-* flags to select items.
+  Cannot mix explicit IDs with select flags.
 
-Uses $TPG_EDITOR if set, otherwise defaults to nvim, then nano, then vi.
+FIELD CHANGES:
+  --title, --desc        Single item only (opens editor if no field flags)
+  --priority, --parent   Can apply to multiple items
+  --add-label, --remove-label   Can apply to multiple items
+  --status               Requires --force (prefer start/done/block/cancel commands)
 
-Use '-' with a flag to read a single field from stdin.
-For multiple fields, use --from-yaml instead of individual flags.
-
-For epics, prefer 'tpg epic edit' which has the same options.
+For epic-specific fields (--context, --on-close), use 'tpg epic edit'.
 
 Examples:
-  tpg edit ts-a1b2c3                      # Edit description in editor
-  tpg edit ts-a1b2c3 --title "New title"  # Update title directly
-  TPG_EDITOR=code tpg edit ts-a1b2c3      # Use VS Code as editor
-
-  # Epic context (use heredoc for detailed context)
-  tpg edit ep-abc123 --context - <<EOF
-  All tasks in this epic should follow docs/style.md.
-  EOF
-
-  # Epic on-close instructions
-  tpg edit ep-abc123 --on-close - <<EOF
-  Run make test && make lint before merging.
-  EOF
-
-  # Update multiple epic fields via YAML
-  tpg edit ep-abc123 --from-yaml <<EOF
-  title: Updated title
-  context: |
-    Updated guidelines for all tasks.
-  on_close: |
-    Ensure all tests pass.
-  EOF`,
-	Args: cobra.ExactArgs(1),
+  tpg edit ts-abc                            # Open description in editor
+  tpg edit ts-abc --title "New title"        # Change title
+  tpg edit ts-abc --priority 1               # Set high priority
+  tpg edit ts-abc ts-def --priority 2        # Set priority on multiple
+  tpg edit ts-abc --parent ep-xyz            # Move under epic
+  tpg edit ts-abc --parent ""                # Remove from parent
+  tpg edit ts-abc --add-label bug            # Add label
+  tpg edit --select-label bug --priority 1   # All items with 'bug' label
+  tpg edit --select-epic ep-xyz --add-label done   # All descendants of epic
+  tpg edit ts-abc --status open --force      # Force status change
+  tpg edit ts-abc --dry-run --priority 1     # Preview changes`,
+	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -3470,125 +3468,276 @@ Examples:
 		}
 		defer func() { _ = database.Close() }()
 
-		id := args[0]
+		// Check if --parent was explicitly set (to distinguish "" from unset)
+		flagEditParentSet = cmd.Flags().Changed("parent")
 
-		// If --title flag is set, update title directly
-		if flagEditTitle != "" {
-			if err := database.SetTitle(id, flagEditTitle); err != nil {
-				return err
-			}
-			fmt.Printf("Updated title for %s\n", id)
-			return nil
+		// Determine if any select flags are set
+		hasFilters := flagStatus != "" || flagListParent != "" || flagListType != "" ||
+			flagListEpic != "" || len(flagFilterLabels) > 0
+
+		// Validate: can't mix explicit IDs with select flags
+		if len(args) > 0 && hasFilters {
+			return fmt.Errorf("cannot use select flags with explicit item IDs")
 		}
 
-		// If --context flag is set, update shared context
-		if cmd.Flags().Changed("context") {
-			context := flagContext
-			if context == "-" {
-				data, err := io.ReadAll(os.Stdin)
+		// Collect items to edit
+		var items []model.Item
+		if hasFilters {
+			// Use filters to find items
+			filter := db.ListFilter{
+				Parent: flagListParent,
+				Type:   flagListType,
+				Labels: flagFilterLabels,
+			}
+			if flagStatus != "" {
+				s := model.Status(flagStatus)
+				filter.Status = &s
+			}
+			items, err = database.ListItemsFiltered(filter)
+			if err != nil {
+				return fmt.Errorf("failed to query items: %w", err)
+			}
+
+			// Further filter by epic descendants if --select-epic is set
+			if flagListEpic != "" {
+				descendants, err := database.GetDescendants(flagListEpic)
 				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
+					return fmt.Errorf("failed to get descendants of %s: %w", flagListEpic, err)
 				}
-				context = strings.TrimSpace(string(data))
+				descendantIDs := make(map[string]bool)
+				for _, d := range descendants {
+					descendantIDs[d.ID] = true
+				}
+				filtered := make([]model.Item, 0)
+				for _, item := range items {
+					if descendantIDs[item.ID] {
+						filtered = append(filtered, item)
+					}
+				}
+				items = filtered
 			}
-			if err := database.SetSharedContext(id, context); err != nil {
-				return err
-			}
-			fmt.Printf("Updated shared context for %s\n", id)
-			return nil
-		}
 
-		// If --on-close flag is set, update closing instructions
-		if cmd.Flags().Changed("on-close") {
-			instructions := flagOnClose
-			if instructions == "-" {
-				data, err := io.ReadAll(os.Stdin)
+			if len(items) == 0 {
+				return fmt.Errorf("no items match the filter criteria")
+			}
+		} else if len(args) > 0 {
+			// Use explicit IDs
+			for _, id := range args {
+				item, err := database.GetItem(id)
 				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
+					return fmt.Errorf("item not found: %s", id)
 				}
-				instructions = strings.TrimSpace(string(data))
+				items = append(items, *item)
 			}
-			if err := database.SetClosingInstructions(id, instructions); err != nil {
-				return err
+		} else {
+			return fmt.Errorf("provide item IDs or use --select-* flags to select items")
+		}
+
+		// Check for single-item-only flags with multiple items
+		if len(items) > 1 {
+			if flagEditTitle != "" {
+				return fmt.Errorf("--title can only be used with a single item (got %d)", len(items))
 			}
-			fmt.Printf("Updated closing instructions for %s\n", id)
+			if flagEditDesc != "" {
+				return fmt.Errorf("--desc can only be used with a single item (got %d)", len(items))
+			}
+		}
+
+		// Check if --status requires --force
+		if flagEditStatus != "" && !flagForce {
+			return fmt.Errorf("--status requires --force (prefer: tpg start/done/block/cancel)")
+		}
+
+		// Check if any field flags are set
+		hasFieldFlags := flagEditTitle != "" || flagEditPriority != 0 || flagEditParentSet ||
+			len(flagEditAddLabels) > 0 || len(flagEditRmLabels) > 0 || flagEditDesc != "" ||
+			flagEditStatus != ""
+
+		// If no field flags and single item, open editor for description
+		if !hasFieldFlags && len(items) == 1 {
+			return editInEditor(database, items[0].ID)
+		}
+
+		// If no field flags and multiple items, error
+		if !hasFieldFlags {
+			return fmt.Errorf("no field flags specified for %d items (use --title, --priority, --parent, --add-label, --remove-label, --desc, or --status)", len(items))
+		}
+
+		// Read description from stdin if needed
+		descValue := flagEditDesc
+		if descValue == "-" {
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("failed to read from stdin: %w", err)
+			}
+			descValue = strings.TrimSpace(string(data))
+		}
+
+		// Dry run preview
+		if flagDryRun {
+			fmt.Printf("Would edit %d item(s):\n", len(items))
+			for _, item := range items {
+				fmt.Printf("  %s: %s\n", item.ID, item.Title)
+			}
+			fmt.Println("\nChanges:")
+			if flagEditTitle != "" {
+				fmt.Printf("  title: %q\n", flagEditTitle)
+			}
+			if flagEditPriority != 0 {
+				fmt.Printf("  priority: %d\n", flagEditPriority)
+			}
+			if flagEditParentSet {
+				if flagEditParent == "" {
+					fmt.Println("  parent: (remove)")
+				} else {
+					fmt.Printf("  parent: %s\n", flagEditParent)
+				}
+			}
+			for _, label := range flagEditAddLabels {
+				fmt.Printf("  add label: %s\n", label)
+			}
+			for _, label := range flagEditRmLabels {
+				fmt.Printf("  remove label: %s\n", label)
+			}
+			if descValue != "" {
+				fmt.Printf("  description: (%d chars)\n", len(descValue))
+			}
+			if flagEditStatus != "" {
+				fmt.Printf("  status: %s (forced)\n", flagEditStatus)
+			}
 			return nil
 		}
 
-		// Get current description
-		item, err := database.GetItem(id)
-		if err != nil {
-			return err
-		}
-
-		// Get editor (prefer $TPG_EDITOR, then nvim, then nano)
-		editor := os.Getenv("TPG_EDITOR")
-		if editor == "" {
-			if _, err := exec.LookPath("nvim"); err == nil {
-				editor = "nvim"
-			} else if _, err := exec.LookPath("nano"); err == nil {
-				editor = "nano"
-			} else {
-				editor = "vi"
+		// Apply changes to all items
+		for _, item := range items {
+			if flagEditTitle != "" {
+				if err := database.SetTitle(item.ID, flagEditTitle); err != nil {
+					return fmt.Errorf("failed to set title for %s: %w", item.ID, err)
+				}
+			}
+			if flagEditPriority != 0 {
+				if err := database.UpdatePriority(item.ID, flagEditPriority); err != nil {
+					return fmt.Errorf("failed to set priority for %s: %w", item.ID, err)
+				}
+			}
+			if flagEditParentSet {
+				if flagEditParent == "" {
+					// Remove parent
+					if err := database.ClearParent(item.ID); err != nil {
+						return fmt.Errorf("failed to clear parent for %s: %w", item.ID, err)
+					}
+				} else {
+					if err := database.SetParent(item.ID, flagEditParent); err != nil {
+						return fmt.Errorf("failed to set parent for %s: %w", item.ID, err)
+					}
+				}
+			}
+			for _, label := range flagEditAddLabels {
+				if err := database.AddLabelToItem(item.ID, item.Project, label); err != nil {
+					return fmt.Errorf("failed to add label %q to %s: %w", label, item.ID, err)
+				}
+			}
+			for _, label := range flagEditRmLabels {
+				if err := database.RemoveLabelFromItem(item.ID, item.Project, label); err != nil {
+					// Label might not exist, skip silently
+					continue
+				}
+			}
+			if descValue != "" {
+				if err := database.SetDescription(item.ID, descValue); err != nil {
+					return fmt.Errorf("failed to set description for %s: %w", item.ID, err)
+				}
+			}
+			if flagEditStatus != "" {
+				if err := database.UpdateStatus(item.ID, model.Status(flagEditStatus), db.AgentContext{}, false); err != nil {
+					return fmt.Errorf("failed to set status for %s: %w", item.ID, err)
+				}
 			}
 		}
 
-		// Create temp file
-		tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
-		if err != nil {
-			return fmt.Errorf("failed to create temp file: %w", err)
+		if len(items) == 1 {
+			fmt.Printf("Updated %s\n", items[0].ID)
+		} else {
+			fmt.Printf("Updated %d items\n", len(items))
 		}
-		tmpPath := tmpfile.Name()
-		defer func() { _ = os.Remove(tmpPath) }()
-
-		// Write current description
-		if _, err := tmpfile.WriteString(item.Description); err != nil {
-			_ = tmpfile.Close()
-			return fmt.Errorf("failed to write temp file: %w", err)
-		}
-		if err := tmpfile.Close(); err != nil {
-			return fmt.Errorf("failed to close temp file: %w", err)
-		}
-
-		// Get original stat for comparison
-		origStat, err := os.Stat(tmpPath)
-		if err != nil {
-			return fmt.Errorf("failed to stat temp file: %w", err)
-		}
-
-		// Open editor
-		editorCmd := execCommand(editor, tmpPath)
-		editorCmd.Stdin = os.Stdin
-		editorCmd.Stdout = os.Stdout
-		editorCmd.Stderr = os.Stderr
-		if err := editorCmd.Run(); err != nil {
-			return fmt.Errorf("editor failed: %w", err)
-		}
-
-		// Check if file was modified
-		newStat, err := os.Stat(tmpPath)
-		if err != nil {
-			return fmt.Errorf("failed to stat temp file: %w", err)
-		}
-
-		if newStat.ModTime().Equal(origStat.ModTime()) {
-			fmt.Println("No changes made")
-			return nil
-		}
-
-		// Read new content
-		newContent, err := os.ReadFile(tmpPath)
-		if err != nil {
-			return fmt.Errorf("failed to read temp file: %w", err)
-		}
-
-		// Update description
-		if err := database.SetDescription(id, string(newContent)); err != nil {
-			return err
-		}
-		fmt.Printf("Updated description for %s\n", id)
 		return nil
 	},
+}
+
+// editInEditor opens the item's description in an external editor
+func editInEditor(database *db.DB, id string) error {
+	item, err := database.GetItem(id)
+	if err != nil {
+		return err
+	}
+
+	// Get editor (prefer $TPG_EDITOR, then nvim, then nano)
+	editor := os.Getenv("TPG_EDITOR")
+	if editor == "" {
+		if _, err := exec.LookPath("nvim"); err == nil {
+			editor = "nvim"
+		} else if _, err := exec.LookPath("nano"); err == nil {
+			editor = "nano"
+		} else {
+			editor = "vi"
+		}
+	}
+
+	// Create temp file
+	tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpfile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	// Write current description
+	if _, err := tmpfile.WriteString(item.Description); err != nil {
+		_ = tmpfile.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Get original stat for comparison
+	origStat, err := os.Stat(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat temp file: %w", err)
+	}
+
+	// Open editor
+	editorCmd := execCommand(editor, tmpPath)
+	editorCmd.Stdin = os.Stdin
+	editorCmd.Stdout = os.Stdout
+	editorCmd.Stderr = os.Stderr
+	if err := editorCmd.Run(); err != nil {
+		return fmt.Errorf("editor failed: %w", err)
+	}
+
+	// Check if file was modified
+	newStat, err := os.Stat(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat temp file: %w", err)
+	}
+
+	if newStat.ModTime().Equal(origStat.ModTime()) {
+		fmt.Println("No changes made")
+		return nil
+	}
+
+	// Read new content
+	newContent, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to read temp file: %w", err)
+	}
+
+	// Update description
+	if err := database.SetDescription(id, string(newContent)); err != nil {
+		return err
+	}
+	fmt.Printf("Updated description for %s\n", id)
+	return nil
 }
 
 // execCommand wraps exec.Command for testing
@@ -5623,10 +5772,25 @@ func init() {
 	// onboard flags
 	onboardCmd.Flags().BoolVar(&flagForce, "force", false, "Replace existing Task Tracking section")
 
-	// edit flags
-	editCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title for the task")
-	editCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin, epics only)")
-	editCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
+	// edit flags - field setters
+	editCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title (single item only)")
+	editCmd.Flags().IntVar(&flagEditPriority, "priority", 0, "New priority (1=high, 2=medium, 3=low)")
+	editCmd.Flags().StringVar(&flagEditParent, "parent", "", "New parent epic ID (use \"\" to remove)")
+	editCmd.Flags().StringArrayVar(&flagEditAddLabels, "add-label", nil, "Label to add (repeatable)")
+	editCmd.Flags().StringArrayVar(&flagEditRmLabels, "remove-label", nil, "Label to remove (repeatable)")
+	editCmd.Flags().StringVar(&flagEditDesc, "desc", "", "New description (single item only, use '-' for stdin)")
+	editCmd.Flags().StringVar(&flagEditStatus, "status", "", "Force status change (requires --force)")
+
+	// edit flags - selection filters (reuse list flag variables)
+	editCmd.Flags().StringVar(&flagStatus, "select-status", "", "Select items by status")
+	editCmd.Flags().StringVar(&flagListParent, "select-parent", "", "Select items by parent epic ID")
+	editCmd.Flags().StringVar(&flagListType, "select-type", "", "Select items by item type")
+	editCmd.Flags().StringVar(&flagListEpic, "select-epic", "", "Select descendants of epic")
+	editCmd.Flags().StringArrayVarP(&flagFilterLabels, "select-label", "l", nil, "Select items by label (repeatable, AND logic)")
+
+	// edit flags - control
+	editCmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview changes without applying")
+	editCmd.Flags().BoolVar(&flagForce, "force", false, "Required for --status changes")
 
 	// ready flags
 	readyCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")

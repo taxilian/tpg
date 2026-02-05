@@ -356,6 +356,22 @@ func (db *DB) SetParent(itemID, parentID string) error {
 	return nil
 }
 
+// ClearParent removes an item's parent (makes it a top-level item).
+func (db *DB) ClearParent(itemID string) error {
+	result, err := db.Exec(`
+		UPDATE items SET parent_id = NULL, updated_at = ? WHERE id = ?`,
+		sqlTime(time.Now()), itemID)
+	if err != nil {
+		return fmt.Errorf("failed to clear parent: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", itemID)
+	}
+	return nil
+}
+
 // SetProject changes an item's project.
 func (db *DB) SetProject(id string, project string) error {
 	// Auto-create project if specified
@@ -419,8 +435,22 @@ func (db *DB) SetTitle(id string, title string) error {
 
 // SetSharedContext sets the shared context for an epic.
 // Shared context is displayed to all descendants in 'tpg show'.
+// Returns an error if the item is not an epic.
 func (db *DB) SetSharedContext(id string, context string) error {
-	result, err := db.Exec(`
+	// Verify item exists and is an epic
+	var itemType string
+	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, id).Scan(&itemType)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to check item type: %w", err)
+	}
+	if itemType != string(model.ItemTypeEpic) {
+		return fmt.Errorf("shared context can only be set on epics, not %s (use 'tpg epic edit' for epics)", itemType)
+	}
+
+	_, err = db.Exec(`
 		UPDATE items
 		SET shared_context = ?,
 		    updated_at = ?
@@ -429,18 +459,27 @@ func (db *DB) SetSharedContext(id string, context string) error {
 	if err != nil {
 		return fmt.Errorf("failed to set shared context: %w", err)
 	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
-	}
 	return nil
 }
 
 // SetClosingInstructions sets the closing instructions for an epic.
 // These are displayed when the epic auto-completes (all children done).
+// Returns an error if the item is not an epic.
 func (db *DB) SetClosingInstructions(id string, instructions string) error {
-	result, err := db.Exec(`
+	// Verify item exists and is an epic
+	var itemType string
+	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, id).Scan(&itemType)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to check item type: %w", err)
+	}
+	if itemType != string(model.ItemTypeEpic) {
+		return fmt.Errorf("closing instructions can only be set on epics, not %s (use 'tpg epic edit' for epics)", itemType)
+	}
+
+	_, err = db.Exec(`
 		UPDATE items
 		SET closing_instructions = ?,
 		    updated_at = ?
@@ -448,11 +487,6 @@ func (db *DB) SetClosingInstructions(id string, instructions string) error {
 		instructions, sqlTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("failed to set closing instructions: %w", err)
-	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	return nil
 }
