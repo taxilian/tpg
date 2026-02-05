@@ -1835,18 +1835,10 @@ func (m Model) handleWizardTab() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) getAvailableTypes() []TypeOption {
-	config, err := db.LoadConfig()
-	if err != nil {
-		config = nil
-	}
-
 	options := []TypeOption{}
 	seen := make(map[model.ItemType]bool)
 
 	prefixForType := func(itemType model.ItemType) string {
-		if config != nil {
-			return config.GetPrefixForType(string(itemType))
-		}
 		switch itemType {
 		case model.ItemTypeTask:
 			return db.DefaultTaskPrefix
@@ -1873,21 +1865,7 @@ func (m Model) getAvailableTypes() []TypeOption {
 	addType(model.ItemTypeTask, "Standard task (default)")
 	addType(model.ItemTypeEpic, "Large body of work with child tasks")
 
-	// Config prefixes
-	if config != nil {
-		if config.Prefixes.Task != "" {
-			addType(model.ItemTypeTask, "Standard task (default)")
-		}
-		if config.Prefixes.Epic != "" {
-			addType(model.ItemTypeEpic, "Large body of work with child tasks")
-		}
-		for key := range config.CustomPrefixes {
-			itemType := model.ItemType(strings.TrimSpace(key))
-			addType(itemType, "")
-		}
-	}
-
-	// Database types
+	// Database types (for backward compatibility with existing items of old types)
 	if m.db != nil {
 		if dbTypes, err := m.db.GetDistinctTypes(); err == nil {
 			for _, itemType := range dbTypes {

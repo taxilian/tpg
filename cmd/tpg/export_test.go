@@ -986,30 +986,6 @@ func TestExport_InvalidStatusFilter(t *testing.T) {
 	}
 }
 
-func TestExport_CustomTypeFilter(t *testing.T) {
-	// Arrange: The system allows custom types (story, bug, etc.)
-	database := setupTestDB(t)
-	createTestItem(t, database, "ts-custom1", "Custom Type Task",
-		withType(model.ItemType("story")))
-	createTestItem(t, database, "ts-task1", "Regular Task",
-		withType(model.ItemTypeTask))
-
-	// Act: Filter by custom type
-	filter := db.ListFilter{Type: "story"}
-	items, err := database.ListItemsFiltered(filter)
-	if err != nil {
-		t.Fatalf("failed to filter: %v", err)
-	}
-
-	// Assert: Only custom type task returned
-	if len(items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(items))
-	}
-	if items[0].ID != "ts-custom1" {
-		t.Errorf("expected ts-custom1, got %s", items[0].ID)
-	}
-}
-
 // =============================================================================
 // Integration-Style Tests (Testing the full export flow)
 // =============================================================================

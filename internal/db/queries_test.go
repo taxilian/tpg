@@ -128,18 +128,18 @@ func TestGetDistinctTypes_ReturnsSortedDistinct(t *testing.T) {
 		{
 			ID:        model.GenerateID(model.ItemTypeTask),
 			Project:   "test",
-			Type:      model.ItemType("bug"),
-			Title:     "Bug",
+			Type:      model.ItemTypeTask,
+			Title:     "Task 2",
 			Status:    model.StatusOpen,
 			Priority:  2,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		},
 		{
-			ID:        model.GenerateID(model.ItemTypeTask),
+			ID:        model.GenerateID(model.ItemTypeEpic),
 			Project:   "test",
-			Type:      model.ItemType("bug"),
-			Title:     "Bug duplicate",
+			Type:      model.ItemTypeEpic,
+			Title:     "Epic 2",
 			Status:    model.StatusOpen,
 			Priority:  2,
 			CreatedAt: time.Now(),
@@ -158,7 +158,7 @@ func TestGetDistinctTypes_ReturnsSortedDistinct(t *testing.T) {
 		t.Fatalf("failed to get distinct types: %v", err)
 	}
 
-	want := []model.ItemType{"bug", model.ItemTypeEpic, model.ItemTypeTask}
+	want := []model.ItemType{model.ItemTypeEpic, model.ItemTypeTask}
 	if len(types) != len(want) {
 		t.Fatalf("expected %d types, got %d", len(want), len(types))
 	}

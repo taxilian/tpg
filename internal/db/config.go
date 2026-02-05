@@ -17,12 +17,12 @@ const (
 
 // Config holds per-project settings stored in .tpg/config.json.
 type Config struct {
-	Prefixes       PrefixConfig      `json:"prefixes"`
-	CustomPrefixes map[string]string `json:"custom_prefixes"`
-	DefaultProject string            `json:"default_project"`
-	IDLength       int               `json:"id_length,omitempty"`
-	Warnings       WarningsConfig    `json:"warnings,omitempty"`
-	Worktree       WorktreeConfig    `json:"worktree,omitempty"`
+	Prefixes       PrefixConfig   `json:"prefixes"`
+	DefaultProject string         `json:"default_project"`
+	IDLength       int            `json:"id_length,omitempty"`
+	Warnings       WarningsConfig `json:"warnings,omitempty"`
+	Worktree       WorktreeConfig `json:"worktree,omitempty"`
+	// Note: The "custom_prefixes" field in JSON is silently ignored for backward compatibility.
 }
 
 // WarningsConfig controls which warnings are shown.
@@ -188,27 +188,6 @@ func DefaultProject() (string, error) {
 		return "", err
 	}
 	return config.DefaultProject, nil
-}
-
-// GetPrefixForType returns the prefix for a given item type.
-// Checks custom_prefixes first, then falls back to default prefixes.
-func (c *Config) GetPrefixForType(itemType string) string {
-	// Check custom prefixes first
-	if c.CustomPrefixes != nil {
-		if prefix, ok := c.CustomPrefixes[itemType]; ok && prefix != "" {
-			return normalizePrefix(prefix)
-		}
-	}
-	// Fall back to default prefixes
-	switch itemType {
-	case "task":
-		return c.Prefixes.Task
-	case "epic":
-		return c.Prefixes.Epic
-	default:
-		// For unknown types, return a generic prefix
-		return "it"
-	}
 }
 
 // RequireEpicIDEnabled returns whether explicit branch names must include the epic ID.

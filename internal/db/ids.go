@@ -8,18 +8,20 @@ import (
 
 const maxIDRetries = 10
 
-// GenerateItemID returns a new unique item ID using the configured prefixes and length.
+// GenerateItemID returns a new unique item ID using hardcoded prefixes (ts- for task, ep- for epic).
 // Retries with a new random hash on collision.
 func (db *DB) GenerateItemID(itemType model.ItemType) (string, error) {
 	config, err := LoadConfig()
 	if err != nil {
 		return "", err
 	}
-	prefix := config.GetPrefixForType(string(itemType))
 	idLen := config.IDLength
 	if idLen == 0 {
 		idLen = model.DefaultIDLength
 	}
+
+	// Hardcoded prefixes: ts for task, ep for epic (handled by model.GenerateIDWithPrefixN)
+	prefix := ""
 
 	for i := 0; i < maxIDRetries; i++ {
 		id := model.GenerateIDWithPrefixN(prefix, itemType, idLen)

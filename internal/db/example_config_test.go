@@ -7,7 +7,8 @@ import (
 )
 
 func TestExampleConfig_FromTask(t *testing.T) {
-	// This test uses the exact example config from the task
+	// This test verifies config loading with custom_prefixes field.
+	// Custom prefixes are no longer used but config should still load without error.
 	dir := t.TempDir()
 	tpgDir := filepath.Join(dir, ".tpg")
 	if err := os.MkdirAll(tpgDir, 0755); err != nil {
@@ -40,36 +41,17 @@ func TestExampleConfig_FromTask(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Verify custom prefixes loaded
-	if config.CustomPrefixes == nil {
-		t.Fatal("CustomPrefixes should not be nil")
+	// Verify standard prefixes loaded correctly
+	if config.Prefixes.Task != "ts" {
+		t.Errorf("Expected task prefix 'ts', got %q", config.Prefixes.Task)
 	}
 
-	if config.CustomPrefixes["story"] != "st" {
-		t.Errorf("Expected story prefix 'st', got %q", config.CustomPrefixes["story"])
+	if config.Prefixes.Epic != "ep" {
+		t.Errorf("Expected epic prefix 'ep', got %q", config.Prefixes.Epic)
 	}
 
-	if config.CustomPrefixes["bug"] != "bg" {
-		t.Errorf("Expected bug prefix 'bg', got %q", config.CustomPrefixes["bug"])
-	}
+	// Note: The custom_prefixes field in JSON is silently ignored.
+	// This ensures backward compatibility with existing config files.
 
-	// Verify GetPrefixForType works with custom prefixes
-	if prefix := config.GetPrefixForType("story"); prefix != "st" {
-		t.Errorf("Expected GetPrefixForType('story') = 'st', got %q", prefix)
-	}
-
-	if prefix := config.GetPrefixForType("bug"); prefix != "bg" {
-		t.Errorf("Expected GetPrefixForType('bug') = 'bg', got %q", prefix)
-	}
-
-	// Verify standard types still work
-	if prefix := config.GetPrefixForType("task"); prefix != "ts" {
-		t.Errorf("Expected GetPrefixForType('task') = 'ts', got %q", prefix)
-	}
-
-	if prefix := config.GetPrefixForType("epic"); prefix != "ep" {
-		t.Errorf("Expected GetPrefixForType('epic') = 'ep', got %q", prefix)
-	}
-
-	t.Log("✅ Example config from task works correctly!")
+	t.Log("✅ Config with custom_prefixes field loads correctly (custom prefixes ignored)")
 }
