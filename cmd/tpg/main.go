@@ -2467,56 +2467,6 @@ Example:
 	},
 }
 
-var setStatusCmd = &cobra.Command{
-	Use:   "set-status <id> <status>",
-	Short: "Force-set a task's status (use with caution)",
-	Long: `WARNING: This is a low-level escape hatch for fixing broken state.
-Prefer the standard commands (start, done, block, cancel, reopen)
-for normal workflow. Only use this when things are busted and the
-normal commands won't get you where you need to be.
-
-Valid statuses: open, in_progress, blocked, done, canceled
-
-Example:
-  tpg set-status ts-a1b2c3 open --force
-  tpg set-status ts-a1b2c3 in_progress --force`,
-	Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if !flagForce {
-			return fmt.Errorf(`set-status is for fixing mistakes only. Use: tpg start, tpg done, or tpg cancel instead. Use --force if you really need this.`)
-		}
-
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		id := args[0]
-		status := model.Status(args[1])
-
-		if !status.IsValid() {
-			return fmt.Errorf("invalid status %q (valid: open, in_progress, blocked, done, canceled)", args[1])
-		}
-
-		agentCtx := db.GetAgentContext()
-		if err := database.UpdateStatus(id, status, agentCtx, flagForce); err != nil {
-			return err
-		}
-
-		if err := database.AddLog(id, fmt.Sprintf("Status force-set to %s", status)); err != nil {
-			return err
-		}
-
-		fmt.Printf("Set %s status to %s\n", id, status)
-
-		// Backup after successful mutation
-		database.BackupQuiet()
-
-		return nil
-	},
-}
-
 var staleCmd = &cobra.Command{
 	Use:   "stale",
 	Short: "List stale in-progress tasks",
@@ -5819,8 +5769,6 @@ func init() {
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(reopenCmd)
-	setStatusCmd.Flags().BoolVar(&flagForce, "force", false, "Force status change (required for set-status)")
-	rootCmd.AddCommand(setStatusCmd)
 	blockCmd.Flags().BoolVar(&flagBlockForce, "force", false, "Force manual block (prefer dependencies instead)")
 	rootCmd.AddCommand(blockCmd)
 	rootCmd.AddCommand(staleCmd)
