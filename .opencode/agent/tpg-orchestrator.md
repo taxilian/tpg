@@ -77,6 +77,8 @@ permission:
     "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg desc *": "allow"
     "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg history *": "allow"
     "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg set-status *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg epic *": "allow"
+    "AGENT_ID=\"*\" AGENT_TYPE=\"*\" tpg stale*": "allow"
     "tpg ready*": "allow"
     "tpg status*": "allow"
     "tpg show *": "allow"
@@ -96,6 +98,8 @@ permission:
     "tpg desc *": "allow"
     "tpg history *": "allow"
     "tpg set-status *": "allow"
+    "tpg epic *": "allow"
+    "tpg stale*": "allow"
     "rg *": "allow"
     "ack *": "allow"
     "ls *": "allow"
@@ -307,8 +311,38 @@ As work progresses:
 - Check `tpg show <id>` on completed tasks to understand what was learned
 - Track which patterns are nearing completion (template candidates)
 - **Always create follow-up tasks for temporary solutions**
+- **Monitor epics nearing completion** — when all children are done, run `tpg epic finish <id>` to see cleanup steps
 
-### 7. Handle Blockers
+### 7. Handle Epic Completion
+
+Epics auto-complete when all children are done or canceled. When an epic completes:
+
+```bash
+# See cleanup instructions (merge PR, delete worktree, etc.)
+tpg epic finish <epic-id>
+```
+
+**This command does NOT complete the epic** — it shows the `--on-close` instructions and worktree cleanup commands if applicable. The epic auto-completes on its own.
+
+**For worktree epics, typical cleanup:**
+```bash
+tpg epic finish ep-abc123
+# Output shows:
+# - Closing instructions (if any were set with --on-close)
+# - Merge the branch: git merge feature/ep-abc123-name
+# - Remove worktree: git worktree remove .worktrees/ep-abc123
+```
+
+**Monitor epic progress:**
+```bash
+# See all open tasks under an epic
+tpg epic list <epic-id> --status open
+
+# See epic details including shared context and on-close instructions
+tpg show <epic-id>
+```
+
+### 8. Handle Blockers
 
 Blockers surface through the dependency system. When an agent hits a blocker, it creates a task for the blocker and adds a dependency — the system automatically reverts the blocked task to open and logs the reason. There is no manual "blocked" status involved.
 
@@ -351,7 +385,7 @@ EOF
 Use `tpg dep` only when linking existing tasks. When creating new tasks,
 always use `--blocks` or `--after` to set dependencies at creation time.
 
-### 8. Handle Stale or Abandoned Tasks
+### 9. Handle Stale or Abandoned Tasks
 
 Tasks can get stuck in_progress when an agent crashes, times out, or gets killed mid-work. These tasks are not being worked on but appear claimed.
 
@@ -378,13 +412,17 @@ Tasks should be reopened by the agent, not by you!
 
 Some epics have dedicated worktrees for isolated development. When delegating tasks from worktree epics:
 
-**1. Confirm worktree context:**
+**1. Confirm worktree and shared context:**
 ```bash
 tpg show <task-id>
 # Look for:
 # Epic:        ep-abc123 "Feature name"
 # Worktree:    .worktrees/ep-abc123/ (branch: feature/ep-abc123-name)
 # Status:      ✓ worktree exists
+# 
+# Epic Context (shared with all tasks):
+#   Use Stripe API v3. See docs/stripe-guide.md for patterns.
+#   All payment handlers must include idempotency keys.
 ```
 
 **2. Filter to epic's ready tasks:**
@@ -400,10 +438,16 @@ Verify context with `tpg show FEATURE-1.2` before starting.
 ```
 
 **4. Agent workflow in worktree:**
-- Agent runs `tpg show <id>` to see worktree context
+- Agent runs `tpg show <id>` to see worktree context AND epic shared context
+- Epic shared context (set with `--context`) is visible to all descendant tasks
 - Agent uses `tpg ready --epic <id>` to filter tasks
 - All tpg commands work the same regardless of location
 - Agent may need to `cd` to worktree if work requires that environment
+
+**5. Epic completion cleanup:**
+When an epic auto-completes (all children done), run `tpg epic finish <id>` to see:
+- Closing instructions (set with `--on-close` when epic was created)
+- Worktree cleanup commands (merge branch, remove worktree)
 
 **Note:** Worktree context is informational. Agents use the same commands everywhere; tpg shows context but doesn't enforce location.
 
@@ -589,6 +633,7 @@ Before capturing a template:
 - [ ] Pattern is clean (not cluttered with one-off customizations)
 - [ ] Variables are clearly identified
 - [ ] At least one more instance will use this template
+- [ ] Consider epic context patterns (shared context that applies to all instances)
 
 ## Template Operations Reference
 
@@ -602,6 +647,19 @@ Before capturing a template:
 | | `EOF` | |
 | Capture template | Create YAML in `.tpg/templates/` | After first instance completes |
 | Check ready | `tpg ready` | Finding work to execute |
+
+## Epic Operations Reference
+
+| Operation | Command | When to Use |
+|-----------|---------|-------------|
+| Create epic | `tpg epic add "Title"` | Organizing related tasks |
+| Epic with context | `tpg epic add "Title" --context "..."` | Sharing info with all descendants |
+| Epic with worktree | `tpg epic add "Title" --worktree` | Isolated development branch |
+| Filter by epic | `tpg ready --epic <id>` | Focus on one epic's tasks |
+| Epic cleanup | `tpg epic finish <id>` | After epic auto-completes |
+| List epic descendants | `tpg epic list <id>` | See all tasks in an epic |
+
+**Note:** Epics auto-complete when all children are done. Use `tpg epic finish` to see cleanup steps (merge, worktree removal), not to complete the epic.
 
 ## Communication Style
 

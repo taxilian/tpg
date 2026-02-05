@@ -290,6 +290,13 @@ Look for in the tree:
 - **Task**: A single, executable unit of work (e.g., "Write and test the 'Create' (from CRUD) methods for the User data model")
 - **Rule**: If it is going to take more than 5-15 minutes to do then it is an Epic (or sub-epic) that needs tasks
 
+**Epic Auto-Completion:**
+Epics automatically complete when all their children are done. You never need to manually run `tpg done` on an epic - the system tracks child completion and auto-completes the parent.
+
+**Epic Creation Flags:**
+- `--context` or `-c`: Shared context that all child tasks inherit (useful for background info, constraints, or design decisions that apply to all tasks in the epic)
+- `--on-close`: Instructions injected into every child task's close reason field (useful for reminders like "update documentation" or "run integration tests")
+
 **Decomposition Strategy:**
 ```
 Epic Large Feature
@@ -769,9 +776,18 @@ tpg template show <id>
 
 **Create epic (only after checking templates):**
 ```bash
-# tpg: tpg add "User Authentication System" -e --priority 1
+# tpg epic add "User Authentication System" --priority 1
 # Returns: AUTH-1 (or similar ID)
+#
+# Optional flags for epics:
+# --context "Shared background for all tasks" (or -c)
+# --on-close "Instructions for closing tasks"
+#
+# Full example with context:
+# tpg epic add "Payment Integration" --priority 1 --context "Using Stripe API v2023-10-16. All payment amounts in cents."
+#
 # REMINDER: You should have already run `tpg template list` before this
+# NOTE: Epics auto-complete when all children are done - no manual `tpg done` needed
 ```
 
 **Create tasks within epic (MANDATORY: use template if available):**

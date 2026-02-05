@@ -38,6 +38,23 @@ A task should describe: what problem needs to be solved, why it matters, what co
 
 If a task dictates implementation details — function names, algorithms, internal structure, step-by-step instructions — strip that out unless there's a concrete project-level reason it must be done a specific way. When fixing tasks during this review, resist the urge to add more detail. Simplify.
 
+### 6. Epic structure and context
+
+Epics group related work and auto-complete when all children are done. Check each epic for:
+
+**Creation**: Epics should be created with `tpg epic add`, not `tpg add -e` (old syntax).
+
+**Shared context** (`--context`): If child tasks need common guidelines, patterns, or API docs, the epic should have shared context set. Check with `tpg show <epic-id>` — look for a "Shared Context:" section. If children keep repeating the same background info, that belongs in the epic's context instead.
+
+**Closing instructions** (`--on-close`): Epics should have on-close instructions for cleanup — what to do when all children complete (update changelog, merge PR, clean up worktree, etc.). Particularly important for worktree epics.
+
+**Worktree integration**: For epics with dedicated worktrees:
+- Is worktree metadata set? (`tpg epic worktree <id>`)
+- Does on-close include merge and cleanup instructions?
+- Are tasks properly scoped to the worktree branch?
+
+**Auto-complete behavior**: Epics complete automatically when all children complete. If you see a task like "Complete the epic" or "Mark epic done" — delete it. It's unnecessary and creates confusion.
+
 ## Common reviewer mistakes
 
 - **Reviewing the plan only against itself** instead of against the codebase. If you haven't explored the actual code, you haven't reviewed anything.
