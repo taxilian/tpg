@@ -2890,7 +2890,14 @@ func (m Model) listView() string {
 // Used for selected rows where we apply a single highlight style.
 func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
 	item := node.Item
-	status := formatStatus(item.Status)
+
+	// Check if item is stale and use "stale" status display
+	var status string
+	if m.staleItems[item.ID] {
+		status = "⚠ stale"
+	} else {
+		status = formatStatus(item.Status)
+	}
 
 	// Build tree prefix with indentation and expand/collapse indicators
 	treePrefix := m.buildTreePrefix(node)
@@ -2906,14 +2913,6 @@ func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
 			selectPrefix = "  "
 		}
 		selectWidth = 2
-	}
-
-	// Stale indicator
-	stale := ""
-	staleWidth := 0
-	if m.staleItems[item.ID] {
-		stale = "⚠"
-		staleWidth = 2 // ⚠ + space
 	}
 
 	// Agent indicator
@@ -2951,7 +2950,7 @@ func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
+	fixedWidth := 10 + labelsWidth + projectWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -2963,18 +2962,25 @@ func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
 	}
 
 	if agent != "" {
-		return fmt.Sprintf("%s%s%s%-8s %-4s %s %s %-*s%s %s", selectPrefix, stale, treePrefix, status, itemType, item.ID, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%s%-8s %-4s %s %s %-*s%s %s", selectPrefix, treePrefix, status, itemType, item.ID, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%s%s%-8s %-4s %s  %-*s%s %s", selectPrefix, stale, treePrefix, status, itemType, item.ID, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s%-8s %-4s %s  %-*s%s %s", selectPrefix, treePrefix, status, itemType, item.ID, titleWidth, title, labels, project)
 }
 
 // formatTreeNodeLineStyled returns a styled line with colors for non-selected rows.
 func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
 	item := node.Item
-	icon := statusIcon(item.Status)
-	text := statusText(item.Status)
-	color := statusColors[item.Status]
-	statusStyled := lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%-8s", icon+" "+text))
+
+	// Check if item is stale and use "stale" status display with orange styling
+	var statusStyled string
+	if m.staleItems[item.ID] {
+		statusStyled = staleStyle.Render(fmt.Sprintf("%-8s", "⚠ stale"))
+	} else {
+		icon := statusIcon(item.Status)
+		text := statusText(item.Status)
+		color := statusColors[item.Status]
+		statusStyled = lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%-8s", icon+" "+text))
+	}
 
 	// Build tree prefix with indentation and expand/collapse indicators
 	treePrefix := m.buildTreePrefix(node)
@@ -2990,14 +2996,6 @@ func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
 			selectPrefix = "  "
 		}
 		selectWidth = 2
-	}
-
-	// Stale indicator
-	stale := ""
-	staleWidth := 0
-	if m.staleItems[item.ID] {
-		stale = staleStyle.Render("⚠ ")
-		staleWidth = 2 // ⚠ + space
 	}
 
 	// Agent indicator
@@ -3038,7 +3036,7 @@ func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
 	}
 
 	// Calculate available space for title
-	fixedWidth := 10 + labelsWidth + projectWidth + staleWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
+	fixedWidth := 10 + labelsWidth + projectWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
 	titleWidth := width - fixedWidth
 	if titleWidth < 20 {
 		titleWidth = 40
@@ -3053,9 +3051,9 @@ func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
 	styledTreePrefix := dimStyle.Render(treePrefix)
 
 	if agent != "" {
-		return fmt.Sprintf("%s%s%s%s %s %s %s %-*s%s %s", selectPrefix, stale, styledTreePrefix, statusStyled, typeStyled, id, agent, titleWidth, title, labels, project)
+		return fmt.Sprintf("%s%s%s %s %s %s %-*s%s %s", selectPrefix, styledTreePrefix, statusStyled, typeStyled, id, agent, titleWidth, title, labels, project)
 	}
-	return fmt.Sprintf("%s%s%s%s %s %s  %-*s%s %s", selectPrefix, stale, styledTreePrefix, statusStyled, typeStyled, id, titleWidth, title, labels, project)
+	return fmt.Sprintf("%s%s%s %s %s  %-*s%s %s", selectPrefix, styledTreePrefix, statusStyled, typeStyled, id, titleWidth, title, labels, project)
 }
 
 // buildTreePrefix creates the indentation and branch indicators for a tree node.
@@ -3298,12 +3296,13 @@ func (m Model) detailView() string {
 	b.WriteString(detailLabelStyle.Render("Type:     ") + string(item.Type) + "\n")
 	b.WriteString(detailLabelStyle.Render("Project:  ") + item.Project + "\n")
 
-	statusStyled := lipgloss.NewStyle().Foreground(color).Render(string(item.Status))
-	b.WriteString(detailLabelStyle.Render("Status:   ") + statusStyled)
-
-	// Add stale badge in detail view
+	// Show "stale" status for stale items
 	if m.staleItems[item.ID] {
-		b.WriteString(" " + staleStyle.Render("[STALE]"))
+		statusStyled := staleStyle.Render("stale [STALE]")
+		b.WriteString(detailLabelStyle.Render("Status:   ") + statusStyled)
+	} else {
+		statusStyled := lipgloss.NewStyle().Foreground(color).Render(string(item.Status))
+		b.WriteString(detailLabelStyle.Render("Status:   ") + statusStyled)
 	}
 	b.WriteString("\n")
 

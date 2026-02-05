@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/taxilian/tpg/internal/db"
+	"github.com/taxilian/tpg/internal/format"
 	"github.com/taxilian/tpg/internal/model"
 	"github.com/taxilian/tpg/internal/plugin"
 	"github.com/taxilian/tpg/internal/prime"
@@ -5978,13 +5979,19 @@ func printItemsTable(items []model.Item) {
 		return
 	}
 
+	now := time.Now()
 	fmt.Printf("%-12s %-12s %-4s %s\n", "ID", "STATUS", "PRI", "TITLE")
 	for _, item := range items {
 		title := item.Title
 		if len(item.Labels) > 0 {
 			title = formatLabels(item.Labels) + " " + title
 		}
-		fmt.Printf("%-12s %-12s %-4d %s\n", item.ID, item.Status, item.Priority, title)
+		status := format.StatusDisplay(item, now)
+		// Add ⚠ prefix for stale items
+		if format.IsStale(item, now) {
+			title = "⚠ " + title
+		}
+		fmt.Printf("%-12s %-12s %-4d %s\n", item.ID, status, item.Priority, title)
 	}
 }
 
@@ -6123,6 +6130,7 @@ func printItemsTree(items []model.Item) {
 	}
 
 	nodes := buildTreeNodes(items)
+	now := time.Now()
 
 	fmt.Printf("%-12s %-12s %-4s %s\n", "ID", "STATUS", "PRI", "TITLE")
 	for _, node := range nodes {
@@ -6131,7 +6139,12 @@ func printItemsTree(items []model.Item) {
 			title = formatLabels(node.Item.Labels) + " " + title
 		}
 		prefix := buildTreePrefix(node)
-		fmt.Printf("%-12s %-12s %-4d %s%s\n", node.Item.ID, node.Item.Status, node.Item.Priority, prefix, title)
+		status := format.StatusDisplay(node.Item, now)
+		// Add ⚠ prefix for stale items
+		if format.IsStale(node.Item, now) {
+			title = "⚠ " + title
+		}
+		fmt.Printf("%-12s %-12s %-4d %s%s\n", node.Item.ID, status, node.Item.Priority, prefix, title)
 	}
 }
 
@@ -6310,7 +6323,13 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
 	fmt.Printf("Title:       %s\n", item.Title)
-	fmt.Printf("Status:      %s\n", item.Status)
+	now := time.Now()
+	status := format.StatusDisplay(*item, now)
+	if format.IsStale(*item, now) {
+		fmt.Printf("Status:      %s [STALE]\n", status)
+	} else {
+		fmt.Printf("Status:      %s\n", status)
+	}
 	fmt.Printf("Priority:    %d\n", item.Priority)
 	if item.ParentID != nil {
 		fmt.Printf("Parent:      %s\n", *item.ParentID)
