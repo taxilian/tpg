@@ -11,8 +11,9 @@
 | `tpg list` | List all tasks |
 | `tpg list --ids-only` | Output just IDs (useful for scripting) |
 | `tpg show <id>` | Show task details, logs, deps, suggested concepts |
-| `tpg ready` | Show tasks ready for work (open + deps met) |
+| `tpg ready` | Show tasks ready for work (open + deps met), with epic counts |
 | `tpg ready --epic <id>` | Show ready tasks filtered by epic |
+| `tpg stale` | List in_progress tasks with no recent updates (default: 5 min) |
 | `tpg status` | Project overview for agent spin-up |
 | `tpg prime` | Output context for agent hooks |
 | `tpg compact` | Output compaction workflow guidance |
@@ -43,7 +44,6 @@
 | `tpg dep <id> remove <other>` | Remove dependency between tasks |
 | `tpg graph` | Show dependency graph |
 | `tpg projects` | List all projects |
-| `tpg add "<title>" --type <type>` | Create item with custom type (task, epic, bug, story, etc.) |
 
 ## Epics
 
@@ -134,6 +134,7 @@ Worktree configuration in `.tpg/config.json`:
 | `tpg labels rename <old> <new>` | Rename a label |
 | `tpg label <id> <name>` | Add label to task (creates if needed) |
 | `tpg unlabel <id> <name>` | Remove label from task |
+| `tpg add "Fix bug" --label bug` | Create task with label (preferred over custom types) |
 
 ## Templates
 
@@ -166,7 +167,7 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 | `--from-yaml` | all | Read flag values from stdin as YAML (keys use underscores, e.g. `desc: value`) |
 | `--project` | all | Filter/set project scope |
 | `-p, --priority` | add | Priority: 1=high, 2=medium (default), 3=low |
-| `--type <type>` | add | Create item with custom type (task, epic, bug, story, etc.) |
+| `--type <type>` | add | Item type: "task" (default) or "epic" |
 | `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
 | `--parent <id>` | add, list | Set parent item at creation / filter by parent (any type can have children) |
 | `--blocks` | add | Set task this will block at creation |
@@ -178,7 +179,7 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 | `--status` | list | Filter by status |
 | `--epic <id>` | list, ready | Filter by parent epic |
 | `--ids-only` | list | Output just IDs, one per line |
-| `--type` | list | Filter by item type (task, epic, bug, etc.) |
+| `--type` | list | Filter by item type (task or epic) |
 | `--blocking` | list | Show items that block the given ID |
 | `--blocked-by` | list | Show items blocked by the given ID |
 | `--has-blockers` | list | Show only items with unresolved blockers |
@@ -188,28 +189,26 @@ See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 
 ## ID Format
 
-IDs are auto-generated with configurable type prefixes:
+IDs are auto-generated with type prefixes:
 
-**Default prefixes:**
+**Prefixes:**
 - `ts-XXXXXX` — tasks (e.g., `ts-a1b2c3`)
 - `ep-XXXXXX` — epics (e.g., `ep-f0a20b`)
 
-**Arbitrary types:** Any type can be used (bug, story, feature, etc.). Configure custom prefixes in `.tpg/config.json`:
+Configure custom prefixes in `.tpg/config.json`:
 
 ```json
 {
   "prefixes": {
     "task": "ts",
     "epic": "ep"
-  },
-  "custom_prefixes": {
-    "bug": "bg",
-    "story": "st"
   }
 }
 ```
 
 ID length is configurable via `id_length` in `.tpg/config.json` (default: 3 characters, base-36 alphabet `[0-9a-z]`).
+
+**Note:** The type system only supports "task" and "epic". Use labels to categorize work (e.g., `--label bug`, `--label story`, `--label feature`). Migration v6 automatically converts old arbitrary types to labels.
 
 ## Removed Commands
 
@@ -278,6 +277,50 @@ tpg epic finish ep-abc123
 #   git branch -d feature/ep-abc123-implement-oauth2-authentication
 ```
 
+## Ready Command Output
+
+`tpg ready` shows tasks ready for work, grouped by epic with counts:
+
+```bash
+tpg ready
+# Ready tasks:
+# (8 ready)
+#
+# ep-abc123 - Implement OAuth2 authentication (3 / 5 tasks ready)
+#   ts-def456  Set up OAuth2 provider config
+#   ts-ghi789  Implement token refresh
+#   ts-jkl012  Add logout endpoint
+#
+# ep-xyz789 - Payment integration (2 / 8 tasks ready)
+#   ts-mno345  Configure Stripe keys
+#   ts-pqr678  Implement checkout flow
+#
+# (no epic)
+#   ts-stu901  Update README
+#   ts-vwx234  Fix typo in config
+#   ts-yza567  Add license file
+```
+
+The format `(X / Y tasks ready)` shows X ready tasks out of Y total tasks in the epic.
+
+## Stale Status Display
+
+In-progress tasks older than 5 minutes display with a "stale" indicator:
+
+```bash
+tpg list --status in_progress
+# ID         STATUS       TITLE
+# ts-abc123  in_progress  Implement auth      ⚠ stale (23m)
+# ts-def456  in_progress  Add tests           
+```
+
+The stale indicator helps identify abandoned work. Use `tpg stale` to list only stale tasks:
+
+```bash
+tpg stale                  # Default: 5 minute threshold
+tpg stale --threshold 10m  # Custom threshold
+```
+
 ## Environment Variables
 
 | Variable | Description |
@@ -287,9 +330,9 @@ tpg epic finish ep-abc123
 
 ## Data Model
 
-- **Items**: Work items of arbitrary types (task, epic, bug, story, etc.) with title, description, status, priority
-- **Type**: Arbitrary string identifying the item type. Any type can have child items via the parent relationship.
-- **Status**: `open` -> `in_progress` -> `done` (or `blocked`, `canceled`)
+- **Items**: Work items with title, description, status, priority. Types are "task" or "epic".
+- **Type**: Either "task" or "epic". Use labels for categorization (bug, feature, refactor, etc.).
+- **Status**: `open` -> `in_progress` -> `done` (or `blocked`, `canceled`). In-progress tasks older than 5 minutes display as "stale" with ⚠ badge.
 - **Dependencies**: Item A can depend on Item B (A is blocked until B is done)
 - **Parent**: Any item can be a parent of other items, creating hierarchies
 - **Labels**: Tags for categorization (bug, feature, refactor, etc), project-scoped

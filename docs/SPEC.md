@@ -9,7 +9,7 @@ This document specifies the required behavior changes for the current prog CLI, 
 - Onboarding: `tpg onboard` writes a Task Tracking snippet to `AGENTS.md` and installs an OpenCode plugin.
 - Task reading: `prog show` prints task details, logs, deps, and suggested concepts.
 - Readiness: `prog ready` filters out tasks with unmet dependencies.
-- Tasks vs Epics: Both are items. Epics (`ep-` prefix) are a grouping mechanism; tasks (`ts-` prefix) can have a parent epic. The parent relationship implies dependency inheritance - tasks within an epic are implicitly blocked by the epic's dependencies.
+- Tasks vs Epics: Both are items with a "type" field that accepts only "task" or "epic". Epics (`ep-` prefix) are a grouping mechanism; tasks (`ts-` prefix) can have a parent epic. The parent relationship implies dependency inheritance - tasks within an epic are implicitly blocked by the epic's dependencies. Use labels for categorization (bug, story, feature, etc.).
 
 ### Dependency Inheritance
 
@@ -50,11 +50,14 @@ When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both 
 - All user-facing output and docs reference `tpg` commands.
 - Any remaining `prog` mentions are removed or redirected as part of the update.
 
-### 1a) Task ID Prefix
+### 1a) Task ID Prefix and Type System
+- The type system only supports "task" and "epic" as valid types. The `--type` flag accepts only these two values.
 - Task IDs use a configurable prefix (default: `ts`) plus a random hash (e.g., `ts-4boe`).
 - Epic IDs use a configurable prefix (default: `ep`) plus a random hash.
 - `tpg init` allows setting the prefix; it can be changed at any time on a per-project basis.
 - New tasks/epics use the current prefix; existing IDs are not renamed.
+- **Labels for categorization:** Use `--label` to categorize work (e.g., `tpg add "Fix bug" --label bug`). Labels replace the need for arbitrary types like "bug", "story", "feature".
+- **Migration v6:** Automatically converts old arbitrary types (bug, story, feature, etc.) to labels, setting the type to "task".
 
 ### 2) Storage Location (Per CWD)
 - All persistent data is stored under `.tpg/` in the project root.
@@ -77,9 +80,9 @@ When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both 
 ### 5) Templates
 
 #### Template Discovery
-- Templates are stored as `.toml` or `.yaml` files under `.tgz/templates`.
-- When `tpg` is run from a subdirectory, it must search upward from `$CWD` to locate the nearest ancestor containing `.tgz/templates` and use that as the template root.
-- If no `.tgz/templates` directory is found up to the filesystem root, template-related commands fail with a clear error.
+- Templates are stored as `.toml` or `.yaml` files under `.tpg/templates`.
+- When `tpg` is run from a subdirectory, it must search upward from `$CWD` to locate the nearest ancestor containing `.tpg/templates` and use that as the template root.
+- If no `.tpg/templates` directory is found up to the filesystem root, template-related commands fail with a clear error.
 
 #### Template Definition
 - A template can define variables, each with a description that guides the value the user must provide.
@@ -124,6 +127,12 @@ When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both 
 - The system provides a `tpg stale` command that lists in-progress tasks with no updates within a threshold.
 - The default threshold is 5 minutes; a CLI flag allows overriding the threshold.
 - Stale detection uses the task's last-updated timestamp.
+- **Stale status display:** In-progress tasks older than 5 minutes display as "stale" with ⚠ badge in list views and status output.
+
+### 7a) Enhanced Ready Command
+- `tpg ready` groups tasks by epic and shows counts: `ep-abc Title (X / Y tasks ready)` where X is ready tasks and Y is total tasks in the epic.
+- Tasks without an epic are grouped under "(no epic)".
+- This provides visibility into epic progress at a glance.
 
 ### 8) Results Message on Done
 - Marking a task done requires a results message.
@@ -150,16 +159,21 @@ When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both 
 - `tpg` commands do not write to `~/.prog/` for new data.
 - `-p` continues to filter projects; omitted `-p` uses a deterministic default that is visible in output.
 - `tpg prime` and onboarding instructions are Opencode-first and use `tpg` commands exclusively.
+- **Type system:** `--type` flag only accepts "task" or "epic". Attempting to use other types fails with clear error.
+- **Labels for categorization:** `--label` flag creates/attaches labels for categorization (bug, story, feature, etc.).
+- **Migration v6:** Old databases with arbitrary types are automatically migrated - types become labels, item type set to "task".
 - Template instantiation creates a parent epic plus child tasks with correct dependencies.
 - Templated tasks persist only the template reference, step index, and variable values; rendered content appears on read.
 - If a template changes after instantiation, `tpg show` indicates the hash mismatch but renders using the latest template.
 - Progress updates are visible and prioritized for in-progress tasks.
 - Progress updates refresh the task's last-updated timestamp.
 - `tpg stale` lists in-progress tasks with no updates in the last 5 minutes by default and supports a threshold override flag.
+- **Stale display:** In-progress tasks older than 5 minutes show ⚠ badge and "stale (Xm)" indicator in list/status views.
+- **Ready command:** `tpg ready` shows epic counts in format `(X / Y tasks ready)`.
 - Marking done requires a results message and surfaces it on task view.
 - `tpg done` is blocked when unmet dependencies exist unless an override message is provided.
-- Running `tpg` from a subdirectory locates the nearest ancestor `.tgz/templates` directory for templates.
-- When no `.tgz/templates` directory exists in any ancestor, template commands fail with a clear error.
+- Running `tpg` from a subdirectory locates the nearest ancestor `.tpg/templates` directory for templates.
+- When no `.tpg/templates` directory exists in any ancestor, template commands fail with a clear error.
 - `tpg show` includes a "Latest Update" section with latest progress, blockers, and results (if done).
 
 ## Out of Scope
@@ -169,7 +183,7 @@ When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both 
 
 ## Open Decisions (Required for Implementation)
 - Default project selection strategy when `-p` is omitted (fixed string vs directory-derived vs user-configured).
-- How templates are identified/selected by users within `.tgz/templates`.
+- How templates are identified/selected by users within `.tpg/templates`.
 - Backward compatibility for `prog` command and whether existing `~/.prog` data should be migrated.
 - Opencode hook/config file locations and naming for onboarding.
 - How the override message is provided when completing a task with unmet dependencies (flag vs prompt).
@@ -184,7 +198,7 @@ When viewing a task's dependencies with `tpg show` or `tpg dep <id> list`, both 
 
 | Feature | Location | Notes |
 |---------|----------|-------|
-| Task/Epic distinction | `model/item.go` | ItemType with "task"/"epic" values |
+| Task/Epic distinction | `model/item.go` | ItemType with "task"/"epic" values only (enforced) |
 | Dependency system | `db/deps.go` | AddDep, GetDeps, HasUnmetDeps |
 | `blocks` command | `main.go:864-886` | `tpg blocks A B` makes B depend on A |
 | Ready filtering | `db/queries.go:102-147` | Excludes tasks with unmet deps |
@@ -242,7 +256,7 @@ func BackupPath() (string, error) {
 - Env var rename: `PROG_DB` → `TPG_DB`
 - Backup path relative to found `.tpg/`
 
-#### 2. Configurable ID Prefix (Medium Impact)
+#### 2. ID Prefix and Type Enforcement (Medium Impact)
 
 **Current:**
 ```go
@@ -258,11 +272,13 @@ func GenerateID(itemType ItemType) string {
 }
 ```
 
-**Needed:**
-- Store prefix config in `.tpg/` (e.g., `.tpg/config.json`)
+**Implemented:**
+- Type field only accepts "task" or "epic" (CLI validation + DB constraint)
+- Store prefix config in `.tpg/config.json`
 - `tpg init` accepts `--prefix` flag
 - `tpg config prefix <value>` to change later
 - GenerateID reads from config
+- Migration v6 converts old arbitrary types to labels
 
 #### 3. Onboarding (Medium Impact)
 
@@ -321,8 +337,8 @@ var doneCmd = &cobra.Command{
 **Current:** Does not exist
 
 **Needed:**
-- Template file parsing (TOML/YAML from `.tgz/templates/`)
-- Template discovery (search upward for `.tgz/templates/`)
+- Template file parsing (TOML/YAML from `.tpg/templates/`)
+- Template discovery (search upward for `.tpg/templates/`)
 - Variable validation and JSON-encoded input
 - Instantiation: create epic + child tasks with deps
 - New DB columns: `template_id`, `step_index`, `variables` (JSON), `template_hash`
@@ -352,7 +368,7 @@ Or alternatively, results could be a specially-tagged log entry.
 
 | File | Purpose |
 |------|---------|
-| `.tgz/templates/*.toml` or `.yaml` | Template definitions (user-created) |
+| `.tpg/templates/*.toml` or `.yaml` | Template definitions (user-created) |
 | `.tpg/config.json` | ID prefix and other settings |
 
 ### Files to Rename
