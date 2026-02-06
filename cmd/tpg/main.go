@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
@@ -1851,47 +1852,77 @@ Examples:
 				return err
 			}
 
-			// Filter by project if specified
-			if project != "" {
-				var filtered []model.Item
-				for _, item := range items {
-					if item.Project == project {
-						filtered = append(filtered, item)
-					}
+			// Filter by project if specified and exclude child epics (only show tasks)
+			var filtered []model.Item
+			for _, item := range items {
+				// Skip child epics - only show tasks
+				if item.Type == model.ItemTypeEpic {
+					continue
 				}
-				items = filtered
+				if project != "" && item.Project != project {
+					continue
+				}
+				filtered = append(filtered, item)
 			}
+			items = filtered
 
-			// Show epic title in header
-			fmt.Printf("Ready tasks for epic %s - %s:\n", epic.ID, epic.Title)
+			if len(items) == 0 {
+				fmt.Println("No ready tasks for this epic")
+			} else {
+				// Show epic title in header with counts
+				totalActive, _ := database.CountActiveDescendantsForEpic(flagReadyEpic)
+				fmt.Printf("%s %s (%d / %d tasks ready)\n", epic.ID, epic.Title, len(items), totalActive)
+
+				// Populate labels for display
+				if err := database.PopulateItemLabels(items); err != nil {
+					return err
+				}
+				if err := renderTemplatesForItems(items); err != nil {
+					return err
+				}
+
+				// Sort by priority
+				sort.Slice(items, func(i, j int) bool {
+					if items[i].Priority != items[j].Priority {
+						return items[i].Priority < items[j].Priority
+					}
+					return items[i].Title < items[j].Title
+				})
+
+				// Print tasks with tree connectors
+				for i, task := range items {
+					connector := "├──"
+					if i == len(items)-1 {
+						connector = "└──"
+					}
+					title := task.Title
+					if len(task.Labels) > 0 {
+						title = formatLabels(task.Labels) + " " + title
+					}
+					fmt.Printf("%s %s %s\n", connector, task.ID, title)
+				}
+			}
 		} else {
-			items, err = database.ReadyItemsFiltered(project, flagFilterLabels)
+			// Use ReadyItemsWithCounts for tree display with epic counts
+			result, err := database.ReadyItemsWithCounts(project, flagFilterLabels)
 			if err != nil {
 				return err
 			}
-		}
+			items = result.ReadyItems
 
-		if len(items) == 0 {
-			if flagReadyEpic != "" {
-				fmt.Println("No ready tasks for this epic")
-			} else {
+			if len(items) == 0 {
 				fmt.Println("No ready tasks")
-			}
-		} else {
-			// Show count
-			if flagReadyEpic != "" {
-				fmt.Printf("(%d ready)\n\n", len(items))
-			}
+			} else {
+				// Populate labels for display
+				if err := database.PopulateItemLabels(items); err != nil {
+					return err
+				}
+				if err := renderTemplatesForItems(items); err != nil {
+					return err
+				}
 
-			// Populate labels for display
-			if err := database.PopulateItemLabels(items); err != nil {
-				return err
+				printReadyTreeWithEpicCounts(result)
 			}
-			if err := renderTemplatesForItems(items); err != nil {
-				return err
-			}
-
-			printReadyTable(items)
 		}
 
 		// Check for in-progress tasks and show a hint
@@ -6008,6 +6039,120 @@ func printReadyTable(items []model.Item) {
 			title = formatLabels(item.Labels) + " " + title
 		}
 		fmt.Printf("%-12s %-4d %s\n", item.ID, item.Priority, title)
+	}
+}
+
+// printReadyTreeWithEpicCounts displays ready items grouped by epic with task counts.
+// Output format:
+//
+//	ep-abc Epic Title (3 / 20 tasks ready)
+//	├── ts-def Ready Task 1
+//	├── ts-ghi Ready Task 2
+//	└── ts-jkl Ready Task 3
+//
+//	ts-pqr Top-level Ready Task 5
+func printReadyTreeWithEpicCounts(result *db.ReadyResult) {
+	if len(result.ReadyItems) == 0 {
+		fmt.Println("No items")
+		return
+	}
+
+	// Group ready tasks by their immediate parent epic using TaskEpicMap
+	epicTasks := make(map[string][]model.Item) // epicID -> tasks
+	var topLevelTasks []model.Item
+
+	for _, item := range result.ReadyItems {
+		// Skip epics themselves from the task list
+		if item.Type == model.ItemTypeEpic {
+			continue
+		}
+
+		// Use the TaskEpicMap computed by the DB layer
+		if epicID, ok := result.TaskEpicMap[item.ID]; ok {
+			epicTasks[epicID] = append(epicTasks[epicID], item)
+		} else {
+			topLevelTasks = append(topLevelTasks, item)
+		}
+	}
+
+	// Sort epic IDs for consistent output (by epic priority, then title)
+	type epicSort struct {
+		id       string
+		priority int
+		title    string
+	}
+	var sortedEpics []epicSort
+	for epicID, count := range result.EpicCounts {
+		if count.Epic != nil {
+			sortedEpics = append(sortedEpics, epicSort{
+				id:       epicID,
+				priority: count.Epic.Priority,
+				title:    count.Epic.Title,
+			})
+		}
+	}
+	sort.Slice(sortedEpics, func(i, j int) bool {
+		if sortedEpics[i].priority != sortedEpics[j].priority {
+			return sortedEpics[i].priority < sortedEpics[j].priority
+		}
+		return sortedEpics[i].title < sortedEpics[j].title
+	})
+
+	// Print epics with their ready tasks
+	for _, es := range sortedEpics {
+		epicCount := result.EpicCounts[es.id]
+		tasks := epicTasks[es.id]
+		if len(tasks) == 0 {
+			continue // Skip epics with no ready tasks in our list
+		}
+
+		// Sort tasks by priority
+		sort.Slice(tasks, func(i, j int) bool {
+			if tasks[i].Priority != tasks[j].Priority {
+				return tasks[i].Priority < tasks[j].Priority
+			}
+			return tasks[i].Title < tasks[j].Title
+		})
+
+		// Print epic header
+		fmt.Printf("%s %s (%d / %d tasks ready)\n",
+			epicCount.Epic.ID,
+			epicCount.Epic.Title,
+			epicCount.ReadyCount,
+			epicCount.TotalCount)
+
+		// Print tasks under the epic
+		for i, task := range tasks {
+			connector := "├──"
+			if i == len(tasks)-1 {
+				connector = "└──"
+			}
+			title := task.Title
+			if len(task.Labels) > 0 {
+				title = formatLabels(task.Labels) + " " + title
+			}
+			fmt.Printf("%s %s %s\n", connector, task.ID, title)
+		}
+		fmt.Println() // Blank line between epics
+	}
+
+	// Print top-level tasks (no epic parent)
+	if len(topLevelTasks) > 0 {
+		// Sort by priority
+		sort.Slice(topLevelTasks, func(i, j int) bool {
+			if topLevelTasks[i].Priority != topLevelTasks[j].Priority {
+				return topLevelTasks[i].Priority < topLevelTasks[j].Priority
+			}
+			return topLevelTasks[i].Title < topLevelTasks[j].Title
+		})
+
+		for _, task := range topLevelTasks {
+			title := task.Title
+			if len(task.Labels) > 0 {
+				title = formatLabels(task.Labels) + " " + title
+			}
+			fmt.Printf("%s %s\n", task.ID, title)
+		}
 	}
 }
 

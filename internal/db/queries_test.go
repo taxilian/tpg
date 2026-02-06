@@ -930,6 +930,253 @@ func TestReadyItemsForEpic(t *testing.T) {
 	}
 }
 
+func TestReadyItemsWithCounts_Basic(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create an epic
+	epic := createTestEpic(t, db, "Epic 1", "test")
+
+	// Create tasks under the epic
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	task3 := createTestItemWithProject(t, db, "Task 3", "test", model.StatusInProgress, 2)
+	task4 := createTestItemWithProject(t, db, "Task 4", "test", model.StatusDone, 2)
+
+	// Set parents
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task3.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task4.ID, epic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// task2 depends on task1
+	if err := db.AddDep(task2.ID, task1.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Get ready items with counts
+	result, err := db.ReadyItemsWithCounts("test", nil)
+	if err != nil {
+		t.Fatalf("failed to get ready items with counts: %v", err)
+	}
+
+	// Count non-epic ready items (epics themselves can be ready)
+	readyTaskCount := 0
+	for _, item := range result.ReadyItems {
+		if item.Type != model.ItemTypeEpic {
+			readyTaskCount++
+		}
+	}
+
+	// Only task1 should be a ready task (task2 blocked, task3 in_progress, task4 done)
+	if readyTaskCount != 1 {
+		t.Errorf("expected 1 ready task, got %d", readyTaskCount)
+	}
+
+	// Should have epic counts for epics with ready tasks under them
+	if len(result.EpicCounts) != 1 {
+		t.Errorf("expected 1 epic with counts, got %d", len(result.EpicCounts))
+	}
+
+	epicCount := result.EpicCounts[epic.ID]
+	if epicCount == nil {
+		t.Fatalf("expected epic %s in counts", epic.ID)
+	}
+
+	// 1 ready out of 3 active (task1, task2, task3 - not task4 which is done)
+	if epicCount.ReadyCount != 1 {
+		t.Errorf("epicCount.ReadyCount = %d, want 1", epicCount.ReadyCount)
+	}
+	if epicCount.TotalCount != 3 {
+		t.Errorf("epicCount.TotalCount = %d, want 3", epicCount.TotalCount)
+	}
+	if epicCount.Epic == nil || epicCount.Epic.ID != epic.ID {
+		t.Errorf("epicCount.Epic should be the epic item")
+	}
+}
+
+func TestReadyItemsWithCounts_MultipleEpics(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create two epics
+	epic1 := createTestEpic(t, db, "Epic 1", "test")
+	epic2 := createTestEpic(t, db, "Epic 2", "test")
+
+	// Create tasks under epic1
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task1.ID, epic1.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task2.ID, epic1.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Create tasks under epic2
+	task3 := createTestItemWithProject(t, db, "Task 3", "test", model.StatusOpen, 2)
+	task4 := createTestItemWithProject(t, db, "Task 4", "test", model.StatusInProgress, 2)
+	task5 := createTestItemWithProject(t, db, "Task 5", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task3.ID, epic2.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task4.ID, epic2.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+	if err := db.SetParent(task5.ID, epic2.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Get ready items with counts
+	result, err := db.ReadyItemsWithCounts("test", nil)
+	if err != nil {
+		t.Fatalf("failed to get ready items with counts: %v", err)
+	}
+
+	// Count non-epic ready items
+	readyTaskCount := 0
+	for _, item := range result.ReadyItems {
+		if item.Type != model.ItemTypeEpic {
+			readyTaskCount++
+		}
+	}
+
+	// 4 ready tasks: task1, task2 (epic1), task3, task5 (epic2)
+	if readyTaskCount != 4 {
+		t.Errorf("expected 4 ready tasks, got %d", readyTaskCount)
+	}
+
+	// Should have 2 epics in counts
+	if len(result.EpicCounts) != 2 {
+		t.Errorf("expected 2 epics with counts, got %d", len(result.EpicCounts))
+	}
+
+	// Check epic1 counts
+	epic1Count := result.EpicCounts[epic1.ID]
+	if epic1Count == nil {
+		t.Fatalf("expected epic1 in counts")
+	}
+	if epic1Count.ReadyCount != 2 {
+		t.Errorf("epic1.ReadyCount = %d, want 2", epic1Count.ReadyCount)
+	}
+	if epic1Count.TotalCount != 2 {
+		t.Errorf("epic1.TotalCount = %d, want 2", epic1Count.TotalCount)
+	}
+
+	// Check epic2 counts
+	epic2Count := result.EpicCounts[epic2.ID]
+	if epic2Count == nil {
+		t.Fatalf("expected epic2 in counts")
+	}
+	if epic2Count.ReadyCount != 2 {
+		t.Errorf("epic2.ReadyCount = %d, want 2", epic2Count.ReadyCount)
+	}
+	if epic2Count.TotalCount != 3 {
+		t.Errorf("epic2.TotalCount = %d, want 3", epic2Count.TotalCount)
+	}
+}
+
+func TestReadyItemsWithCounts_TopLevelTasks(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create tasks without parent epic
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+
+	// Get ready items with counts
+	result, err := db.ReadyItemsWithCounts("test", nil)
+	if err != nil {
+		t.Fatalf("failed to get ready items with counts: %v", err)
+	}
+
+	// Both tasks should be ready
+	if len(result.ReadyItems) != 2 {
+		t.Errorf("expected 2 ready items, got %d", len(result.ReadyItems))
+	}
+
+	// No epic counts since tasks have no parent epic
+	if len(result.EpicCounts) != 0 {
+		t.Errorf("expected 0 epic counts for orphan tasks, got %d", len(result.EpicCounts))
+	}
+
+	_ = task1
+	_ = task2
+}
+
+func TestReadyItemsWithCounts_NestedEpics(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create nested epics: parent -> child
+	parentEpic := createTestEpic(t, db, "Parent Epic", "test")
+	childEpic := createTestEpic(t, db, "Child Epic", "test")
+	if err := db.SetParent(childEpic.ID, parentEpic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Create task under child epic
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task1.ID, childEpic.ID); err != nil {
+		t.Fatalf("failed to set parent: %v", err)
+	}
+
+	// Get ready items with counts
+	result, err := db.ReadyItemsWithCounts("test", nil)
+	if err != nil {
+		t.Fatalf("failed to get ready items with counts: %v", err)
+	}
+
+	// Count non-epic ready items
+	readyTaskCount := 0
+	for _, item := range result.ReadyItems {
+		if item.Type != model.ItemTypeEpic {
+			readyTaskCount++
+		}
+	}
+
+	// task1 should be ready
+	if readyTaskCount != 1 {
+		t.Errorf("expected 1 ready task, got %d", readyTaskCount)
+	}
+
+	// Should have childEpic in counts (immediate parent)
+	// Note: parentEpic and childEpic may both be in ReadyItems since they're "open",
+	// but only childEpic has a task directly under it
+	if len(result.EpicCounts) != 1 {
+		t.Errorf("expected 1 epic with counts, got %d", len(result.EpicCounts))
+	}
+
+	childCount := result.EpicCounts[childEpic.ID]
+	if childCount == nil {
+		t.Fatalf("expected childEpic in counts")
+	}
+	if childCount.ReadyCount != 1 {
+		t.Errorf("childEpic.ReadyCount = %d, want 1", childCount.ReadyCount)
+	}
+}
+
+func TestReadyItemsWithCounts_Empty(t *testing.T) {
+	db := setupTestDB(t)
+
+	// No items
+	result, err := db.ReadyItemsWithCounts("test", nil)
+	if err != nil {
+		t.Fatalf("failed to get ready items with counts: %v", err)
+	}
+
+	if len(result.ReadyItems) != 0 {
+		t.Errorf("expected 0 ready items, got %d", len(result.ReadyItems))
+	}
+	if len(result.EpicCounts) != 0 {
+		t.Errorf("expected 0 epic counts, got %d", len(result.EpicCounts))
+	}
+}
+
 func TestGetRootEpic(t *testing.T) {
 	db := setupTestDB(t)
 

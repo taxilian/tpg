@@ -106,6 +106,20 @@ func (db *DB) ReadyItems(project string) ([]model.Item, error) {
 	return db.ReadyItemsFiltered(project, nil)
 }
 
+// EpicCount contains task counts for an epic.
+type EpicCount struct {
+	Epic       *model.Item // The epic item (for display info)
+	ReadyCount int         // Number of ready tasks directly or indirectly under this epic
+	TotalCount int         // Total number of non-done/canceled tasks under this epic
+}
+
+// ReadyResult contains ready items along with epic-level counts.
+type ReadyResult struct {
+	ReadyItems  []model.Item          // All ready items
+	EpicCounts  map[string]*EpicCount // Epic ID -> counts (only epics with ready items)
+	TaskEpicMap map[string]string     // Task ID -> immediate parent epic ID (for display grouping)
+}
+
 // ReadyItemsFiltered returns ready items with optional label filtering.
 // An item is ready if:
 // 1. It has status 'open'
@@ -168,6 +182,123 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 	}
 
 	return ready, nil
+}
+
+// ReadyItemsWithCounts returns ready items along with epic-level task counts.
+// For each ready item that belongs to an epic, the epic's total and ready task counts
+// are computed. This enables UI display like "Epic Title (3/20 tasks ready)".
+func (db *DB) ReadyItemsWithCounts(project string, labels []string) (*ReadyResult, error) {
+	// Get all ready items
+	readyItems, err := db.ReadyItemsFiltered(project, labels)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ReadyResult{
+		ReadyItems:  readyItems,
+		EpicCounts:  make(map[string]*EpicCount),
+		TaskEpicMap: make(map[string]string),
+	}
+
+	if len(readyItems) == 0 {
+		return result, nil
+	}
+
+	// Find the immediate parent epic for each ready TASK (not epic)
+	// We only track epics that have ready tasks under them
+	epicIDs := make(map[string]bool)
+	for _, item := range readyItems {
+		// Only count parent epics for tasks, not for nested epics
+		if item.Type == model.ItemTypeEpic {
+			continue
+		}
+		epicID := db.findImmediateParentEpic(item)
+		if epicID != "" {
+			epicIDs[epicID] = true
+			result.TaskEpicMap[item.ID] = epicID // Store the mapping for display
+		}
+	}
+
+	// For each epic with ready tasks, get counts
+	for epicID := range epicIDs {
+		epic, err := db.GetItem(epicID)
+		if err != nil {
+			continue // Skip if epic not found
+		}
+
+		// Get total count of active (non-done/canceled) tasks under this epic
+		totalCount, err := db.countActiveDescendants(epicID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to count descendants for epic %s: %w", epicID, err)
+		}
+
+		// Count ready TASKS under this epic
+		readyCount := 0
+		for _, item := range readyItems {
+			if item.Type == model.ItemTypeEpic {
+				continue // Skip epics themselves
+			}
+			if db.findImmediateParentEpic(item) == epicID {
+				readyCount++
+			}
+		}
+
+		result.EpicCounts[epicID] = &EpicCount{
+			Epic:       epic,
+			ReadyCount: readyCount,
+			TotalCount: totalCount,
+		}
+	}
+
+	return result, nil
+}
+
+// findImmediateParentEpic returns the immediate parent epic ID for an item.
+// It walks up the parent chain until it finds an epic, or returns "" if none.
+func (db *DB) findImmediateParentEpic(item model.Item) string {
+	if item.ParentID == nil {
+		return ""
+	}
+
+	// Get the immediate parent
+	parent, err := db.GetItem(*item.ParentID)
+	if err != nil {
+		return ""
+	}
+
+	// If parent is an epic, return it
+	if parent.Type == model.ItemTypeEpic {
+		return parent.ID
+	}
+
+	// Otherwise, recurse up to find the epic
+	return db.findImmediateParentEpic(*parent)
+}
+
+// countActiveDescendants counts all non-done/canceled tasks under an epic.
+func (db *DB) countActiveDescendants(epicID string) (int, error) {
+	descendants, err := db.GetDescendants(epicID)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, d := range descendants {
+		// Only count non-epic items (tasks) that are not done/canceled
+		if d.Type != model.ItemTypeEpic &&
+			d.Status != model.StatusDone &&
+			d.Status != model.StatusCanceled {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
+// CountActiveDescendantsForEpic is the exported version of countActiveDescendants.
+// It counts all non-done/canceled tasks under an epic (public API for CLI use).
+func (db *DB) CountActiveDescendantsForEpic(epicID string) (int, error) {
+	return db.countActiveDescendants(epicID)
 }
 
 // StaleItems returns in-progress items that haven't been updated since the cutoff.
