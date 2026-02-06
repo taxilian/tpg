@@ -539,3 +539,243 @@ steps:
 		t.Fatalf("expected template instantiation to skip warnings, got %q", stderr)
 	}
 }
+
+// Tests for --type flag validation
+
+func TestValidateTypeFlag(t *testing.T) {
+	tests := []struct {
+		name        string
+		typeValue   string
+		expectError bool
+	}{
+		{"empty string is valid", "", false},
+		{"task is valid", "task", false},
+		{"epic is valid", "epic", false},
+		{"story is invalid", "story", true},
+		{"bug is invalid", "bug", true},
+		{"feature is invalid", "feature", true},
+		{"uppercase TASK is invalid", "TASK", true},
+		{"unknown is invalid", "unknown", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTypeFlag(tt.typeValue)
+			if tt.expectError && err == nil {
+				t.Errorf("validateTypeFlag(%q) = nil, want error", tt.typeValue)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("validateTypeFlag(%q) = %v, want nil", tt.typeValue, err)
+			}
+		})
+	}
+}
+
+func TestValidateTypeFlag_ErrorMessageContent(t *testing.T) {
+	err := validateTypeFlag("story")
+	if err == nil {
+		t.Fatal("expected error for invalid type")
+	}
+
+	errMsg := err.Error()
+
+	// Check the error message contains required parts
+	if !strings.Contains(errMsg, `--type must be "task" or "epic"`) {
+		t.Errorf("error message should mention valid types, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "--label") {
+		t.Errorf("error message should suggest using --label, got: %s", errMsg)
+	}
+}
+
+func TestAddCmd_TypeValidation_RejectsInvalidType(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	flagType = "story" // Invalid type
+
+	err := addCmd.RunE(addCmd, []string{"Test task"})
+	if err == nil {
+		t.Fatal("expected error for invalid type")
+	}
+
+	if !strings.Contains(err.Error(), `--type must be "task" or "epic"`) {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestAddCmd_TypeValidation_AcceptsTask(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	flagType = "task"
+
+	var runErr error
+	captureStdoutAndStderr(func() {
+		runErr = addCmd.RunE(addCmd, []string{"Test task"})
+	})
+
+	if runErr != nil {
+		t.Fatalf("expected success for --type task, got: %v", runErr)
+	}
+}
+
+func TestAddCmd_TypeValidation_AcceptsEpic(t *testing.T) {
+	setupAddCommandTest(t)
+	resetAddCmdFlags()
+	t.Cleanup(resetAddCmdFlags)
+
+	flagType = "epic"
+
+	var runErr error
+	captureStdoutAndStderr(func() {
+		runErr = addCmd.RunE(addCmd, []string{"Test epic"})
+	})
+
+	if runErr != nil {
+		t.Fatalf("expected success for --type epic, got: %v", runErr)
+	}
+}
+
+func resetReplaceCmdFlags() {
+	flagEpic = false
+	flagType = ""
+	flagPrefix = ""
+	flagDescription = ""
+	flagPriority = 0
+	flagContext = ""
+	flagOnClose = ""
+	flagAddLabels = nil
+	flagProject = ""
+}
+
+func TestReplaceCmd_TypeValidation_RejectsInvalidType(t *testing.T) {
+	database := setupAddCommandTest(t)
+	resetReplaceCmdFlags()
+	t.Cleanup(resetReplaceCmdFlags)
+
+	// Create a task to replace
+	task := &model.Item{
+		ID:        "ts-toreplace",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task to replace",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	flagType = "story" // Invalid type
+
+	err := replaceCmd.RunE(replaceCmd, []string{"ts-toreplace", "New title"})
+	if err == nil {
+		t.Fatal("expected error for invalid type")
+	}
+
+	if !strings.Contains(err.Error(), `--type must be "task" or "epic"`) {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestReplaceCmd_TypeValidation_AcceptsTask(t *testing.T) {
+	database := setupAddCommandTest(t)
+	resetReplaceCmdFlags()
+	t.Cleanup(resetReplaceCmdFlags)
+
+	// Create a task to replace
+	task := &model.Item{
+		ID:        "ts-toreplace2",
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Task to replace",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	flagType = "task"
+
+	var runErr error
+	captureStdoutAndStderr(func() {
+		runErr = replaceCmd.RunE(replaceCmd, []string{"ts-toreplace2", "New title"})
+	})
+
+	if runErr != nil {
+		t.Fatalf("expected success for --type task, got: %v", runErr)
+	}
+}
+
+func resetListCmdFlags() {
+	flagListAll = false
+	flagStatus = ""
+	flagListParent = ""
+	flagListType = ""
+	flagListEpic = ""
+	flagBlocking = ""
+	flagBlockedBy = ""
+	flagHasBlockers = false
+	flagNoBlockers = false
+	flagIdsOnly = false
+	flagListFlat = false
+	flagFilterLabels = nil
+	flagProject = ""
+}
+
+func TestListCmd_TypeValidation_RejectsInvalidType(t *testing.T) {
+	setupAddCommandTest(t)
+	resetListCmdFlags()
+	t.Cleanup(resetListCmdFlags)
+
+	flagListType = "feature" // Invalid type
+
+	err := listCmd.RunE(listCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error for invalid type")
+	}
+
+	if !strings.Contains(err.Error(), `--type must be "task" or "epic"`) {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestListCmd_TypeValidation_AcceptsEpic(t *testing.T) {
+	setupAddCommandTest(t)
+	resetListCmdFlags()
+	t.Cleanup(resetListCmdFlags)
+
+	flagListType = "epic"
+
+	var runErr error
+	captureStdoutAndStderr(func() {
+		runErr = listCmd.RunE(listCmd, []string{})
+	})
+
+	if runErr != nil {
+		t.Fatalf("expected success for --type epic, got: %v", runErr)
+	}
+}
+
+func TestListCmd_TypeValidation_AcceptsTask(t *testing.T) {
+	setupAddCommandTest(t)
+	resetListCmdFlags()
+	t.Cleanup(resetListCmdFlags)
+
+	flagListType = "task"
+
+	var runErr error
+	captureStdoutAndStderr(func() {
+		runErr = listCmd.RunE(listCmd, []string{})
+	})
+
+	if runErr != nil {
+		t.Fatalf("expected success for --type task, got: %v", runErr)
+	}
+}
