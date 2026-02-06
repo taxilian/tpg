@@ -3,7 +3,7 @@
     "task": "ts",
     "epic": "ep"
   },
-  "default_project": "ep-qk4",
+  "default_project": "tpg",
   "id_length": 3,
   "warnings": {},
   "worktree": {
