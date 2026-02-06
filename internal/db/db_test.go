@@ -590,9 +590,9 @@ func TestSetClosingInstructions_NotFound(t *testing.T) {
 }
 
 func TestSchemaVersion(t *testing.T) {
-	// Verify SchemaVersion is set to 5
-	if SchemaVersion != 5 {
-		t.Errorf("SchemaVersion = %d, want 5", SchemaVersion)
+	// Verify SchemaVersion is set to 6
+	if SchemaVersion != 6 {
+		t.Errorf("SchemaVersion = %d, want 6", SchemaVersion)
 	}
 }
 
@@ -671,13 +671,13 @@ func TestMigrationV4_ExistingDataPreserved(t *testing.T) {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
-	// Verify version is now 5
+	// Verify version is now 6
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 5 {
-		t.Errorf("schema version = %d, want 5", version)
+	if version != 6 {
+		t.Errorf("schema version = %d, want 6", version)
 	}
 
 	// Verify existing data is preserved
@@ -701,5 +701,234 @@ func TestMigrationV4_ExistingDataPreserved(t *testing.T) {
 	}
 	if base.Valid {
 		t.Error("expected worktree_base to be NULL")
+	}
+}
+
+func TestSlugify(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"task", "task"},
+		{"User Story", "user-story"},
+		{"Bug Fix", "bug-fix"},
+		{"user story", "user-story"},
+		{"  spaced  ", "spaced"},
+		{"UPPERCASE", "uppercase"},
+		{"with123numbers", "with123numbers"},
+		{"special!@#chars", "special-chars"},
+		{"multiple---hyphens", "multiple-hyphens"},
+		{"", ""},
+		{"---", ""},
+		{"a", "a"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := slugify(tt.input)
+			if got != tt.want {
+				t.Errorf("slugify(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMigrationV6_ConvertsLegacyTypes(t *testing.T) {
+	// Create a v5 database with legacy item types
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+
+	// Initialize with base schema
+	if err := db.Init(); err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+
+	// Reset to v5 to test migration
+	if err := db.setSchemaVersion(5); err != nil {
+		t.Fatalf("failed to set schema version to 5: %v", err)
+	}
+
+	// Insert items with legacy types (bypass validation by using raw SQL)
+	_, err = db.Exec(`
+		INSERT INTO items (id, project, type, title, status)
+		VALUES
+			('ts-legacy1', 'test', 'story', 'A story item', 'open'),
+			('ts-legacy2', 'test', 'user story', 'A user story', 'open'),
+			('ts-task1', 'test', 'task', 'A regular task', 'open'),
+			('ep-epic1', 'test', 'epic', 'An epic', 'open'),
+			('ts-legacy3', 'test', 'Bug Fix', 'A bug fix', 'open')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	db.Close()
+
+	// Reopen and run migration
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("failed to reopen db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	// Verify version is now 6
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to get schema version: %v", err)
+	}
+	if version != 6 {
+		t.Errorf("schema version = %d, want 6", version)
+	}
+
+	// Verify legacy types converted to task
+	tests := []struct {
+		id          string
+		wantType    string
+		wantLabels  []string
+		description string
+	}{
+		{"ts-legacy1", "task", []string{"story"}, "story should become task + story label"},
+		{"ts-legacy2", "task", []string{"user-story"}, "user story should become task + user-story label"},
+		{"ts-task1", "task", nil, "task type should remain unchanged"},
+		{"ep-epic1", "epic", nil, "epic type should remain unchanged"},
+		{"ts-legacy3", "task", []string{"bug-fix"}, "Bug Fix should become task + bug-fix label"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			var itemType string
+			err := db.QueryRow("SELECT type FROM items WHERE id = ?", tt.id).Scan(&itemType)
+			if err != nil {
+				t.Fatalf("failed to query item %s: %v", tt.id, err)
+			}
+			if itemType != tt.wantType {
+				t.Errorf("item %s type = %q, want %q", tt.id, itemType, tt.wantType)
+			}
+
+			// Check labels
+			labels, err := db.GetItemLabels(tt.id)
+			if err != nil {
+				t.Fatalf("failed to get labels for %s: %v", tt.id, err)
+			}
+
+			if tt.wantLabels == nil {
+				if len(labels) > 0 {
+					t.Errorf("item %s should have no labels, got %v", tt.id, labels)
+				}
+			} else {
+				if len(labels) != len(tt.wantLabels) {
+					t.Errorf("item %s has %d labels, want %d", tt.id, len(labels), len(tt.wantLabels))
+				}
+				for i, want := range tt.wantLabels {
+					if i < len(labels) && labels[i].Name != want {
+						t.Errorf("item %s label[%d] = %q, want %q", tt.id, i, labels[i].Name, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestMigrationV6_IdempotentLabels(t *testing.T) {
+	// Multiple items with same legacy type should share the same label
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+
+	if err := db.Init(); err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+
+	if err := db.setSchemaVersion(5); err != nil {
+		t.Fatalf("failed to set schema version to 5: %v", err)
+	}
+
+	// Insert multiple items with same legacy type
+	_, err = db.Exec(`
+		INSERT INTO items (id, project, type, title, status)
+		VALUES
+			('ts-bug1', 'test', 'bug', 'Bug 1', 'open'),
+			('ts-bug2', 'test', 'bug', 'Bug 2', 'open'),
+			('ts-bug3', 'test', 'bug', 'Bug 3', 'open')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	db.Close()
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("failed to reopen db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	// Verify there's only one 'bug' label
+	labels, err := db.ListLabels("test")
+	if err != nil {
+		t.Fatalf("failed to list labels: %v", err)
+	}
+
+	bugCount := 0
+	for _, l := range labels {
+		if l.Name == "bug" {
+			bugCount++
+		}
+	}
+	if bugCount != 1 {
+		t.Errorf("expected exactly 1 'bug' label, got %d", bugCount)
+	}
+
+	// Verify all three items have the bug label
+	for _, id := range []string{"ts-bug1", "ts-bug2", "ts-bug3"} {
+		itemLabels, err := db.GetItemLabels(id)
+		if err != nil {
+			t.Fatalf("failed to get labels for %s: %v", id, err)
+		}
+		if len(itemLabels) != 1 || itemLabels[0].Name != "bug" {
+			t.Errorf("item %s should have 'bug' label, got %v", id, itemLabels)
+		}
+	}
+}
+
+func TestMigrationV6_EmptyDatabase(t *testing.T) {
+	// Migration should work on empty database (no items to migrate)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Init(); err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+
+	// Verify version is 6
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to get schema version: %v", err)
+	}
+	if version != 6 {
+		t.Errorf("schema version = %d, want 6", version)
 	}
 }

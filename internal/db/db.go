@@ -5,8 +5,10 @@
 package db
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +33,7 @@ func sqlTime(t time.Time) string {
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -346,7 +348,7 @@ func (db *DB) Migrate() error {
 		}
 	}
 
-	// Run pending migrations
+	// Run pending SQL schema migrations
 	for i, migration := range migrations {
 		targetVersion := i + 2 // migrations[0] upgrades to v2
 		if currentVersion >= targetVersion {
@@ -361,6 +363,16 @@ func (db *DB) Migrate() error {
 			return fmt.Errorf("failed to update version to %d: %w", targetVersion, err)
 		}
 		currentVersion = targetVersion
+	}
+
+	// Run v6 data migration (convert legacy types to labels)
+	if currentVersion == 5 {
+		if err := db.migrateV6(); err != nil {
+			return fmt.Errorf("migration v6 failed: %w", err)
+		}
+		if err := db.setSchemaVersion(6); err != nil {
+			return fmt.Errorf("failed to update version to 6: %w", err)
+		}
 	}
 
 	return nil
@@ -398,4 +410,132 @@ func (db *DB) migrateProjects() error {
 		WHERE project != ''
 	`)
 	return err
+}
+
+// slugify converts a type name to a label-safe format.
+// - Lowercase
+// - Spaces and special chars replaced with hyphens
+// - Leading/trailing hyphens removed
+// - Multiple hyphens collapsed
+// Examples: "User Story" → "user-story", "Bug Fix" → "bug-fix"
+func slugify(s string) string {
+	s = strings.ToLower(s)
+
+	// Replace non-alphanumeric chars with hyphens
+	var result strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else {
+			result.WriteRune('-')
+		}
+	}
+
+	// Collapse multiple hyphens and trim
+	slug := result.String()
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	slug = strings.Trim(slug, "-")
+
+	return slug
+}
+
+// migrateV6 converts legacy item types to labels.
+// For each item with type not in ('task', 'epic'):
+// 1. Store old type name
+// 2. Update type to 'task'
+// 3. Create label with slugified old type name
+// 4. Attach label to item
+func (db *DB) migrateV6() error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Find all items with non-standard types
+	rows, err := tx.Query(`
+		SELECT id, project, type
+		FROM items
+		WHERE type NOT IN ('task', 'epic')
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to query legacy types: %w", err)
+	}
+
+	// Collect items to migrate (can't modify while iterating)
+	type itemToMigrate struct {
+		id      string
+		project string
+		oldType string
+	}
+	var items []itemToMigrate
+	for rows.Next() {
+		var item itemToMigrate
+		if err := rows.Scan(&item.id, &item.project, &item.oldType); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to scan item: %w", err)
+		}
+		items = append(items, item)
+	}
+	rows.Close()
+
+	// Migrate each item
+	for _, item := range items {
+		// Update type to task
+		_, err := tx.Exec(`UPDATE items SET type = 'task' WHERE id = ?`, item.id)
+		if err != nil {
+			return fmt.Errorf("failed to update item %s type: %w", item.id, err)
+		}
+
+		// Create slugified label name
+		labelName := slugify(item.oldType)
+		if labelName == "" {
+			continue // Skip if type produces empty slug
+		}
+
+		// Ensure label exists (create if not)
+		var labelID string
+		err = tx.QueryRow(`SELECT id FROM labels WHERE name = ? AND project = ?`, labelName, item.project).Scan(&labelID)
+		if err != nil {
+			// Label doesn't exist, create it
+			labelID = fmt.Sprintf("lb-%s", generateShortID())
+			_, err = tx.Exec(`
+				INSERT INTO labels (id, name, project, created_at, updated_at)
+				VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			`, labelID, labelName, item.project)
+			if err != nil {
+				return fmt.Errorf("failed to create label %s: %w", labelName, err)
+			}
+		}
+
+		// Attach label to item (ignore if already exists)
+		_, err = tx.Exec(`INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (?, ?)`, item.id, labelID)
+		if err != nil {
+			return fmt.Errorf("failed to attach label to item %s: %w", item.id, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit migration: %w", err)
+	}
+
+	return nil
+}
+
+// generateShortID generates a short random ID for labels.
+// This is used during migration; normally model.GenerateLabelID() is used.
+func generateShortID() string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	alphabetLen := big.NewInt(int64(len(alphabet)))
+	b := make([]byte, 6)
+	for i := range b {
+		idx, err := rand.Int(rand.Reader, alphabetLen)
+		if err != nil {
+			panic("crypto/rand failed: " + err.Error())
+		}
+		b[i] = alphabet[idx.Int64()]
+	}
+	return string(b)
 }
