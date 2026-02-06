@@ -44,6 +44,11 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 		return fmt.Errorf("failed to add dependency: %w", err)
 	}
 
+	// Record history for dependency addition
+	_ = db.RecordHistory(itemID, EventTypeDependencyAdded, map[string]any{
+		"depends_on": dependsOnID,
+	})
+
 	// If the dependent task is in_progress and the new dep is not done,
 	// revert to open — it can't proceed until the dep is resolved.
 	var itemStatus, depStatus string
@@ -69,6 +74,12 @@ func (db *DB) RemoveDep(itemID, dependsOnID string) error {
 	if rows == 0 {
 		return fmt.Errorf("no dependency found: %s does not depend on %s", itemID, dependsOnID)
 	}
+
+	// Record history for dependency removal
+	_ = db.RecordHistory(itemID, EventTypeDependencyRemoved, map[string]any{
+		"depends_on": dependsOnID,
+	})
+
 	return nil
 }
 

@@ -8,7 +8,7 @@ import (
 	"github.com/taxilian/tpg/internal/model"
 )
 
-const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, agent_id, agent_last_active, template_id, step_index, variables, template_hash, results, worktree_branch, worktree_base, shared_context, closing_instructions, created_at, updated_at"
+const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, agent_id, agent_last_active, template_id, step_index, variables, template_hash, results, worktree_branch, worktree_base, shared_context, closing_instructions, closed_at, created_at, updated_at"
 
 // ListFilter contains optional filters for listing items.
 type ListFilter struct {
@@ -755,13 +755,14 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		var worktreeBase sql.NullString
 		var sharedContext sql.NullString
 		var closingInstructions sql.NullString
+		var closedAt sql.NullTime
 		if err := rows.Scan(
 			&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
 			&item.Status, &item.Priority, &parentID,
 			&agentID, &agentLastActive,
 			&templateID, &stepIndex, &variables, &templateHash, &results,
 			&worktreeBranch, &worktreeBase, &sharedContext, &closingInstructions,
-			&item.CreatedAt, &item.UpdatedAt,
+			&closedAt, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan item: %w", err)
 		}
@@ -805,6 +806,9 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		}
 		if closingInstructions.Valid {
 			item.ClosingInstructions = closingInstructions.String
+		}
+		if closedAt.Valid {
+			item.ClosedAt = &closedAt.Time
 		}
 		items = append(items, item)
 	}

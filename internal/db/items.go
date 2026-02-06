@@ -59,6 +59,15 @@ func (db *DB) CreateItem(item *model.Item) error {
 	if err != nil {
 		return fmt.Errorf("failed to create item: %w", err)
 	}
+
+	// Record history for item creation
+	_ = db.RecordHistory(item.ID, EventTypeCreated, map[string]any{
+		"title":    item.Title,
+		"type":     string(item.Type),
+		"status":   string(item.Status),
+		"priority": item.Priority,
+	})
+
 	return nil
 }
 
@@ -151,6 +160,16 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 		return fmt.Errorf("invalid status: %s", status)
 	}
 
+	// Get old status before updating
+	var oldStatus model.Status
+	err := db.QueryRow(`SELECT status FROM items WHERE id = ?`, id).Scan(&oldStatus)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get item status: %w", err)
+	}
+
 	// Cannot close parent with open children
 	if status == model.StatusDone || status == model.StatusCanceled {
 		var openChildren int
@@ -187,6 +206,24 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 
+	// Handle closed_at timestamp
+	isClosing := (status == model.StatusDone || status == model.StatusCanceled)
+	wasClosedBefore := (oldStatus == model.StatusDone || oldStatus == model.StatusCanceled)
+
+	if isClosing && !wasClosedBefore {
+		// Set closed_at when closing
+		_, err = db.Exec(`UPDATE items SET closed_at = ? WHERE id = ?`, sqlTime(time.Now()), id)
+		if err != nil {
+			return fmt.Errorf("failed to set closed_at: %w", err)
+		}
+	} else if !isClosing && wasClosedBefore {
+		// Clear closed_at when reopening
+		_, err = db.Exec(`UPDATE items SET closed_at = NULL WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("failed to clear closed_at: %w", err)
+		}
+	}
+
 	// If status is in_progress and agent is active, claim it
 	if status == model.StatusInProgress && agentCtx.IsActive() {
 		_, err = db.Exec(`UPDATE items 
@@ -207,6 +244,16 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 		}
 	}
 
+	// Record history
+	eventType := EventTypeStatusChanged
+	if !isClosing && wasClosedBefore {
+		eventType = EventTypeReopened
+	}
+	_ = db.RecordHistory(id, eventType, map[string]any{
+		"old": string(oldStatus),
+		"new": string(status),
+	})
+
 	return nil
 }
 
@@ -222,9 +269,10 @@ func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
 		return fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
 	}
 
+	now := sqlTime(time.Now())
 	result, err := db.Exec(`
-		UPDATE items SET status = ?, results = ?, updated_at = ? WHERE id = ?`,
-		model.StatusDone, results, sqlTime(time.Now()), id)
+		UPDATE items SET status = ?, results = ?, closed_at = ?, updated_at = ? WHERE id = ?`,
+		model.StatusDone, results, now, now, id)
 	if err != nil {
 		return fmt.Errorf("failed to complete item: %w", err)
 	}
@@ -241,6 +289,11 @@ func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
 	if err != nil {
 		return fmt.Errorf("failed to clear agent: %w", err)
 	}
+
+	// Record history
+	_ = db.RecordHistory(id, EventTypeCompleted, map[string]any{
+		"results": results,
+	})
 
 	return nil
 }
@@ -328,10 +381,17 @@ func (db *DB) AppendDescription(id string, text string) error {
 
 // SetParent sets an item's parent.
 func (db *DB) SetParent(itemID, parentID string) error {
+	// Get old parent for history
+	var oldParent sql.NullString
+	err := db.QueryRow(`SELECT parent_id FROM items WHERE id = ?`, itemID).Scan(&oldParent)
+	if err != nil {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", itemID)
+	}
+
 	// Verify parent exists and check its status
 	var itemType string
 	var parentStatus model.Status
-	err := db.QueryRow(`SELECT type, status FROM items WHERE id = ?`, parentID).Scan(&itemType, &parentStatus)
+	err = db.QueryRow(`SELECT type, status FROM items WHERE id = ?`, parentID).Scan(&itemType, &parentStatus)
 	if err != nil {
 		return fmt.Errorf("parent not found: %s (use 'tpg list' to see available items)", parentID)
 	}
@@ -353,11 +413,29 @@ func (db *DB) SetParent(itemID, parentID string) error {
 	if rows == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", itemID)
 	}
+
+	// Record history
+	oldParentStr := ""
+	if oldParent.Valid {
+		oldParentStr = oldParent.String
+	}
+	_ = db.RecordHistory(itemID, EventTypeParentChanged, map[string]any{
+		"old": oldParentStr,
+		"new": parentID,
+	})
+
 	return nil
 }
 
 // ClearParent removes an item's parent (makes it a top-level item).
 func (db *DB) ClearParent(itemID string) error {
+	// Get old parent for history
+	var oldParent sql.NullString
+	err := db.QueryRow(`SELECT parent_id FROM items WHERE id = ?`, itemID).Scan(&oldParent)
+	if err != nil {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", itemID)
+	}
+
 	result, err := db.Exec(`
 		UPDATE items SET parent_id = NULL, updated_at = ? WHERE id = ?`,
 		sqlTime(time.Now()), itemID)
@@ -369,6 +447,15 @@ func (db *DB) ClearParent(itemID string) error {
 	if rows == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", itemID)
 	}
+
+	// Record history only if there was a parent to clear
+	if oldParent.Valid {
+		_ = db.RecordHistory(itemID, EventTypeParentChanged, map[string]any{
+			"old": oldParent.String,
+			"new": "",
+		})
+	}
+
 	return nil
 }
 
@@ -397,6 +484,13 @@ func (db *DB) SetProject(id string, project string) error {
 
 // SetDescription replaces an item's description entirely.
 func (db *DB) SetDescription(id string, text string) error {
+	// Get old description for history
+	var oldDesc sql.NullString
+	err := db.QueryRow(`SELECT description FROM items WHERE id = ?`, id).Scan(&oldDesc)
+	if err != nil {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+
 	result, err := db.Exec(`
 		UPDATE items
 		SET description = ?,
@@ -411,11 +505,29 @@ func (db *DB) SetDescription(id string, text string) error {
 	if rows == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
+
+	// Record history
+	oldDescStr := ""
+	if oldDesc.Valid {
+		oldDescStr = oldDesc.String
+	}
+	_ = db.RecordHistory(id, EventTypeDescriptionChanged, map[string]any{
+		"old": oldDescStr,
+		"new": text,
+	})
+
 	return nil
 }
 
 // SetTitle replaces an item's title.
 func (db *DB) SetTitle(id string, title string) error {
+	// Get old title for history
+	var oldTitle string
+	err := db.QueryRow(`SELECT title FROM items WHERE id = ?`, id).Scan(&oldTitle)
+	if err != nil {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+
 	result, err := db.Exec(`
 		UPDATE items
 		SET title = ?,
@@ -430,6 +542,13 @@ func (db *DB) SetTitle(id string, title string) error {
 	if rows == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
+
+	// Record history
+	_ = db.RecordHistory(id, EventTypeTitleChanged, map[string]any{
+		"old": oldTitle,
+		"new": title,
+	})
+
 	return nil
 }
 
@@ -542,6 +661,13 @@ func (db *DB) UpdatePriority(id string, priority int) error {
 		return fmt.Errorf("invalid priority: %d (must be 1-5)", priority)
 	}
 
+	// Get old priority for history
+	var oldPriority int
+	err := db.QueryRow(`SELECT priority FROM items WHERE id = ?`, id).Scan(&oldPriority)
+	if err != nil {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+
 	result, err := db.Exec(`
 		UPDATE items
 		SET priority = ?,
@@ -556,6 +682,13 @@ func (db *DB) UpdatePriority(id string, priority int) error {
 	if rows == 0 {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
+
+	// Record history
+	_ = db.RecordHistory(id, EventTypePriorityChanged, map[string]any{
+		"old": oldPriority,
+		"new": priority,
+	})
+
 	return nil
 }
 

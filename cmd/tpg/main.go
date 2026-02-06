@@ -128,6 +128,20 @@ var (
 	flagDoctorDryRun bool
 	flagResume       bool
 	flagFromYAML     bool
+
+	// history command flags
+	flagHistoryLimit     int
+	flagHistoryAgent     string
+	flagHistorySince     string
+	flagHistoryEventType string
+	flagHistoryCleanup   bool
+	flagHistoryDryRun    bool
+	flagHistoryJSON      bool
+
+	// closed command flags
+	flagClosedLimit  int
+	flagClosedSince  string
+	flagClosedStatus string
 )
 
 func openDB() (*db.DB, error) {
@@ -2120,19 +2134,245 @@ Example:
 }
 
 var historyCmd = &cobra.Command{
-	Use:   "history <id>",
-	Short: "Show full history timeline for a task",
-	Long: `Show a chronological timeline of everything that happened to a task.
+	Use:   "history [task-id]",
+	Short: "Show audit history events or run history cleanup",
+	Long: `Show audit history events for tasks, filtered by various criteria.
 
-Includes:
-  - Creation timestamp with initial metadata
-  - All log entries (progress, blocks, cancels, reopens, merges)
-  - Completion results (if done)
-  - Current status and last update
+Without arguments, shows recent history events globally (last 50 by default).
+With a task ID, shows history for that specific task only.
 
-Example:
-  tpg history ts-a1b2c3`,
-	Args: cobra.ExactArgs(1),
+Use --cleanup to run history cleanup instead of viewing history.
+
+Examples:
+  tpg history                      # Recent history (last 50 events)
+  tpg history ts-abc123            # History for specific task
+  tpg history --limit 10           # Limit to 10 results
+  tpg history --agent ses_abc123   # Filter by agent ID
+  tpg history --since 24h          # Events in last 24 hours
+  tpg history --since 7d           # Events in last 7 days
+  tpg history --event-type status_changed  # Filter by event type
+  tpg history --json               # Output as JSON
+  tpg history --cleanup            # Run cleanup
+  tpg history --cleanup --dry-run  # Preview cleanup`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validate flag combinations
+		if flagHistoryDryRun && !flagHistoryCleanup {
+			return fmt.Errorf("--dry-run requires --cleanup")
+		}
+		if flagHistoryCleanup && len(args) > 0 {
+			return fmt.Errorf("--cleanup cannot be combined with a task ID (cleanup is global)")
+		}
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		// Handle cleanup mode
+		if flagHistoryCleanup {
+			return runHistoryCleanup(database, flagHistoryDryRun)
+		}
+
+		// Build query options
+		opts := db.HistoryQueryOptions{}
+
+		if len(args) > 0 {
+			opts.ItemID = args[0]
+		}
+
+		if flagHistoryAgent != "" {
+			opts.ActorID = flagHistoryAgent
+		}
+
+		if flagHistorySince != "" {
+			since, err := parseDuration(flagHistorySince)
+			if err != nil {
+				return fmt.Errorf("invalid --since duration: %w", err)
+			}
+			opts.Since = time.Now().Add(-since)
+		}
+
+		if flagHistoryEventType != "" {
+			opts.EventTypes = []string{flagHistoryEventType}
+		}
+
+		if flagHistoryLimit > 0 {
+			opts.Limit = flagHistoryLimit
+		}
+
+		// Query history
+		entries, err := database.GetHistory(opts)
+		if err != nil {
+			return err
+		}
+
+		// Handle JSON output
+		if flagHistoryJSON {
+			return printHistoryJSON(entries)
+		}
+
+		// Handle empty results
+		if len(entries) == 0 {
+			fmt.Println("No history events found")
+			return nil
+		}
+
+		// Print table format
+		printHistoryTable(entries)
+		return nil
+	},
+}
+
+// parseDuration parses a duration string like "24h", "7d", "30d"
+func parseDuration(s string) (time.Duration, error) {
+	// Try standard duration first (handles "24h", "30m", etc.)
+	if d, err := time.ParseDuration(s); err == nil {
+		return d, nil
+	}
+
+	// Handle "Nd" format for days
+	if len(s) > 1 && s[len(s)-1] == 'd' {
+		var days int
+		if _, err := fmt.Sscanf(s, "%dd", &days); err == nil {
+			return time.Duration(days) * 24 * time.Hour, nil
+		}
+	}
+
+	return 0, fmt.Errorf("invalid duration format: %s (use e.g., '24h', '7d')", s)
+}
+
+// runHistoryCleanup executes history cleanup
+func runHistoryCleanup(database *db.DB, dryRun bool) error {
+	result, err := database.CleanupHistory(db.CleanupHistoryOptions{DryRun: dryRun})
+	if err != nil {
+		return fmt.Errorf("cleanup failed: %w", err)
+	}
+
+	if dryRun {
+		fmt.Println("Dry-run cleanup (no changes made):")
+		fmt.Printf("  Would delete: %d entries\n", result.DeletedCount)
+	} else {
+		fmt.Println("Cleanup results:")
+		fmt.Printf("  Total history entries: %d\n", result.TotalBefore)
+		fmt.Printf("  Deleted: %d\n", result.DeletedCount)
+	}
+
+	if result.DeletedCount > 0 || dryRun {
+		fmt.Printf("    - Status changes (>30d): %d\n", result.DeletedStatus)
+		fmt.Printf("    - Other events (>7d): %d\n", result.DeletedOther)
+	}
+
+	return nil
+}
+
+// printHistoryJSON outputs history entries as JSON
+func printHistoryJSON(entries []db.HistoryEntry) error {
+	type jsonEntry struct {
+		ID        int64          `json:"id"`
+		ItemID    string         `json:"item_id"`
+		EventType string         `json:"event_type"`
+		ActorID   string         `json:"actor_id,omitempty"`
+		ActorType string         `json:"actor_type,omitempty"`
+		Changes   map[string]any `json:"changes,omitempty"`
+		CreatedAt string         `json:"created_at"`
+	}
+
+	jsonEntries := make([]jsonEntry, len(entries))
+	for i, e := range entries {
+		jsonEntries[i] = jsonEntry{
+			ID:        e.ID,
+			ItemID:    e.ItemID,
+			EventType: e.EventType,
+			ActorID:   e.ActorID,
+			ActorType: e.ActorType,
+			Changes:   e.Changes,
+			CreatedAt: e.CreatedAt.Format(time.RFC3339),
+		}
+	}
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(jsonEntries)
+}
+
+// printHistoryTable outputs history entries as a table
+func printHistoryTable(entries []db.HistoryEntry) {
+	// Header
+	fmt.Printf("%-18s %-18s %-10s %-15s %s\n", "TIME", "TYPE", "ITEM", "ACTOR", "CHANGES")
+
+	for _, e := range entries {
+		timeStr := e.CreatedAt.Format("2006-01-02 15:04")
+		actor := truncateActor(e.ActorID)
+		changes := formatChanges(e.Changes)
+
+		fmt.Printf("%-18s %-18s %-10s %-15s %s\n",
+			timeStr, e.EventType, e.ItemID, actor, changes)
+	}
+}
+
+// truncateActor truncates long actor IDs for display (first 12 chars + "...")
+func truncateActor(actor string) string {
+	if actor == "" {
+		return "-"
+	}
+	if len(actor) <= 15 {
+		return actor
+	}
+	return actor[:12] + "..."
+}
+
+// formatChanges formats the changes map for display
+func formatChanges(changes map[string]any) string {
+	if changes == nil || len(changes) == 0 {
+		return "-"
+	}
+
+	// Handle old/new format for status changes
+	if oldVal, hasOld := changes["old"]; hasOld {
+		if newVal, hasNew := changes["new"]; hasNew {
+			return fmt.Sprintf("%v → %v", oldVal, newVal)
+		}
+	}
+
+	// Handle value format for creation events
+	if val, hasVal := changes["value"]; hasVal {
+		s := fmt.Sprintf("%v", val)
+		if len(s) > 30 {
+			return fmt.Sprintf("%q", s[:27]+"...")
+		}
+		return fmt.Sprintf("%q", s)
+	}
+
+	// Fallback: show key=value pairs
+	var parts []string
+	for k, v := range changes {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+	}
+	result := strings.Join(parts, ", ")
+	if len(result) > 40 {
+		return result[:37] + "..."
+	}
+	return result
+}
+
+var closedCmd = &cobra.Command{
+	Use:   "closed",
+	Short: "List recently closed tasks",
+	Long: `List tasks that have been recently closed (done or canceled).
+
+Shows tasks sorted by closed_at timestamp (most recent first).
+By default shows tasks closed in the last 7 days.
+
+Examples:
+  tpg closed                     # Show tasks closed in last 7 days
+  tpg closed --limit 10          # Show at most 10 tasks
+  tpg closed --since 24h         # Show tasks closed in last 24 hours
+  tpg closed --since 7d          # Show tasks closed in last 7 days
+  tpg closed --status done       # Show only completed tasks
+  tpg closed --status canceled   # Show only canceled tasks`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -2140,59 +2380,61 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		item, err := database.GetItem(args[0])
+		// Determine limit
+		limit := flagClosedLimit
+		if limit <= 0 {
+			limit = 20
+		}
+
+		// Parse --since duration (default to 7 days)
+		var since time.Time
+		if flagClosedSince != "" {
+			d, err := parseDuration(flagClosedSince)
+			if err != nil {
+				return fmt.Errorf("invalid --since duration: %w", err)
+			}
+			since = time.Now().Add(-d)
+		} else {
+			// Default: 7 days
+			since = time.Now().Add(-7 * 24 * time.Hour)
+		}
+
+		// Get recently closed items
+		items, err := database.GetRecentlyClosed(limit, since)
 		if err != nil {
 			return err
 		}
 
-		logs, err := database.GetLogs(args[0])
-		if err != nil {
-			return err
+		// Filter by status if specified
+		if flagClosedStatus != "" {
+			var filtered []model.Item
+			targetStatus := model.Status(flagClosedStatus)
+			for _, item := range items {
+				if item.Status == targetStatus {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
 		}
 
-		labels, err := database.GetItemLabels(args[0])
-		if err != nil {
-			return err
-		}
-		var labelNames []string
-		for _, l := range labels {
-			labelNames = append(labelNames, l.Name)
-		}
-
-		deps, err := database.GetDeps(args[0])
-		if err != nil {
-			return err
+		// Handle empty results
+		if len(items) == 0 {
+			if flagClosedSince != "" {
+				fmt.Printf("No tasks closed in the last %s.\n", flagClosedSince)
+			} else {
+				fmt.Println("No tasks closed in the last 7 days.")
+			}
+			return nil
 		}
 
-		// Header
-		fmt.Printf("%s — %s\n", item.ID, item.Title)
-		fmt.Printf("Type: %s  Project: %s  Priority: %d\n", item.Type, item.Project, item.Priority)
-		if item.ParentID != nil {
-			fmt.Printf("Parent: %s\n", *item.ParentID)
-		}
-		if len(labelNames) > 0 {
-			fmt.Printf("Labels: %s\n", strings.Join(labelNames, ", "))
-		}
-		if len(deps) > 0 {
-			fmt.Printf("Dependencies: %s\n", strings.Join(deps, ", "))
-		}
-
-		// Timeline
-		fmt.Printf("\nTimeline:\n")
-		fmt.Printf("  [%s] Created\n", item.CreatedAt.Format("2006-01-02 15:04"))
-
-		for _, log := range logs {
-			fmt.Printf("  [%s] %s\n", log.CreatedAt.Format("2006-01-02 15:04"), log.Message)
-		}
-
-		if item.Status == model.StatusDone && item.Results != "" {
-			fmt.Printf("  [%s] Completed: %s\n", item.UpdatedAt.Format("2006-01-02 15:04"), item.Results)
-		}
-
-		// Current state
-		fmt.Printf("\nCurrent: %s (updated %s)\n", item.Status, item.UpdatedAt.Format("2006-01-02 15:04"))
-		if item.AgentID != nil {
-			fmt.Printf("Agent: %s\n", *item.AgentID)
+		// Print table format: ID, CLOSED AT, STATUS, TITLE
+		fmt.Printf("%-12s %-16s %-10s %s\n", "ID", "CLOSED AT", "STATUS", "TITLE")
+		for _, item := range items {
+			closedAt := ""
+			if item.ClosedAt != nil {
+				closedAt = item.ClosedAt.Local().Format("2006-01-02 15:04")
+			}
+			fmt.Printf("%-12s %-16s %-10s %s\n", item.ID, closedAt, item.Status, item.Title)
 		}
 
 		return nil
@@ -5949,7 +6191,23 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(readyCmd)
 	rootCmd.AddCommand(showCmd)
+
+	// history flags
+	historyCmd.Flags().IntVarP(&flagHistoryLimit, "limit", "n", 0, "Max number of results (default 50)")
+	historyCmd.Flags().StringVarP(&flagHistoryAgent, "agent", "a", "", "Filter by agent ID")
+	historyCmd.Flags().StringVarP(&flagHistorySince, "since", "s", "", "Filter by time (e.g., '24h', '7d')")
+	historyCmd.Flags().StringVar(&flagHistoryEventType, "event-type", "", "Filter by event type")
+	historyCmd.Flags().BoolVar(&flagHistoryCleanup, "cleanup", false, "Run history cleanup")
+	historyCmd.Flags().BoolVar(&flagHistoryDryRun, "dry-run", false, "With --cleanup, show what would be deleted")
+	historyCmd.Flags().BoolVar(&flagHistoryJSON, "json", false, "Output as JSON")
 	rootCmd.AddCommand(historyCmd)
+
+	// closed flags
+	closedCmd.Flags().IntVarP(&flagClosedLimit, "limit", "n", 20, "Maximum number of tasks to show")
+	closedCmd.Flags().StringVarP(&flagClosedSince, "since", "s", "", "Show tasks closed since duration (e.g., 24h, 7d). Default: 7d")
+	closedCmd.Flags().StringVar(&flagClosedStatus, "status", "", "Filter by status (done, canceled)")
+	rootCmd.AddCommand(closedCmd)
+
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(cancelCmd)

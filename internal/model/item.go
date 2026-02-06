@@ -98,6 +98,7 @@ type Item struct {
 	SharedContext       string            // Context shared with all children (epics only)
 	ClosingInstructions string            // Instructions to display when completing epic
 	Labels              []string          // Attached label names (populated separately)
+	ClosedAt            *time.Time        // When item was closed (done/canceled); nil if open
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
