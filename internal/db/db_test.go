@@ -1106,3 +1106,51 @@ func TestMigrationV6_EmptyDatabase(t *testing.T) {
 		t.Errorf("schema version = %d, want 6", version)
 	}
 }
+
+func TestCheckDatabaseIntegrity(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Test that integrity check passes on a valid database
+	err := db.checkDatabaseIntegrity()
+	if err != nil {
+		t.Errorf("integrity check failed on valid database: %v", err)
+	}
+}
+
+func TestRebuildFTS5(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Insert some learnings to test FTS5 rebuild
+	_, err := db.Exec(`
+		INSERT INTO learnings (id, project, summary, detail)
+		VALUES ('ln-test1', 'test', 'Test Summary', 'Test Detail')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert learning: %v", err)
+	}
+
+	// Verify FTS5 has the data
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM learnings_fts WHERE learnings_fts MATCH 'Test'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to query FTS5: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("FTS5 should have 1 match, got %d", count)
+	}
+
+	// Rebuild FTS5
+	err = db.rebuildFTS5()
+	if err != nil {
+		t.Errorf("rebuildFTS5 failed: %v", err)
+	}
+
+	// Verify FTS5 still has the data after rebuild
+	err = db.QueryRow("SELECT COUNT(*) FROM learnings_fts WHERE learnings_fts MATCH 'Test'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to query FTS5 after rebuild: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("FTS5 should have 1 match after rebuild, got %d", count)
+	}
+}

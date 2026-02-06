@@ -484,6 +484,54 @@ func slugify(s string) string {
 	return slug
 }
 
+// checkDatabaseIntegrity runs PRAGMA integrity_check and returns any errors found.
+// It also attempts to detect and fix common FTS5 corruption issues.
+func (db *DB) checkDatabaseIntegrity() error {
+	var result string
+	err := db.QueryRow("PRAGMA integrity_check").Scan(&result)
+	if err != nil {
+		return fmt.Errorf("integrity check query failed: %w", err)
+	}
+	if result != "ok" {
+		// Try to recover FTS5 if that's the issue
+		if strings.Contains(result, "fts5") || strings.Contains(result, "learnings_fts") {
+			if err := db.rebuildFTS5(); err != nil {
+				return fmt.Errorf("database integrity check failed: %s; FTS5 rebuild also failed: %w", result, err)
+			}
+			// Re-check integrity after rebuild
+			err = db.QueryRow("PRAGMA integrity_check").Scan(&result)
+			if err != nil {
+				return fmt.Errorf("integrity check after FTS5 rebuild failed: %w", err)
+			}
+			if result != "ok" {
+				return fmt.Errorf("database integrity check failed even after FTS5 rebuild: %s", result)
+			}
+			return nil
+		}
+		return fmt.Errorf("database integrity check failed: %s", result)
+	}
+	return nil
+}
+
+// rebuildFTS5 rebuilds the FTS5 virtual table to fix corruption.
+// This deletes and recreates the FTS5 index from the source data.
+func (db *DB) rebuildFTS5() error {
+	// Delete all FTS5 content and rebuild from source
+	_, err := db.Exec("DELETE FROM learnings_fts")
+	if err != nil {
+		return fmt.Errorf("failed to clear FTS5 table: %w", err)
+	}
+	// Re-insert all learnings data to trigger FTS5 rebuild via triggers
+	_, err = db.Exec(`
+		INSERT INTO learnings_fts(rowid, summary, detail)
+		SELECT rowid, summary, detail FROM learnings
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to rebuild FTS5 index: %w", err)
+	}
+	return nil
+}
+
 // migrateV6 converts legacy item types to labels.
 // For each item with type not in ('task', 'epic'):
 // 1. Store old type name
@@ -491,6 +539,11 @@ func slugify(s string) string {
 // 3. Create label with slugified old type name
 // 4. Attach label to item
 func (db *DB) migrateV6() error {
+	// Check database integrity before migration
+	if err := db.checkDatabaseIntegrity(); err != nil {
+		return fmt.Errorf("database integrity check failed before migration: %w\n\nTo recover:\n1. Backup your database: cp .tpg/tpg.db .tpg/tpg.db.backup\n2. Try running: sqlite3 .tpg/tpg.db 'REINDEX; VACUUM;'\n3. If still failing, the database may need manual recovery", err)
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -498,12 +551,17 @@ func (db *DB) migrateV6() error {
 	defer func() { _ = tx.Rollback() }()
 
 	// Find all items with non-standard types
+	// Use a simpler query that's less likely to hit corruption issues
 	rows, err := tx.Query(`
 		SELECT id, project, type
 		FROM items
 		WHERE type NOT IN ('task', 'epic')
 	`)
 	if err != nil {
+		// If we get a malformed error, try to provide helpful recovery info
+		if strings.Contains(err.Error(), "malformed") {
+			return fmt.Errorf("failed to query legacy types (database may be corrupted): %w\n\nRecovery steps:\n1. Backup: cp .tpg/tpg.db .tpg/tpg.db.backup\n2. Try recovery: sqlite3 .tpg/tpg.db '.recover' | sqlite3 .tpg/tpg.db.recovered\n3. Replace: mv .tpg/tpg.db.recovered .tpg/tpg.db", err)
+		}
 		return fmt.Errorf("failed to query legacy types: %w", err)
 	}
 
