@@ -259,7 +259,7 @@ func TestInitProject_CreatesDirectoryAndConfig(t *testing.T) {
 	}
 }
 
-func TestInitProject_CustomPrefixes(t *testing.T) {
+func TestInitProject_CustomTaskEpicPrefixes(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)
 

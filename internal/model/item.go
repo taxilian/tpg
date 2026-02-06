@@ -59,8 +59,7 @@ const (
 )
 
 func (t ItemType) IsValid() bool {
-	// Allow any non-empty type string (task, epic, story, bug, etc.)
-	return t != ""
+	return t == ItemTypeTask || t == ItemTypeEpic
 }
 
 type Status string
