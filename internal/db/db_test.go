@@ -704,6 +704,180 @@ func TestMigrationV4_ExistingDataPreserved(t *testing.T) {
 	}
 }
 
+func TestMigrationV5_Idempotent(t *testing.T) {
+	// Create a v4 database and migrate it to v5
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+
+	// Create schema as if it were v4 (without shared_context and closing_instructions columns)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS items (
+			id TEXT PRIMARY KEY,
+			project TEXT NOT NULL,
+			type TEXT NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT,
+			status TEXT NOT NULL DEFAULT 'open',
+			priority INTEGER DEFAULT 2,
+			parent_id TEXT,
+			agent_id TEXT,
+			agent_last_active DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			template_id TEXT,
+			step_index INTEGER,
+			variables TEXT,
+			template_hash TEXT,
+			results TEXT,
+			worktree_branch TEXT,
+			worktree_base TEXT
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create v4 schema: %v", err)
+	}
+
+	// Set version to 4
+	if err := db.setSchemaVersion(4); err != nil {
+		t.Fatalf("failed to set schema version to 4: %v", err)
+	}
+
+	// Insert test data
+	_, err = db.Exec(`
+		INSERT INTO items (id, project, type, title, status)
+		VALUES ('ts-test123', 'test', 'task', 'Test Item', 'open')
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	db.Close()
+
+	// Reopen and migrate
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("failed to reopen db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	// Verify version is now 6
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to get schema version: %v", err)
+	}
+	if version != 6 {
+		t.Errorf("schema version = %d, want 6", version)
+	}
+
+	// Verify existing data is preserved
+	var title string
+	err = db.QueryRow("SELECT title FROM items WHERE id = 'ts-test123'").Scan(&title)
+	if err != nil {
+		t.Fatalf("failed to query existing item: %v", err)
+	}
+	if title != "Test Item" {
+		t.Errorf("title = %q, want 'Test Item'", title)
+	}
+
+	// Verify new columns are NULL by default
+	var sharedContext, closingInstructions sql.NullString
+	err = db.QueryRow("SELECT shared_context, closing_instructions FROM items WHERE id = 'ts-test123'").Scan(&sharedContext, &closingInstructions)
+	if err != nil {
+		t.Fatalf("failed to query v5 columns: %v", err)
+	}
+	if sharedContext.Valid {
+		t.Error("expected shared_context to be NULL")
+	}
+	if closingInstructions.Valid {
+		t.Error("expected closing_instructions to be NULL")
+	}
+}
+
+func TestMigrationV5_ColumnAlreadyExists(t *testing.T) {
+	// Test the scenario where shared_context column already exists (partial migration)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+
+	// Create schema as if it were v4 but with shared_context already added (partial migration)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS items (
+			id TEXT PRIMARY KEY,
+			project TEXT NOT NULL,
+			type TEXT NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT,
+			status TEXT NOT NULL DEFAULT 'open',
+			priority INTEGER DEFAULT 2,
+			parent_id TEXT,
+			agent_id TEXT,
+			agent_last_active DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			template_id TEXT,
+			step_index INTEGER,
+			variables TEXT,
+			template_hash TEXT,
+			results TEXT,
+			worktree_branch TEXT,
+			worktree_base TEXT,
+			shared_context TEXT
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create schema with shared_context: %v", err)
+	}
+
+	// Set version to 4 (as if migration v5 hasn't completed)
+	if err := db.setSchemaVersion(4); err != nil {
+		t.Fatalf("failed to set schema version to 4: %v", err)
+	}
+
+	db.Close()
+
+	// Reopen and migrate - should not fail even though shared_context exists
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("failed to reopen db: %v", err)
+	}
+	defer db.Close()
+
+	// This should succeed even though shared_context already exists
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("failed to migrate when column already exists: %v", err)
+	}
+
+	// Verify version is now 6
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to get schema version: %v", err)
+	}
+	if version != 6 {
+		t.Errorf("schema version = %d, want 6", version)
+	}
+
+	// Verify closing_instructions was added
+	var closingInstructions sql.NullString
+	err = db.QueryRow("SELECT closing_instructions FROM items LIMIT 1").Scan(&closingInstructions)
+	if err != nil && err != sql.ErrNoRows {
+		t.Fatalf("failed to query closing_instructions column: %v", err)
+	}
+	// Success - column exists
+}
+
 func TestSlugify(t *testing.T) {
 	tests := []struct {
 		input string

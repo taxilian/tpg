@@ -398,6 +398,29 @@ var templateFuncs = template.FuncMap{
 		}
 		return defaultVal
 	},
+	// slugify converts a string to a URL/branch-friendly slug
+	"slugify": func(s string) string {
+		// Convert to lowercase
+		s = strings.ToLower(s)
+		// Replace spaces and underscores with hyphens
+		s = strings.ReplaceAll(s, " ", "-")
+		s = strings.ReplaceAll(s, "_", "-")
+		// Remove any character that isn't alphanumeric or hyphen
+		var result strings.Builder
+		for _, r := range s {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				result.WriteRune(r)
+			}
+		}
+		// Collapse multiple hyphens into one
+		s = result.String()
+		for strings.Contains(s, "--") {
+			s = strings.ReplaceAll(s, "--", "-")
+		}
+		// Trim leading/trailing hyphens
+		s = strings.Trim(s, "-")
+		return s
+	},
 }
 
 // RenderText interpolates variables using Go's text/template.

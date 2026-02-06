@@ -564,6 +564,39 @@ func TestRenderStep(t *testing.T) {
 	})
 }
 
+func TestSlugify(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"simple lowercase", "hello", "hello"},
+		{"uppercase to lowercase", "Hello World", "hello-world"},
+		{"spaces to hyphens", "hello world", "hello-world"},
+		{"underscores to hyphens", "hello_world", "hello-world"},
+		{"special characters removed", "hello@world!", "helloworld"},
+		{"multiple spaces", "hello   world", "hello-world"},
+		{"multiple hyphens collapsed", "hello---world", "hello-world"},
+		{"leading trailing hyphens trimmed", "---hello---", "hello"},
+		{"mixed case and special", "My Feature! (v2)", "my-feature-v2"},
+		{"numbers preserved", "version123test", "version123test"},
+		{"empty string", "", ""},
+		{"only special chars", "!@#$%", ""},
+		{"unicode removed", "héllo wörld", "hllo-wrld"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := "Result: {{.name | slugify}}"
+			result := RenderText(input, map[string]string{"name": tc.input})
+			expected := "Result: " + tc.expected
+			if result != expected {
+				t.Errorf("slugify(%q): expected %q, got %q", tc.input, expected, result)
+			}
+		})
+	}
+}
+
 func TestHashComputation(t *testing.T) {
 	setupTemplatesDir := func(t *testing.T) (string, func()) {
 		tmpDir := t.TempDir()

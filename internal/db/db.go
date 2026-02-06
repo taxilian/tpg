@@ -182,10 +182,8 @@ ALTER TABLE items ADD COLUMN worktree_branch TEXT;
 ALTER TABLE items ADD COLUMN worktree_base TEXT;
 `,
 	// Version 5: Add epic shared context and closing instructions
-	`
-ALTER TABLE items ADD COLUMN shared_context TEXT;
-ALTER TABLE items ADD COLUMN closing_instructions TEXT;
-`,
+	// This migration is handled specially in runMigrationV5 to be idempotent
+	"", // Empty placeholder - actual logic in runMigrationV5
 }
 
 // DB wraps a SQL database connection with task-specific operations.
@@ -355,8 +353,15 @@ func (db *DB) Migrate() error {
 			continue
 		}
 
-		if _, err := db.Exec(migration); err != nil {
-			return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
+		// Handle v5 migration specially (idempotent column addition)
+		if targetVersion == 5 {
+			if err := db.runMigrationV5(); err != nil {
+				return fmt.Errorf("migration to v5 failed: %w", err)
+			}
+		} else {
+			if _, err := db.Exec(migration); err != nil {
+				return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
+			}
 		}
 
 		if err := db.setSchemaVersion(targetVersion); err != nil {
@@ -399,6 +404,44 @@ func (db *DB) tableExists(name string) (bool, error) {
 		name,
 	).Scan(&count)
 	return count > 0, err
+}
+
+// columnExists checks if a column exists in a table.
+func (db *DB) columnExists(table, column string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?",
+		table, column,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// runMigrationV5 adds shared_context and closing_instructions columns idempotently.
+// This migration is idempotent - it checks if columns exist before adding them.
+func (db *DB) runMigrationV5() error {
+	// Check if shared_context column exists
+	exists, err := db.columnExists("items", "shared_context")
+	if err != nil {
+		return fmt.Errorf("failed to check shared_context column: %w", err)
+	}
+	if !exists {
+		if _, err := db.Exec("ALTER TABLE items ADD COLUMN shared_context TEXT"); err != nil {
+			return fmt.Errorf("failed to add shared_context column: %w", err)
+		}
+	}
+
+	// Check if closing_instructions column exists
+	exists, err = db.columnExists("items", "closing_instructions")
+	if err != nil {
+		return fmt.Errorf("failed to check closing_instructions column: %w", err)
+	}
+	if !exists {
+		if _, err := db.Exec("ALTER TABLE items ADD COLUMN closing_instructions TEXT"); err != nil {
+			return fmt.Errorf("failed to add closing_instructions column: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // migrateProjects populates the projects table from existing items.

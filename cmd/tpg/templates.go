@@ -154,14 +154,19 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 	}
 
 	// Apply defaults and check required variables
-	// Variables are required by default unless marked optional
+	// Variables are required by default unless marked optional or have a default value
 	for name, varDef := range tmpl.Variables {
 		if _, ok := vars[name]; !ok {
-			if !varDef.Optional {
+			// If variable has a default value, use it (regardless of Optional flag)
+			if varDef.Default != "" {
+				vars[name] = varDef.Default
+			} else if !varDef.Optional {
+				// Only error if no default AND not optional
 				return "", fmt.Errorf("missing required template variable: %s", name)
+			} else {
+				// Optional with no default: use empty string
+				vars[name] = ""
 			}
-			// Apply default value for optional variables
-			vars[name] = varDef.Default
 		}
 	}
 	// Check for unknown variables
@@ -334,6 +339,10 @@ func renderItemTemplate(cache *templateCache, item *model.Item) (bool, error) {
 	if vars == nil {
 		vars = map[string]string{}
 	}
+
+	// Add system-provided variables that are always available
+	// item_id: The ID of the current item being rendered
+	vars["item_id"] = item.ID
 
 	// For parent items (no StepIndex), only render if template has exactly one step
 	if item.StepIndex == nil {
