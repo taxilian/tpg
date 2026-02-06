@@ -326,6 +326,7 @@ func (db *DB) Init() error {
 
 // Migrate runs any pending schema migrations.
 // Safe to call on every startup - only runs migrations newer than current version.
+// Creates a backup before running any migrations.
 func (db *DB) Migrate() error {
 	currentVersion, err := db.getSchemaVersion()
 	if err != nil {
@@ -344,6 +345,29 @@ func (db *DB) Migrate() error {
 				return fmt.Errorf("failed to set legacy version: %w", err)
 			}
 		}
+	}
+
+	// Check if any migrations need to run
+	needsMigration := false
+	for i := range migrations {
+		targetVersion := i + 2 // migrations[0] upgrades to v2
+		if currentVersion < targetVersion {
+			needsMigration = true
+			break
+		}
+	}
+	// Also check v6 migration
+	if currentVersion == 5 {
+		needsMigration = true
+	}
+
+	// Create backup before running any migrations
+	if needsMigration {
+		backupPath, err := db.Backup()
+		if err != nil {
+			return fmt.Errorf("failed to create pre-migration backup: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Created pre-migration backup: %s\n", backupPath)
 	}
 
 	// Run pending SQL schema migrations
@@ -381,6 +405,14 @@ func (db *DB) Migrate() error {
 	}
 
 	return nil
+}
+
+// CheckIntegrity runs PRAGMA integrity_check on the database.
+// If issues are found and they relate to FTS5, it creates a backup
+// and attempts to rebuild the FTS5 index.
+// Returns nil if the database is OK or if repairs succeed.
+func (db *DB) CheckIntegrity() error {
+	return db.checkDatabaseIntegrity()
 }
 
 // getSchemaVersion returns the current schema version using PRAGMA user_version.
@@ -486,6 +518,7 @@ func slugify(s string) string {
 
 // checkDatabaseIntegrity runs PRAGMA integrity_check and returns any errors found.
 // It also attempts to detect and fix common FTS5 corruption issues.
+// Creates a backup before attempting any repairs.
 func (db *DB) checkDatabaseIntegrity() error {
 	var result string
 	err := db.QueryRow("PRAGMA integrity_check").Scan(&result)
@@ -495,6 +528,14 @@ func (db *DB) checkDatabaseIntegrity() error {
 	if result != "ok" {
 		// Try to recover FTS5 if that's the issue
 		if strings.Contains(result, "fts5") || strings.Contains(result, "learnings_fts") {
+			// Create backup before attempting repair
+			backupPath, backupErr := db.Backup()
+			if backupErr != nil {
+				// Log but don't fail - we still want to try the repair
+				fmt.Fprintf(os.Stderr, "warning: failed to create pre-repair backup: %v\n", backupErr)
+			} else {
+				fmt.Fprintf(os.Stderr, "Created pre-repair backup: %s\n", backupPath)
+			}
 			if err := db.rebuildFTS5(); err != nil {
 				return fmt.Errorf("database integrity check failed: %s; FTS5 rebuild also failed: %w", result, err)
 			}

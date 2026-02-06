@@ -1,6 +1,8 @@
 package db
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,9 +40,12 @@ func (db *DB) Backup() (string, error) {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	// Generate timestamped filename
-	timestamp := time.Now().Format("2006-01-02T15-04-05")
-	backupFile := filepath.Join(backupDir, fmt.Sprintf("tpg-%s.db", timestamp))
+	// Generate timestamped filename with millisecond precision and random suffix to avoid collisions
+	timestamp := time.Now().Format("2006-01-02T15-04-05.000")
+	randomBytes := make([]byte, 4)
+	rand.Read(randomBytes)
+	randomSuffix := hex.EncodeToString(randomBytes)
+	backupFile := filepath.Join(backupDir, fmt.Sprintf("tpg-%s-%s.db", timestamp, randomSuffix))
 
 	// Use SQLite's backup via VACUUM INTO for a consistent snapshot
 	_, err = db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupFile))
