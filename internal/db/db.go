@@ -33,7 +33,7 @@ func sqlTime(t time.Time) string {
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -184,6 +184,11 @@ ALTER TABLE items ADD COLUMN worktree_base TEXT;
 	// Version 5: Add epic shared context and closing instructions
 	// This migration is handled specially in runMigrationV5 to be idempotent
 	"", // Empty placeholder - actual logic in runMigrationV5
+	// Version 6: Data migration for legacy types (handled in migrateV6)
+	"", // Empty placeholder - actual logic in migrateV6
+	// Version 7: Add closed_at column and history table for audit tracking
+	// This migration is handled specially in runMigrationV7 to be idempotent
+	"", // Empty placeholder - actual logic in runMigrationV7
 }
 
 // DB wraps a SQL database connection with task-specific operations.
@@ -356,10 +361,6 @@ func (db *DB) Migrate() error {
 			break
 		}
 	}
-	// Also check v6 migration
-	if currentVersion == 5 {
-		needsMigration = true
-	}
 
 	// Create backup before running any migrations
 	if needsMigration {
@@ -382,6 +383,15 @@ func (db *DB) Migrate() error {
 			if err := db.runMigrationV5(); err != nil {
 				return fmt.Errorf("migration to v5 failed: %w", err)
 			}
+		} else if targetVersion == 6 {
+			// v6 is a data migration (convert legacy types to labels)
+			if err := db.migrateV6(); err != nil {
+				return fmt.Errorf("migration v6 failed: %w", err)
+			}
+		} else if targetVersion == 7 {
+			if err := db.runMigrationV7(); err != nil {
+				return fmt.Errorf("migration to v7 failed: %w", err)
+			}
 		} else {
 			if _, err := db.Exec(migration); err != nil {
 				return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
@@ -392,16 +402,6 @@ func (db *DB) Migrate() error {
 			return fmt.Errorf("failed to update version to %d: %w", targetVersion, err)
 		}
 		currentVersion = targetVersion
-	}
-
-	// Run v6 data migration (convert legacy types to labels)
-	if currentVersion == 5 {
-		if err := db.migrateV6(); err != nil {
-			return fmt.Errorf("migration v6 failed: %w", err)
-		}
-		if err := db.setSchemaVersion(6); err != nil {
-			return fmt.Errorf("failed to update version to 6: %w", err)
-		}
 	}
 
 	return nil
@@ -470,6 +470,89 @@ func (db *DB) runMigrationV5() error {
 	if !exists {
 		if _, err := db.Exec("ALTER TABLE items ADD COLUMN closing_instructions TEXT"); err != nil {
 			return fmt.Errorf("failed to add closing_instructions column: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// runMigrationV7 adds the closed_at column to items and creates the history table.
+// This migration is idempotent - it checks if columns/tables exist before creating them.
+func (db *DB) runMigrationV7() error {
+	// Step 1: Add closed_at column to items if it doesn't exist
+	exists, err := db.columnExists("items", "closed_at")
+	if err != nil {
+		return fmt.Errorf("failed to check closed_at column: %w", err)
+	}
+	if !exists {
+		if _, err := db.Exec("ALTER TABLE items ADD COLUMN closed_at DATETIME"); err != nil {
+			return fmt.Errorf("failed to add closed_at column: %w", err)
+		}
+	}
+
+	// Step 2: Create partial index on closed_at (idempotent with IF NOT EXISTS)
+	_, err = db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_items_closed_at 
+		ON items(closed_at) WHERE closed_at IS NOT NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create idx_items_closed_at index: %w", err)
+	}
+
+	// Step 3: Backfill closed_at for existing done/canceled items
+	_, err = db.Exec(`
+		UPDATE items 
+		SET closed_at = updated_at 
+		WHERE status IN ('done', 'canceled') AND closed_at IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to backfill closed_at: %w", err)
+	}
+
+	// Step 4: Create history table if it doesn't exist
+	exists, err = db.tableExists("history")
+	if err != nil {
+		return fmt.Errorf("failed to check history table: %w", err)
+	}
+	if !exists {
+		_, err = db.Exec(`
+			CREATE TABLE history (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+				event_type TEXT NOT NULL,
+				actor_id TEXT,
+				actor_type TEXT,
+				changes TEXT,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create history table: %w", err)
+		}
+	}
+
+	// Step 5: Create indexes on history table (idempotent with IF NOT EXISTS)
+	indexes := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "idx_history_item_time",
+			sql:  "CREATE INDEX IF NOT EXISTS idx_history_item_time ON history(item_id, created_at DESC)",
+		},
+		{
+			name: "idx_history_actor_time",
+			sql:  "CREATE INDEX IF NOT EXISTS idx_history_actor_time ON history(actor_id, created_at DESC)",
+		},
+		{
+			name: "idx_history_recent",
+			sql:  "CREATE INDEX IF NOT EXISTS idx_history_recent ON history(created_at DESC)",
+		},
+	}
+
+	for _, idx := range indexes {
+		if _, err := db.Exec(idx.sql); err != nil {
+			return fmt.Errorf("failed to create %s index: %w", idx.name, err)
 		}
 	}
 
