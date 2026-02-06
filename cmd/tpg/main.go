@@ -965,10 +965,6 @@ Examples:
   # Task with metadata
   tpg add "Critical fix" --priority 1 --parent ep-abc123 -l bug
 
-  # Custom type and prefix
-  tpg add "Bug fix" --type bug
-  tpg add "Story" --type story --prefix st
-
   # From template (see 'tpg template list')
   tpg add "Feature X" --template tdd --vars-yaml <<EOF
   feature_name: user authentication
@@ -987,6 +983,11 @@ Examples:
   EOF`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validate --type flag early
+		if err := validateTypeFlag(flagType); err != nil {
+			return err
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1225,12 +1226,14 @@ Examples:
     Updated requirements and context.
     See design doc for details.
   priority: 1
-  EOF
-
-  # Replace with different type/priority
-  tpg replace ts-abc123 "Bug fix" --type bug --priority 1`,
+  EOF`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validate --type flag early
+		if err := validateTypeFlag(flagType); err != nil {
+			return err
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1502,6 +1505,14 @@ func countWords(s string) int {
 	return len(strings.Fields(s))
 }
 
+// validateTypeFlag validates that --type is either "task" or "epic"
+func validateTypeFlag(typeValue string) error {
+	if typeValue != "" && typeValue != "task" && typeValue != "epic" {
+		return fmt.Errorf("--type must be \"task\" or \"epic\"\nUse labels for categorization: tpg add --label <type> \"title\"")
+	}
+	return nil
+}
+
 // generateWorktreeBranch generates a branch name from epic ID and title.
 // Format: <prefix>/<epic-id>-<slug> where slug is lowercase title with non-alnum→hyphens.
 func generateWorktreeBranch(epicID, title, prefix string) string {
@@ -1709,6 +1720,11 @@ Examples:
   tpg list --no-blockers
   tpg list -l bug -l urgent`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validate --type flag early
+		if err := validateTypeFlag(flagListType); err != nil {
+			return err
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err
