@@ -18,12 +18,17 @@ func (db *DB) CreateItem(item *model.Item) error {
 		return fmt.Errorf("invalid status: %s", item.Status)
 	}
 
-	// Check if parent is closed (cannot add child to closed parent)
+	// Check if parent is valid (must be epic and not closed)
 	if item.ParentID != nil && *item.ParentID != "" {
 		var parentStatus model.Status
-		err := db.QueryRow(`SELECT status FROM items WHERE id = ?`, *item.ParentID).Scan(&parentStatus)
+		var parentType string
+		err := db.QueryRow(`SELECT status, type FROM items WHERE id = ?`, *item.ParentID).Scan(&parentStatus, &parentType)
 		if err != nil {
 			return fmt.Errorf("parent not found: %s (use 'tpg list' to see available items)", *item.ParentID)
+		}
+		// Only epics can have children
+		if parentType != string(model.ItemTypeEpic) {
+			return fmt.Errorf("cannot set parent: %s is not an epic (only epics can have children)", *item.ParentID)
 		}
 		if parentStatus == model.StatusDone || parentStatus == model.StatusCanceled {
 			return fmt.Errorf("cannot add child to closed parent %s", *item.ParentID)
@@ -394,6 +399,11 @@ func (db *DB) SetParent(itemID, parentID string) error {
 	err = db.QueryRow(`SELECT type, status FROM items WHERE id = ?`, parentID).Scan(&itemType, &parentStatus)
 	if err != nil {
 		return fmt.Errorf("parent not found: %s (use 'tpg list' to see available items)", parentID)
+	}
+
+	// Only epics can have children
+	if itemType != string(model.ItemTypeEpic) {
+		return fmt.Errorf("cannot set parent: %s is not an epic (only epics can have children)", parentID)
 	}
 
 	// Cannot add child to closed parent

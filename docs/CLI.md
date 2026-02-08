@@ -15,9 +15,12 @@
 | `tpg ready --epic <id>` | Show ready tasks filtered by epic |
 | `tpg stale` | List in_progress tasks with no recent updates (default: 5 min) |
 | `tpg status` | Project overview for agent spin-up |
+| `tpg summary` | Show project health overview |
 | `tpg prime` | Output context for agent hooks |
 | `tpg compact` | Output compaction workflow guidance |
 | `tpg tui` | Launch interactive terminal UI (alias: `tpg ui`) |
+| `tpg closed` | List recently closed tasks (done/canceled) |
+| `tpg history [task-id]` | Show audit history events or run cleanup |
 
 ## Work Commands
 
@@ -26,13 +29,17 @@
 | `tpg start <id> [--resume]` | Set task to in_progress (use `--resume` if already in progress) |
 | `tpg done <id> [message]` | Mark task complete |
 | `tpg cancel <id> [reason]` | Cancel task (close without completing) |
+| `tpg reopen <id> [reason]` | Reopen a closed task, setting it back to open |
 | `tpg block <id> <reason>` | Mark blocked (requires `--force`; prefer dependencies instead) |
 | `tpg log <id> <message>` | Add timestamped log entry |
 | `tpg append <id> <text>` | Append to task description |
 | `tpg desc <id> <text>` | Replace task description |
 | `tpg edit <id>` | Edit description in $TPG_EDITOR (defaults to nvim, nano, vi) |
-| `tpg edit --select <filter>` | Bulk edit: --type, --status, --label, --parent, --project |
+| `tpg edit --select-* <filter>` | Bulk edit: --select-status, --select-type, --select-label, --select-parent, --select-epic |
 | `tpg merge <source> <target>` | Merge duplicate tasks (requires `--yes-i-am-sure`) |
+| `tpg replace <id> <title>` | Replace an existing task/epic with a new one |
+| `tpg impact <id>` | Show what tasks would become ready if this task is completed |
+| `tpg plan <epic-id>` | Show full epic plan with status and dependencies |
 
 ## Organization
 
@@ -44,6 +51,7 @@
 | `tpg dep <id> remove <other>` | Remove dependency between tasks |
 | `tpg graph` | Show dependency graph |
 | `tpg projects` | List all projects |
+| `tpg project <id> <project>` | Set a task's project |
 
 ## Epics
 
@@ -142,6 +150,7 @@ Worktree configuration in `.tpg/config.json`:
 |---------|-------------|
 | `tpg template list` | List available templates |
 | `tpg template show <id>` | Show template details |
+| `tpg template usage <id>` | Show template usage and variables |
 | `tpg template locations` | Show template search paths |
 
 See [TEMPLATES.md](TEMPLATES.md) for template format and authoring.
@@ -151,8 +160,12 @@ See [TEMPLATES.md](TEMPLATES.md) for template format and authoring.
 | Command | Description |
 |---------|-------------|
 | `tpg concepts` | List concepts for a project |
+| `tpg concepts --stats` | Show concept statistics |
+| `tpg concepts --related <task-id>` | Suggest concepts for a task |
 | `tpg context -c <name>` | Retrieve learnings by concept(s) |
 | `tpg context -q <query>` | Full-text search on learnings |
+| `tpg context --summary` | Show one-liner per learning |
+| `tpg context --id <learning-id>` | Load specific learning by ID |
 | `tpg learn <summary>` | Log a new learning |
 | `tpg learn edit <id>` | Edit a learning's summary or detail |
 | `tpg learn stale <id>` | Mark learning as outdated |
@@ -160,32 +173,234 @@ See [TEMPLATES.md](TEMPLATES.md) for template format and authoring.
 
 See [CONTEXT.md](CONTEXT.md) for the full context engine guide.
 
+## Data Management
+
+| Command | Description |
+|---------|-------------|
+| `tpg export` | Export tasks to a single file for LLM consumption |
+| `tpg export --json` | Export as JSON |
+| `tpg export --jsonl` | Export as JSON Lines |
+| `tpg import beads <path>` | Import beads issues into tpg |
+| `tpg backup [path]` | Create a backup of the database |
+| `tpg backups` | List available backups |
+| `tpg restore <path>` | Restore database from a backup |
+| `tpg clean --done` | Remove old done tasks |
+| `tpg clean --canceled` | Remove old canceled tasks |
+| `tpg clean --all` | Remove old done+canceled and vacuum |
+| `tpg clean --vacuum` | Just compact the database |
+| `tpg doctor` | Check and fix data integrity issues |
+| `tpg doctor --dry-run` | Show issues without fixing |
+
+## Configuration
+
+| Command | Description |
+|---------|-------------|
+| `tpg config` | Show all configuration values |
+| `tpg config <key>` | Show specific config value |
+| `tpg config <key> <value>` | Set config value |
+
 ## Flags
 
-| Flag | Commands | Description |
-|------|----------|-------------|
-| `--from-yaml` | all | Read flag values from stdin as YAML (keys use underscores, e.g. `desc: value`) |
-| `--project` | all | Filter/set project scope |
-| `-p, --priority` | add | Priority: 1=high, 2=medium (default), 3=low |
-| `--type <type>` | add | Item type: "task" (default) or "epic" |
-| `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
-| `--parent <id>` | add, list | Set parent item at creation / filter by parent (any type can have children) |
-| `--blocks` | add | Set task this will block at creation |
-| `--worktree` | epic add | Create epic with worktree metadata |
-| `--branch` | epic add, epic worktree | Custom branch name for worktree (default: auto-generated) |
-| `--base` | epic add, epic worktree | Base branch for worktree (default: main) |
-| `--context` | epic add, epic edit, epic replace | Shared context for all descendants (use `-` for stdin) |
-| `--on-close` | epic add, epic edit, epic replace | Instructions shown when epic auto-completes (use `-` for stdin) |
-| `--status` | list | Filter by status |
-| `--epic <id>` | list, ready | Filter by parent epic |
-| `--ids-only` | list | Output just IDs, one per line |
-| `--type` | list | Filter by item type (task or epic) |
-| `--blocking` | list | Show items that block the given ID |
-| `--blocked-by` | list | Show items blocked by the given ID |
-| `--has-blockers` | list | Show only items with unresolved blockers |
-| `--no-blockers` | list | Show only items with no blockers |
-| `--all` | status | Show all ready tasks (default: limit to 10) |
-| `--resume` | start | Resume an already in-progress task |
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--project` | Filter/set project scope |
+| `--verbose, -v` | Show agent context and other debug info |
+| `--from-yaml` | Read flag values from stdin as YAML (keys use underscores, e.g. `desc: value`) |
+
+### add Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-p, --priority` | Priority: 1=high, 2=medium (default), 3=low |
+| `--parent <id>` | Set parent item at creation |
+| `--blocks <id>` | Set task this will block at creation |
+| `--after <id>` | Set task this depends on at creation |
+| `-l, --label` | Attach label at creation (repeatable) |
+| `--template <id>` | Template ID to instantiate |
+| `--var 'name="value"'` | Template variable value |
+| `--vars-yaml` | Read template variables from stdin as YAML |
+| `--desc <text>` | Description (use `-` for stdin) |
+| `--type <type>` | Item type: "task" (default) or "epic" |
+| `--prefix <prefix>` | Custom ID prefix |
+| `--dry-run` | Preview what would be created |
+
+### list Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-a, --all` | Show all items including done and canceled |
+| `--status <status>` | Filter by status (open, in_progress, blocked, done, canceled) |
+| `--parent <id>` | Filter by parent epic ID |
+| `--type <type>` | Filter by item type (task, epic) |
+| `--epic <id>` | Filter to descendants of this epic |
+| `--blocking <id>` | Show items that block the given ID |
+| `--blocked-by <id>` | Show items blocked by the given ID |
+| `--has-blockers` | Show only items with unresolved blockers |
+| `--no-blockers` | Show only items with no blockers |
+| `--ids-only` | Output only IDs, one per line |
+| `-f, --flat` | Show flat list instead of tree view |
+| `-l, --label` | Filter by label (repeatable, AND logic) |
+
+### epic add Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-p, --priority` | Priority: 1=high, 2=medium, 3=low |
+| `--parent <id>` | Parent epic ID |
+| `-l, --label` | Label to attach (repeatable) |
+| `--desc <text>` | Description (use `-` for stdin) |
+| `--prefix <prefix>` | Custom ID prefix |
+| `--context <text>` | Shared context for all descendants (use `-` for stdin) |
+| `--on-close <text>` | Instructions shown when epic auto-completes (use `-` for stdin) |
+| `--worktree` | Create epic with worktree metadata |
+| `--branch <name>` | Custom branch name for worktree |
+| `--base <branch>` | Base branch for worktree (default: main) |
+| `--allow-any-branch` | Allow branch names that do not include the epic ID |
+
+### show Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `--with-children` | Show task and all descendants |
+| `--with-deps` | Show full dependency chain (transitive) |
+| `--with-parent` | Show parent chain up to root |
+| `--format <format>` | Output format (json, yaml, markdown) |
+| `--vars` | Show raw template variables instead of rendered description |
+
+### edit Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `--title <text>` | New title (single item only) |
+| `--priority <n>` | New priority (1=high, 2=medium, 3=low) |
+| `--parent <id>` | New parent epic ID (use `""` to remove) |
+| `--add-label <name>` | Label to add (repeatable) |
+| `--remove-label <name>` | Label to remove (repeatable) |
+| `--desc <text>` | New description (single item only, use `-` for stdin) |
+| `--status <status>` | Force status change (requires `--force`) |
+| `--select-status <status>` | Select items by status |
+| `--select-type <type>` | Select items by type |
+| `--select-label <name>` | Select items by label (repeatable) |
+| `--select-parent <id>` | Select items by parent |
+| `--select-epic <id>` | Select descendants of epic |
+| `--dry-run` | Preview changes without applying |
+| `--force` | Required for --status changes |
+
+### ready Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-l, --label` | Filter by label (repeatable, AND logic) |
+| `--epic <id>` | Show ready tasks for a specific epic |
+
+### status Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `--all` | Show all ready tasks (default: limit to 10) |
+| `-l, --label` | Filter by label (repeatable, AND logic) |
+
+### learn Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-c, --concept` | Concept to tag this learning with (repeatable) |
+| `-f, --file` | Related file (repeatable) |
+| `--detail <text>` | Full context/explanation (use `-` for stdin) |
+
+### context Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-c, --concept` | Concept to retrieve learnings for (repeatable) |
+| `-q, --query` | Full-text search query |
+| `--include-stale` | Include stale learnings in results |
+| `--summary` | Show one-liner per learning (no detail) |
+| `--id <learning-id>` | Load specific learning by ID |
+| `--json` | Output as JSON |
+
+### export Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-o, --output <path>` | Output file path (default: stdout) |
+| `--json` | Output as JSON instead of markdown |
+| `--jsonl` | Output as JSON Lines (one object per line) |
+| `-a, --all` | Include done and canceled tasks |
+| `--status <status>` | Filter by status |
+| `--parent <id>` | Filter by parent epic ID |
+| `--type <type>` | Filter by item type |
+| `--blocking <id>` | Show items that block the given ID |
+| `--blocked-by <id>` | Show items blocked by the given ID |
+| `--has-blockers` | Show only items with unresolved blockers |
+| `--no-blockers` | Show only items with no blockers |
+| `-l, --label` | Filter by label (repeatable, AND logic) |
+
+### clean Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `--done` | Remove done tasks older than N days |
+| `--canceled` | Remove canceled tasks older than N days |
+| `--logs` | Remove orphaned logs |
+| `--vacuum` | Run SQLite VACUUM to compact database |
+| `--all` | Do all cleanup (done + canceled + vacuum) |
+| `--days <n>` | Age threshold in days (default: 30) |
+| `--dry-run` | Show what would be deleted |
+| `--force` | Skip confirmation prompt |
+
+### history Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-n, --limit <n>` | Max number of results (default 50) |
+| `-a, --agent <id>` | Filter by agent ID |
+| `-s, --since <duration>` | Filter by time (e.g., '24h', '7d') |
+| `--event-type <type>` | Filter by event type |
+| `--cleanup` | Run history cleanup |
+| `--dry-run` | With --cleanup, show what would be deleted |
+| `--json` | Output as JSON |
+
+### closed Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-n, --limit <n>` | Maximum number of tasks to show (default: 20) |
+| `-s, --since <duration>` | Show tasks closed since duration (e.g., 24h, 7d). Default: 7d |
+| `--status <status>` | Filter by status (done, canceled) |
+
+### Other Command Flags
+
+| Command | Flag | Description |
+|---------|------|-------------|
+| `start` | `--resume` | Resume an already in-progress task |
+| `done` | `--override` | Allow completion with unmet dependencies |
+| `cancel` | `--force` | Cancel even if tasks depend on this item |
+| `delete` | `--force` | Delete even if tasks depend on this item |
+| `block` | `--force` | Force manual block (prefer dependencies instead) |
+| `stale` | `--threshold <duration>` | Threshold for stale in-progress tasks (default: 5m) |
+| `merge` | `--yes-i-am-sure` | Confirm destructive merge operation |
+| `backup` | `-q, --quiet` | Silent backup (no output) |
+| `impact` | `--json` | Output as JSON |
+| `plan` | `--json` | Output as JSON |
+| `prime` | `--customize` | Create/edit custom prime template |
+| `prime` | `--render <path>` | Render specific template file (for testing) |
+| `onboard` | `--force` | Replace existing Task Tracking section |
+| `doctor` | `--dry-run` | Show issues without fixing |
+| `concepts` | `--recent` | Sort by last updated |
+| `concepts` | `--stats` | Show count and oldest learning age |
+| `concepts` | `--related <task-id>` | Suggest concepts for a task |
+| `concepts <name>` | `--summary <text>` | Set concept summary |
+| `concepts <name>` | `--rename <new-name>` | Rename concept |
+| `labels add` | `--color <hex>` | Label color (e.g. #ff0000) |
+| `learn stale` | `--reason <text>` | Reason for marking as stale |
+| `learn edit` | `--summary <text>` | New summary for the learning |
+| `learn edit` | `--detail <text>` | New detail for the learning (use `-` for stdin) |
+| `epic worktree` | `--branch <name>` | Custom branch name |
+| `epic worktree` | `--base <branch>` | Base branch |
+| `epic worktree` | `--allow-any-branch` | Allow branch names without epic ID |
 
 ## ID Format
 
@@ -327,6 +542,8 @@ tpg stale --threshold 10m  # Custom threshold
 |----------|-------------|
 | `TPG_DB` | Override default database location |
 | `TPG_EDITOR` | Editor for `tpg edit` command (defaults to nvim, nano, vi) |
+| `AGENT_ID` | Current agent ID (set by OpenCode plugin) |
+| `AGENT_TYPE` | Agent type (set by OpenCode plugin) |
 
 ## Data Model
 
@@ -340,5 +557,6 @@ tpg stale --threshold 10m  # Custom threshold
 - **Projects**: String tag to scope work (e.g., "gaia", "myapp")
 - **Concepts**: Knowledge categories within a project (e.g., "auth", "database")
 - **Learnings**: Specific insights tagged with concepts, with summary and detail
+- **History**: Audit trail of all changes to items
 
 Database location: `.tpg/tpg.db` (in current directory, or override with `TPG_DB`).

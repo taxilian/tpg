@@ -49,11 +49,32 @@ Each phase filters, so agents only load what's actually relevant.
 
 ## Commands
 
+### Concepts
+
 | Command | Description |
 |---------|-------------|
 | `tpg concepts` | List concepts for a project |
+| `tpg concepts --recent` | Sort by last updated instead of learning count |
+| `tpg concepts --stats` | Show statistics (count and oldest learning age) |
+| `tpg concepts --related <task-id>` | Suggest concepts for a task |
+| `tpg concepts <name> --summary <text>` | Update a concept's summary |
+| `tpg concepts <name> --rename <new-name>` | Rename a concept |
+
+### Context Retrieval
+
+| Command | Description |
+|---------|-------------|
 | `tpg context -c <name>` | Retrieve learnings by concept(s) |
 | `tpg context -q <query>` | Full-text search on learnings |
+| `tpg context --summary` | Show one-liner per learning (no detail) |
+| `tpg context --id <learning-id>` | Load specific learning by ID |
+| `tpg context --include-stale` | Include stale learnings in results |
+| `tpg context --json` | Output as JSON |
+
+### Learning Management
+
+| Command | Description |
+|---------|-------------|
 | `tpg learn <summary>` | Log a new learning |
 | `tpg learn edit <id>` | Edit a learning's summary or detail |
 | `tpg learn stale <id>` | Mark learning as outdated |
@@ -76,6 +97,12 @@ tpg context -q "race condition" -p myproject
 
 # Include stale learnings for historical context
 tpg context -c auth --include-stale -p myproject
+
+# Get concept statistics
+tpg concepts -p myproject --stats
+
+# Suggest concepts for a task
+tpg concepts --related ts-abc123 -p myproject
 ```
 
 ## Logging Learnings
@@ -95,6 +122,11 @@ tpg learn "Config loads from env first, then file" -c config -p myproject -f con
 
 # With full detail
 tpg learn "summary" -c concept -p myproject --detail "full explanation..."
+
+# Multi-line detail via stdin
+tpg learn "summary" -c concept -p myproject --detail - <<EOF
+Full explanation with multiple lines...
+EOF
 ```
 
 **Good learnings:**

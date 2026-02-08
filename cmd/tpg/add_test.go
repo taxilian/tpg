@@ -263,21 +263,13 @@ func TestAddCmd_ParentFlag_NonEpicParent(t *testing.T) {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
-	// Non-epics can now be parents (arbitrary hierarchies allowed)
+	// Only epics can be parents - should fail
 	err := database.SetParent(task.ID, notEpic.ID)
-	if err != nil {
-		t.Errorf("unexpected error when setting non-epic as parent: %v", err)
+	if err == nil {
+		t.Error("expected error when setting non-epic as parent")
 	}
-
-	// Verify the parent was set
-	got, err := database.GetItem(task.ID)
-	if err != nil {
-		t.Fatalf("failed to get task: %v", err)
-	}
-	if got.ParentID == nil {
-		t.Error("expected parent to be set")
-	} else if *got.ParentID != notEpic.ID {
-		t.Errorf("parent = %q, want %q", *got.ParentID, notEpic.ID)
+	if err != nil && !strings.Contains(err.Error(), "not an epic") {
+		t.Errorf("expected 'not an epic' error, got: %v", err)
 	}
 }
 

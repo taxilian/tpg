@@ -192,8 +192,8 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 		}
 	}
 
-	// Multi-step templates always create a parent epic
-	if len(tmpl.Steps) > 1 {
+	// Templates with steps must create an epic parent (only epics can have children)
+	if len(tmpl.Steps) > 0 {
 		parentType = model.ItemTypeEpic
 	}
 

@@ -127,7 +127,7 @@ export const TpgPlugin: Plugin = async ({ $, directory, client, project, worktre
     "tool.execute.before": async (input, output) => {
       if (input.tool !== "bash") return
 
-      const cmd = output.args?.command
+      let cmd = output.args?.command
       if (typeof cmd !== "string") return
 
       // Only modify tpg commands
@@ -135,6 +135,10 @@ export const TpgPlugin: Plugin = async ({ $, directory, client, project, worktre
 
       const sessionID = input.sessionID
       const agentType = await getAgentType(sessionID)
+
+      // Remove any existing AGENT_ID/AGENT_TYPE declarations to prevent duplicates
+      // Matches patterns like: AGENT_ID="..." AGENT_TYPE="..." 
+      cmd = cmd.replace(/(?:AGENT_ID="[^"]*"\s+AGENT_TYPE="[^"]*"\s*)+/g, "")
 
       output.args.command = `AGENT_ID="${sessionID}" AGENT_TYPE="${agentType}" ${cmd}`
     },

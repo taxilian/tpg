@@ -4,80 +4,90 @@ description: Review tpg plan against the actual codebase for correctness
 
 # Review TPG Plan
 
-You are not going to implement this plan. Someone else will — a competent developer picking up tasks cold with no context beyond what's in tpg and the codebase. Your job is to make sure the plan is *correct* so they can succeed.
+Validate that the tpg plan matches reality so implementers can succeed.
 
-Do NOT review the plan against itself. Review it against the actual codebase. Start by exploring the code to understand what actually exists, then check whether the plan reflects reality.
+You are not implementing the plan. Someone else will — a competent developer picking up tasks cold with no context beyond what's in tpg and the codebase. Your job is to make sure the plan is *correct*.
 
-## Start with the codebase
+## What You're Doing
 
-Before looking at any task, use an explore agent to understand the actual state of things: project structure, existing functions, current command implementations, schema version, config shape, etc. This is the foundation — everything else is checking the plan against what you learned here.
+1. **Exploring the codebase** to understand actual state
+2. **Reading the plan** using tpg discovery commands
+3. **Validating** that tasks reflect reality
+4. **Fixing** incorrect dependencies, assumptions, or structure
+5. **Reporting** what was found and changed
 
-## What to check
+## What to Check
 
-### 1. Dependencies reflect actual needs
-For each task, think about what it *actually needs* before it can start. Does it depend on schema changes, new packages, config additions, or code that another task creates? That's a real dependency — enforce it with `tpg dep`.
+### Dependencies reflect actual needs
+For each task, determine what it *actually needs* before it can start. Does it depend on schema changes, new packages, config additions, or code that another task creates? That's a real dependency.
 
-Don't look at dependency lists in descriptions. Look at what the task needs to do and work backwards to what must exist first:
-- **False blockers** — tasks blocked by something they don't actually need. This directly kills parallelism and is the most common plan bug.
-- **Missing blockers** — tasks that could start before a real prerequisite is done, leading to failures or rework.
+- **False blockers** — tasks blocked by something they don't actually need
+- **Missing blockers** — tasks missing real prerequisites
 
-### 2. Assumptions match reality
-Does any task assume something about the codebase that isn't true? Common traps:
+### Assumptions match reality
 - "Extend X which currently supports Y" when X actually only does Z
 - Creating something that already exists under a different name
-- Referencing commands, flags, or functions that don't exist yet and aren't created by a predecessor task
+- Referencing commands, flags, or functions that don't exist yet
 
-### 3. Existing code that would be duplicated
-If there's already a function, pattern, or module that overlaps with what a task needs to build, the task should mention it. The developer doesn't need hand-holding — but they shouldn't have to accidentally discover that the work is half done already.
+### Existing code that would be duplicated
+If there's already a function, pattern, or module that overlaps with what a task needs to build, the task should mention it.
 
-### 4. Design coverage
-If there's a design doc, cross-reference it against the task list. Look for specified features that have no corresponding task.
+### Design coverage
+Cross-reference design docs against the task list. Are all specified features covered?
 
-### 5. Tasks describe problems, not solutions
-A task should describe: what problem needs to be solved, why it matters, what constraints exist (from project decisions or integration contracts), and what "done" looks like. The developer decides *how* to solve it.
+### Tasks describe problems, not solutions
+A task should describe: what problem needs to be solved, why it matters, what constraints exist, and what "done" looks like. The developer decides *how* to solve it.
 
-If a task dictates implementation details — function names, algorithms, internal structure, step-by-step instructions — strip that out unless there's a concrete project-level reason it must be done a specific way. When fixing tasks during this review, resist the urge to add more detail. Simplify.
+If a task dictates implementation details — function names, algorithms, internal structure — strip that out unless there's a concrete project-level reason it must be done a specific way.
 
-### 6. Epic structure and context
+### Epic structure and context
 
-Epics group related work and auto-complete when all children are done. Check each epic for:
+**Shared context** (`--context`): If child tasks need common guidelines, move repeated info to the epic's shared context.
 
-**Creation**: Epics should be created with `tpg epic add`, not `tpg add -e` (old syntax).
+**Closing instructions** (`--on-close`): Epics should have on-close instructions for cleanup (update changelog, merge PR, clean up worktree, etc.).
 
-**Shared context** (`--context`): If child tasks need common guidelines, patterns, or API docs, the epic should have shared context set. Check with `tpg show <epic-id>` — look for a "Shared Context:" section. If children keep repeating the same background info, that belongs in the epic's context instead.
+**Worktree integration**: For epics with worktrees, verify:
+- Worktree metadata is set
+- On-close includes merge/cleanup instructions
+- Tasks are properly scoped to the worktree branch
 
-**Closing instructions** (`--on-close`): Epics should have on-close instructions for cleanup — what to do when all children complete (update changelog, merge PR, clean up worktree, etc.). Particularly important for worktree epics.
+**Auto-complete behavior**: Epics complete automatically. Delete any tasks like "Complete the epic" or "Mark epic done."
 
-**Worktree integration**: For epics with dedicated worktrees:
-- Is worktree metadata set? (`tpg epic worktree <id>`)
-- Does on-close include merge and cleanup instructions?
-- Are tasks properly scoped to the worktree branch?
+## Common Review Mistakes
 
-**Auto-complete behavior**: Epics complete automatically when all children complete. If you see a task like "Complete the epic" or "Mark epic done" — delete it. It's unnecessary and creates confusion.
+- **Reviewing the plan only against itself** instead of the codebase
+- **Assuming the name/summary is enough** without reading full task descriptions
+- **Adding too much detail** when fixing tasks — over-constrains implementers
+- **Comparing deps to description text** instead of actual needs
+- **Not considering templates** — repeated patterns should use templates
 
-## Common reviewer mistakes
+## Process Overview
 
-- **Reviewing the plan only against itself** instead of against the codebase. If you haven't explored the actual code, you haven't reviewed anything.
-- **Assuming that the name / summary is all you need to see** instead of doing a full `tpg show`
-- **Adding too much detail when "fixing" tasks.** The instinct is to make descriptions more thorough by adding line numbers, function signatures, and step-by-step guides. This makes things worse — it over-constrains the implementer and creates more things that can be wrong. Fix by simplifying. You aren't doing the job, you're just making sure the implementer will have the knowledge needed to do the job.
-- **Comparing deps to description text** instead of to actual needs. Descriptions may list deps, may not, may be wrong. Ignore them. Think about what the task needs.
-- **Not considering tpg templates** If there are a lot of tasks which follow the same pattern then they should be using a template; if there isn't an appropriate template, add one and then update the tasks to use it. Make sure the template variables encourage / enforce good practices. Remember: planners are sometimes lazy and don't remember to use the templates, part of your job is to catch that and fix it if it happens, as well as identifying new patterns that can be made into good templates.
+1. **Explore codebase** (FIRST - use @explore-code)
+2. **Get plan structure** using tpg commands (see skill for details)
+3. **Review each epic/task** against codebase
+4. **Fix problems** using tpg editing commands
+5. **Verify and report**
 
-## Process
+## How to Execute
 
-1. Explore the actual codebase thoroughly (use an explore agent — do this FIRST)
-2. Get the lay of the land:
-   - `tpg list` — see all epics and their task counts (tree view by default, use `--flat` for flat list)
-   - Identify which epics have open work that needs review
-3. For each epic with open work:
-   - `tpg plan <epic-id>` — tree structure, progress, blockers
-   - `tpg export --parent <epic-id>` — full task descriptions and deps
-   - For each task: read it, think about what it needs, check deps, check assumptions
-4. Fix problems: `tpg dep` for dependencies, `tpg desc` for descriptions, `tpg add` for missing tasks
-5. Verify the final state and report what was found and changed
+Load the `tpg-review` skill for detailed guidance on:
+- Which tpg commands to use for discovery
+- How to restructure plans (split tasks into epics)
+- Command syntax and workflows
+- Best practices for plan modification
 
-## Special concerns
+## Arguments
 
 $ARGUMENTS
 
-If arguments are provided, pay extra attention to those areas. Otherwise, do a general review.
+If arguments are provided, focus the review on those areas. Otherwise, perform a general review of all open work.
+
+## Expected Output
+
+Report what you found and what you changed:
+- Dependencies added/removed
+- Tasks restructured into epics
+- Descriptions updated
+- Templates identified/applied
+- Issues that couldn't be fixed (and why)

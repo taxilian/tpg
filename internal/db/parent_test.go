@@ -11,12 +11,12 @@ import (
 func TestCannotAddChildToClosedParent(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent and mark it done
+	// Create an epic parent and mark it done (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusDone,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -39,7 +39,7 @@ func TestCannotAddChildToClosedParent(t *testing.T) {
 		t.Fatalf("failed to create child: %v", err)
 	}
 
-	// Try to set parent to the done item - should fail
+	// Try to set parent to the done epic - should fail
 	err := db.SetParent(child.ID, parent.ID)
 	if err == nil {
 		t.Error("expected error when setting parent to closed item")
@@ -52,12 +52,12 @@ func TestCannotAddChildToClosedParent(t *testing.T) {
 func TestCannotAddChildToClosedParent_Canceled(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent and mark it canceled
+	// Create an epic parent and mark it canceled (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusCanceled,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -80,7 +80,7 @@ func TestCannotAddChildToClosedParent_Canceled(t *testing.T) {
 		t.Fatalf("failed to create child: %v", err)
 	}
 
-	// Try to set parent to the canceled item - should fail
+	// Try to set parent to the canceled epic - should fail
 	err := db.SetParent(child.ID, parent.ID)
 	if err == nil {
 		t.Error("expected error when setting parent to canceled item")
@@ -93,12 +93,12 @@ func TestCannotAddChildToClosedParent_Canceled(t *testing.T) {
 func TestCannotAddChildToClosedParent_CreateItem(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent and mark it done
+	// Create an epic parent and mark it done (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusDone,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -130,12 +130,12 @@ func TestCannotAddChildToClosedParent_CreateItem(t *testing.T) {
 func TestCannotCloseParentWithOpenChildren(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent
+	// Create an epic parent (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusOpen,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -175,12 +175,12 @@ func TestCannotCloseParentWithOpenChildren(t *testing.T) {
 func TestCannotCloseParentWithOpenChildren_Canceled(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent
+	// Create an epic parent (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusOpen,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -217,12 +217,12 @@ func TestCannotCloseParentWithOpenChildren_Canceled(t *testing.T) {
 func TestCannotCloseParentWithOpenChildren_CompleteItem(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent
+	// Create an epic parent (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusInProgress,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -259,12 +259,12 @@ func TestCannotCloseParentWithOpenChildren_CompleteItem(t *testing.T) {
 func TestCanCloseParentWhenChildrenDone(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent
+	// Create an epic parent (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusOpen,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -304,12 +304,12 @@ func TestCanCloseParentWhenChildrenDone(t *testing.T) {
 func TestCanCloseParentWhenChildrenCanceled(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create a parent
+	// Create an epic parent (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusOpen,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -343,12 +343,12 @@ func TestCanCloseParentWhenChildrenCanceled(t *testing.T) {
 func TestCanAddChildToOpenParent(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create an open parent
+	// Create an open epic parent (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusOpen,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -389,12 +389,12 @@ func TestCanAddChildToOpenParent(t *testing.T) {
 func TestCanAddChildToInProgressParent(t *testing.T) {
 	db := setupTestDB(t)
 
-	// Create an in_progress parent
+	// Create an in_progress epic parent (only epics can have children)
 	parent := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
+		ID:        model.GenerateID(model.ItemTypeEpic),
 		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Parent Task",
+		Type:      model.ItemTypeEpic,
+		Title:     "Parent Epic",
 		Status:    model.StatusInProgress,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),

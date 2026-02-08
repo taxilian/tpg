@@ -329,21 +329,21 @@ func TestSetParent_NonEpicParent(t *testing.T) {
 		t.Fatalf("failed to create task2: %v", err)
 	}
 
-	// Non-epics can now be parents (arbitrary hierarchies allowed)
+	// Only epics can be parents - tasks cannot have children
 	err := db.SetParent(task2.ID, task1.ID)
-	if err != nil {
-		t.Errorf("unexpected error when setting non-epic as parent: %v", err)
+	if err == nil {
+		t.Error("expected error when setting non-epic as parent, got nil")
+	} else if !strings.Contains(err.Error(), "epic") {
+		t.Errorf("expected error mentioning 'epic', got: %v", err)
 	}
 
-	// Verify the parent was set
+	// Verify the parent was NOT set
 	got, err := db.GetItem(task2.ID)
 	if err != nil {
 		t.Fatalf("failed to get task2: %v", err)
 	}
-	if got.ParentID == nil {
-		t.Error("expected parent to be set")
-	} else if *got.ParentID != task1.ID {
-		t.Errorf("parent = %q, want %q", *got.ParentID, task1.ID)
+	if got.ParentID != nil {
+		t.Errorf("expected parent to NOT be set, got: %v", *got.ParentID)
 	}
 }
 

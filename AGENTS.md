@@ -94,6 +94,13 @@ Agent definitions are in `.opencode/agent/`:
 - **tpg-agent** - Execute individual tpg tasks (subagent)
 - **explore-code** - Explore codebase via code connections (subagent)
 
+**OpenCode Plugin:**
+The TPG OpenCode plugin (`internal/plugin/opencode.ts`) automatically injects `AGENT_ID` and `AGENT_TYPE` environment variables into all `tpg` bash commands. This enables proper agent tracking and attribution. The plugin:
+- Injects env vars before tpg command execution
+- Removes any duplicates if agents mistakenly include them
+- Determines agent type (primary/subagent) from session parentID
+- Provides subagent inspection tools (metadata, messages, errors, work summary)
+
 **When to use:**
 - New feature/product → spec-designer → tpg-implementation-planner → tpg-planner
 - Start implementation → tpg-orchestrator
