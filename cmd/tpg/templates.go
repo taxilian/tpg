@@ -192,11 +192,82 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 		}
 	}
 
-	// Templates with steps must create an epic parent (only epics can have children)
-	if len(tmpl.Steps) > 0 {
-		parentType = model.ItemTypeEpic
+	// Single-step template: create just a task
+	if len(tmpl.Steps) == 1 {
+		step := tmpl.Steps[0]
+		renderedStep := templates.RenderStep(step, vars)
+
+		// Use step title if provided, otherwise use template title
+		itemTitle := renderedStep.Title
+		if itemTitle == "" {
+			itemTitle = title
+		}
+
+		itemID, err := database.GenerateItemID(model.ItemTypeTask)
+		if err != nil {
+			return "", err
+		}
+
+		now := time.Now()
+		stepIndex := 0
+		item := &model.Item{
+			ID:           itemID,
+			Project:      project,
+			Type:         model.ItemTypeTask,
+			Title:        sanitizeTitle(itemTitle),
+			Description:  renderedStep.Description,
+			Status:       model.StatusOpen,
+			Priority:     priority,
+			TemplateID:   tmpl.ID,
+			StepIndex:    &stepIndex,
+			TemplateVars: vars,
+			TemplateHash: tmpl.Hash,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+
+		if err := database.CreateItem(item); err != nil {
+			return "", err
+		}
+
+		printTemplateResult(templateResult{ParentID: itemID, IsEpic: false})
+		return itemID, nil
 	}
 
+	// Zero-step template: create just a task (no steps to render)
+	if len(tmpl.Steps) == 0 {
+		itemID, err := database.GenerateItemID(model.ItemTypeTask)
+		if err != nil {
+			return "", err
+		}
+
+		now := time.Now()
+		item := &model.Item{
+			ID:           itemID,
+			Project:      project,
+			Type:         model.ItemTypeTask,
+			Title:        title,
+			Status:       model.StatusOpen,
+			Priority:     priority,
+			TemplateID:   tmpl.ID,
+			TemplateVars: vars,
+			TemplateHash: tmpl.Hash,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+
+		if err := database.CreateItem(item); err != nil {
+			return "", err
+		}
+
+		printTemplateResult(templateResult{ParentID: itemID, IsEpic: false})
+		return itemID, nil
+	}
+
+	// Multi-step template: create epic with children
+	parentType = model.ItemTypeEpic
+
+	// ... rest of multi-step logic continues ...
 	parentID, err := database.GenerateItemID(parentType)
 	if err != nil {
 		return "", err
@@ -232,19 +303,21 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 
 	now := time.Now()
 	parent := &model.Item{
-		ID:             parentID,
-		Project:        project,
-		Type:           parentType,
-		Title:          title,
-		Status:         model.StatusOpen,
-		Priority:       priority,
-		TemplateID:     tmpl.ID,
-		TemplateVars:   vars,
-		TemplateHash:   tmpl.Hash,
-		WorktreeBranch: worktreeBranch,
-		WorktreeBase:   worktreeBase,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                  parentID,
+		Project:             project,
+		Type:                parentType,
+		Title:               title,
+		Status:              model.StatusOpen,
+		Priority:            priority,
+		TemplateID:          tmpl.ID,
+		TemplateVars:        vars,
+		TemplateHash:        tmpl.Hash,
+		WorktreeBranch:      worktreeBranch,
+		WorktreeBase:        worktreeBase,
+		SharedContext:       templates.RenderText(tmpl.Context, vars),
+		ClosingInstructions: templates.RenderText(tmpl.OnClose, vars),
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	if err := database.CreateItem(parent); err != nil {
 		return "", err
@@ -314,7 +387,38 @@ func instantiateTemplate(database *db.DB, project, title, templateID string, var
 		fmt.Printf("    cd .worktrees/%s\n", parentID)
 	}
 
+	// Print what was created
+	printTemplateResult(templateResult{
+		ParentID: parentID,
+		ChildIDs: childIDs,
+		IsEpic:   parentType == model.ItemTypeEpic,
+	})
+
 	return parentID, nil
+}
+
+// templateResult holds the result of instantiating a template
+type templateResult struct {
+	ParentID string   // The main item/epic ID
+	ChildIDs []string // Child task IDs (if multi-step)
+	IsEpic   bool     // Whether parent is an epic
+}
+
+// printTemplateResult outputs what was created
+func printTemplateResult(r templateResult) {
+	if r.IsEpic && len(r.ChildIDs) > 0 {
+		fmt.Printf("Created epic %s with children: %s\n", r.ParentID, strings.Join(r.ChildIDs, ", "))
+	} else {
+		fmt.Printf("Created task %s\n", r.ParentID)
+	}
+}
+
+// String returns a formatted string describing what was created
+func (r templateResult) String() string {
+	if r.IsEpic && len(r.ChildIDs) > 0 {
+		return fmt.Sprintf("Created epic %s with children: %s", r.ParentID, strings.Join(r.ChildIDs, ", "))
+	}
+	return fmt.Sprintf("Created task %s", r.ParentID)
 }
 
 func sanitizeTitle(title string) string {

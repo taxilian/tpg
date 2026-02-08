@@ -127,6 +127,75 @@ tpg dep <id> list
 - **Templates**: Repeated patterns use templates
 - **Task scope**: Describes problem/constraints, not step-by-step solutions
 
+### 🚩 Red Flag: No Templates Used
+
+**A plan where no templates are used is a strong indicator of problems.**
+
+Templates exist to ensure consistency and capture best practices. If you're reviewing a plan with:
+- Multiple similar tasks (CRUD operations, API endpoints, UI components) all created ad-hoc
+- No `--template` flags anywhere
+- Repeated patterns but no template application
+
+**This is an antipattern.** The planner likely:
+- Forgot to check `tpg template list` first
+- Didn't know templates existed
+- Created tasks manually that should use templates
+
+**Action required:** Convert ad-hoc tasks to template-based tasks.
+
+### Converting Ad-Hoc Tasks to Template-Based
+
+When you find tasks that should use templates:
+
+**Step 1: Check available templates**
+```bash
+tpg template list
+tpg template show <template-id>
+```
+
+**Step 2: Replace the ad-hoc task with a template-based one**
+
+Use `tpg replace` to swap the task while preserving ID references:
+
+```bash
+# Replace ad-hoc task with template-based task
+tpg replace <task-id> "<title>" \
+  --template <template-id> \
+  --vars-yaml <<EOF
+variable1: "value1"
+variable2: "value2"
+EOF
+```
+
+**Example:**
+```bash
+# Found an ad-hoc "Orders CRUD" task that should use crud-module template
+tpg replace ts-abc123 "Orders CRUD" \
+  --template crud-module \
+  --vars-yaml <<EOF
+entity: "Order"
+table: "orders"
+context: |
+  CRUD operations for Order entity
+EOF
+```
+
+**Important:** `tpg replace` preserves:
+- The original ID (ts-abc123 stays ts-abc123)
+- All dependencies
+- Parent/child relationships
+- Status and priority
+
+**When to convert:**
+- ✅ Task follows a clear pattern (CRUD, API endpoint, component)
+- ✅ Template exists that fits the work
+- ✅ Multiple similar tasks exist without templates
+
+**When NOT to convert:**
+- ❌ Task is truly unique (no pattern)
+- ❌ No appropriate template exists
+- ❌ Task is already in progress (wait until done, then capture template for next time)
+
 ## Commands Reference
 
 ```bash

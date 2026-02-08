@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
 	"github.com/taxilian/tpg/internal/templates"
 )
@@ -1453,6 +1455,141 @@ func TestRenderText_PartialFailureInTemplate(t *testing.T) {
 	}
 	if strings.Contains(result, "{{.name") {
 		t.Errorf("name should be slugified, got: %q", result)
+	}
+}
+
+func TestInstantiateTemplate_ContextAndOnClose(t *testing.T) {
+	// Test: Multi-step templates should populate SharedContext and ClosingInstructions
+	// from template.Context and template.OnClose fields
+
+	// Create a temporary directory structure
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	templatesDir := filepath.Join(tmpDir, ".tpg", "templates")
+
+	// Create templates directory
+	if err := os.MkdirAll(templatesDir, 0755); err != nil {
+		t.Fatalf("failed to create templates dir: %v", err)
+	}
+
+	// Write the test template to file
+	templateContent := `title: "Context Test Template"
+description: "Test template with context and on_close"
+
+context: |
+  ## Feature: {{.feature_name}}
+
+  **Objective:** {{.objective}}
+  **Priority:** {{.priority}}
+
+on_close: |
+  ## Before Closing
+
+  - [ ] All tests passing for {{.feature_name}}
+  - [ ] Documentation updated
+  - [ ] Code reviewed
+
+variables:
+  feature_name:
+    description: "Feature name"
+  objective:
+    description: "What to achieve"
+  priority:
+    description: "Priority level"
+    default: "medium"
+
+steps:
+  - id: step1
+    title: "First Step"
+    description: "Do the first thing"
+  - id: step2
+    title: "Second Step"
+    description: "Do the second thing"
+`
+	templatePath := filepath.Join(templatesDir, "context-test.yaml")
+	if err := os.WriteFile(templatePath, []byte(templateContent), 0644); err != nil {
+		t.Fatalf("failed to write template file: %v", err)
+	}
+
+	// Change to the temp directory so template loading works
+	originalWd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(originalWd)
+
+	// Initialize database
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer database.Close()
+	if err := database.Init(); err != nil {
+		t.Fatalf("failed to init database: %v", err)
+	}
+
+	// Test variables
+	vars := []string{
+		`feature_name="Test Feature"`,
+		`objective="Build something great"`,
+		`priority="high"`,
+	}
+
+	// Instantiate the template
+	parentID, err := instantiateTemplate(database, "", "Test Epic", "context-test", vars, 2, model.ItemTypeEpic)
+	if err != nil {
+		t.Fatalf("instantiateTemplate failed: %v", err)
+	}
+
+	// Retrieve the created epic
+	epic, err := database.GetItem(parentID)
+	if err != nil {
+		t.Fatalf("failed to get epic: %v", err)
+	}
+
+	// Verify SharedContext was populated and variables substituted
+	if epic.SharedContext == "" {
+		t.Errorf("expected SharedContext to be populated, got empty string")
+	}
+	if !strings.Contains(epic.SharedContext, "Test Feature") {
+		t.Errorf("expected SharedContext to contain substituted 'Test Feature', got: %q", epic.SharedContext)
+	}
+	if !strings.Contains(epic.SharedContext, "Build something great") {
+		t.Errorf("expected SharedContext to contain substituted objective, got: %q", epic.SharedContext)
+	}
+	if !strings.Contains(epic.SharedContext, "high") {
+		t.Errorf("expected SharedContext to contain substituted priority, got: %q", epic.SharedContext)
+	}
+	// Should NOT contain raw template syntax
+	if strings.Contains(epic.SharedContext, "{{.") {
+		t.Errorf("SharedContext should not contain raw template syntax, got: %q", epic.SharedContext)
+	}
+
+	// Verify ClosingInstructions was populated and variables substituted
+	if epic.ClosingInstructions == "" {
+		t.Errorf("expected ClosingInstructions to be populated, got empty string")
+	}
+	if !strings.Contains(epic.ClosingInstructions, "Test Feature") {
+		t.Errorf("expected ClosingInstructions to contain substituted 'Test Feature', got: %q", epic.ClosingInstructions)
+	}
+	if !strings.Contains(epic.ClosingInstructions, "All tests passing") {
+		t.Errorf("expected ClosingInstructions to contain checklist item, got: %q", epic.ClosingInstructions)
+	}
+	// Should NOT contain raw template syntax
+	if strings.Contains(epic.ClosingInstructions, "{{.") {
+		t.Errorf("ClosingInstructions should not contain raw template syntax, got: %q", epic.ClosingInstructions)
+	}
+
+	// Verify it's an epic
+	if epic.Type != model.ItemTypeEpic {
+		t.Errorf("expected type to be epic, got: %s", epic.Type)
+	}
+
+	// Verify children were created
+	children, err := database.GetChildren(parentID)
+	if err != nil {
+		t.Fatalf("failed to get children: %v", err)
+	}
+	if len(children) != 2 {
+		t.Errorf("expected 2 children, got: %d", len(children))
 	}
 }
 

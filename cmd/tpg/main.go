@@ -6261,6 +6261,265 @@ func init() {
 	templateCmd.AddCommand(templateUsageCmd)
 	templateCmd.AddCommand(templateLocationsCmd)
 	rootCmd.AddCommand(templateCmd)
+
+	// Add completion functions for dynamic autocompletion
+	addCompletionFunctions()
+}
+
+// addCompletionFunctions sets up shell autocompletion for IDs, flags, and options
+func addCompletionFunctions() {
+	// Completion for commands that take item IDs as first argument
+	itemIDCompletion := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completeItemIDs(toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// Completion for commands that take epic IDs as first argument
+	epicIDCompletion := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completeEpicIDs(toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// Completion for task IDs (non-epics)
+	taskIDCompletion := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completeTaskIDs(toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// Completion for label names
+	labelCompletion := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completeLabels(toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// Completion for projects
+	projectCompletion := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completeProjects(toComplete), cobra.ShellCompDirectiveNoFileComp
+	}
+
+	// Apply completions to commands
+	// Commands that accept any item ID
+	showCmd.ValidArgsFunction = itemIDCompletion
+	descCmd.ValidArgsFunction = itemIDCompletion
+	appendCmd.ValidArgsFunction = itemIDCompletion
+	editCmd.ValidArgsFunction = itemIDCompletion
+	logCmd.ValidArgsFunction = itemIDCompletion
+	doneCmd.ValidArgsFunction = itemIDCompletion
+	cancelCmd.ValidArgsFunction = itemIDCompletion
+	blockCmd.ValidArgsFunction = itemIDCompletion
+	startCmd.ValidArgsFunction = itemIDCompletion
+	deleteCmd.ValidArgsFunction = itemIDCompletion
+	historyCmd.ValidArgsFunction = itemIDCompletion
+	depCmd.ValidArgsFunction = itemIDCompletion
+	impactCmd.ValidArgsFunction = itemIDCompletion
+	replaceCmd.ValidArgsFunction = itemIDCompletion
+	planCmd.ValidArgsFunction = epicIDCompletion
+
+	// Commands that need two item IDs
+	mergeCmd.ValidArgsFunction = itemIDCompletion
+
+	// Epic-specific commands
+	epicEditCmd.ValidArgsFunction = epicIDCompletion
+	epicListCmd.ValidArgsFunction = epicIDCompletion
+	epicReplaceCmd.ValidArgsFunction = taskIDCompletion // Can replace tasks
+	epicWorktreeCmd.ValidArgsFunction = epicIDCompletion
+	epicFinishCmd.ValidArgsFunction = epicIDCompletion
+
+	// Flag completions
+	addCmd.RegisterFlagCompletionFunc("parent", epicIDCompletion)
+	addCmd.RegisterFlagCompletionFunc("blocks", itemIDCompletion)
+	addCmd.RegisterFlagCompletionFunc("after", itemIDCompletion)
+	addCmd.RegisterFlagCompletionFunc("label", labelCompletion)
+	addCmd.RegisterFlagCompletionFunc("project", projectCompletion)
+
+	listCmd.RegisterFlagCompletionFunc("parent", epicIDCompletion)
+	listCmd.RegisterFlagCompletionFunc("epic", epicIDCompletion)
+	listCmd.RegisterFlagCompletionFunc("label", labelCompletion)
+	listCmd.RegisterFlagCompletionFunc("status", completeStatusValues)
+	listCmd.RegisterFlagCompletionFunc("type", completeTypeValues)
+
+	readyCmd.RegisterFlagCompletionFunc("epic", epicIDCompletion)
+	readyCmd.RegisterFlagCompletionFunc("label", labelCompletion)
+
+	depCmd.RegisterFlagCompletionFunc("blocks", itemIDCompletion)
+	depCmd.RegisterFlagCompletionFunc("after", itemIDCompletion)
+
+	editCmd.RegisterFlagCompletionFunc("parent", epicIDCompletion)
+
+	exportCmd.RegisterFlagCompletionFunc("parent", epicIDCompletion)
+
+	closedCmd.RegisterFlagCompletionFunc("status", completeClosedStatusValues)
+
+	// Template completions
+	addCmd.RegisterFlagCompletionFunc("template", completeTemplates)
+
+	// Epic flag completions
+	epicAddCmd.RegisterFlagCompletionFunc("parent", epicIDCompletion)
+	epicAddCmd.RegisterFlagCompletionFunc("label", labelCompletion)
+	epicEditCmd.RegisterFlagCompletionFunc("label", labelCompletion)
+	epicReplaceCmd.RegisterFlagCompletionFunc("label", labelCompletion)
+}
+
+// completeItemIDs returns item IDs matching the prefix
+func completeItemIDs(prefix string) []string {
+	database, err := openDB()
+	if err != nil {
+		return nil
+	}
+	defer database.Close()
+
+	project, _ := resolveProject()
+	items, err := database.ListItemsFiltered(db.ListFilter{Project: project})
+	if err != nil {
+		return nil
+	}
+
+	var ids []string
+	for _, item := range items {
+		if strings.HasPrefix(item.ID, prefix) {
+			ids = append(ids, fmt.Sprintf("%s\t%s", item.ID, item.Title))
+		}
+	}
+	return ids
+}
+
+// completeEpicIDs returns epic IDs matching the prefix
+func completeEpicIDs(prefix string) []string {
+	database, err := openDB()
+	if err != nil {
+		return nil
+	}
+	defer database.Close()
+
+	project, _ := resolveProject()
+	items, err := database.ListItemsFiltered(db.ListFilter{Project: project, Type: string(model.ItemTypeEpic)})
+	if err != nil {
+		return nil
+	}
+
+	var ids []string
+	for _, item := range items {
+		if strings.HasPrefix(item.ID, prefix) {
+			ids = append(ids, fmt.Sprintf("%s\t%s", item.ID, item.Title))
+		}
+	}
+	return ids
+}
+
+// completeTaskIDs returns non-epic item IDs matching the prefix
+func completeTaskIDs(prefix string) []string {
+	database, err := openDB()
+	if err != nil {
+		return nil
+	}
+	defer database.Close()
+
+	project, _ := resolveProject()
+	items, err := database.ListItemsFiltered(db.ListFilter{Project: project, Type: string(model.ItemTypeTask)})
+	if err != nil {
+		return nil
+	}
+
+	var ids []string
+	for _, item := range items {
+		if strings.HasPrefix(item.ID, prefix) {
+			ids = append(ids, fmt.Sprintf("%s\t%s", item.ID, item.Title))
+		}
+	}
+	return ids
+}
+
+// completeLabels returns label names
+func completeLabels(prefix string) []string {
+	database, err := openDB()
+	if err != nil {
+		return nil
+	}
+	defer database.Close()
+
+	project, _ := resolveProject()
+	labels, err := database.ListLabels(project)
+	if err != nil {
+		return nil
+	}
+
+	var names []string
+	for _, label := range labels {
+		if strings.HasPrefix(label.Name, prefix) {
+			names = append(names, label.Name)
+		}
+	}
+	return names
+}
+
+// completeProjects returns project names
+func completeProjects(prefix string) []string {
+	database, err := openDB()
+	if err != nil {
+		return nil
+	}
+	defer database.Close()
+
+	projects, err := database.ListProjects()
+	if err != nil {
+		return nil
+	}
+
+	var names []string
+	for _, project := range projects {
+		if strings.HasPrefix(project, prefix) {
+			names = append(names, project)
+		}
+	}
+	return names
+}
+
+// completeStatusValues returns valid status values
+func completeStatusValues(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	statuses := []string{"open", "in_progress", "blocked", "done", "canceled"}
+	var matches []string
+	for _, s := range statuses {
+		if strings.HasPrefix(s, toComplete) {
+			matches = append(matches, s)
+		}
+	}
+	return matches, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeTypeValues returns valid type values
+func completeTypeValues(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	types := []string{"task", "epic"}
+	var matches []string
+	for _, t := range types {
+		if strings.HasPrefix(t, toComplete) {
+			matches = append(matches, t)
+		}
+	}
+	return matches, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeClosedStatusValues returns status values for closed command
+func completeClosedStatusValues(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	statuses := []string{"done", "canceled"}
+	var matches []string
+	for _, s := range statuses {
+		if strings.HasPrefix(s, toComplete) {
+			matches = append(matches, s)
+		}
+	}
+	return matches, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeTemplates returns template IDs
+func completeTemplates(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	templates, err := templates.ListTemplates()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	var ids []string
+	for _, t := range templates {
+		if strings.HasPrefix(t.ID, toComplete) {
+			ids = append(ids, fmt.Sprintf("%s\t%s", t.ID, t.Title))
+		}
+	}
+	return ids, cobra.ShellCompDirectiveNoFileComp
 }
 
 func main() {
@@ -6285,7 +6544,7 @@ func printItemsTable(items []model.Item) {
 	}
 
 	now := time.Now()
-	fmt.Printf("%-12s %-12s %-4s %s\n", "ID", "STATUS", "PRI", "TITLE")
+	fmt.Printf("%-12s %-12s %-4s %-6s %s\n", "ID", "STATUS", "PRI", "TYPE", "TITLE")
 	for _, item := range items {
 		title := item.Title
 		if len(item.Labels) > 0 {
@@ -6296,7 +6555,8 @@ func printItemsTable(items []model.Item) {
 		if format.IsStale(item, now) {
 			title = "⚠ " + title
 		}
-		fmt.Printf("%-12s %-12s %-4d %s\n", item.ID, status, item.Priority, title)
+		itemType := string(item.Type)
+		fmt.Printf("%-12s %-12s %-4d %-6s %s\n", item.ID, status, item.Priority, itemType, title)
 	}
 }
 
@@ -6306,13 +6566,14 @@ func printReadyTable(items []model.Item) {
 		return
 	}
 
-	fmt.Printf("%-12s %-4s %s\n", "ID", "PRI", "TITLE")
+	fmt.Printf("%-12s %-4s %-6s %s\n", "ID", "PRI", "TYPE", "TITLE")
 	for _, item := range items {
 		title := item.Title
 		if len(item.Labels) > 0 {
 			title = formatLabels(item.Labels) + " " + title
 		}
-		fmt.Printf("%-12s %-4d %s\n", item.ID, item.Priority, title)
+		itemType := string(item.Type)
+		fmt.Printf("%-12s %-4d %-6s %s\n", item.ID, item.Priority, itemType, title)
 	}
 }
 
@@ -6551,7 +6812,7 @@ func printItemsTree(items []model.Item) {
 	nodes := buildTreeNodes(items)
 	now := time.Now()
 
-	fmt.Printf("%-12s %-12s %-4s %s\n", "ID", "STATUS", "PRI", "TITLE")
+	fmt.Printf("%-12s %-12s %-4s %-6s %s\n", "ID", "STATUS", "PRI", "TYPE", "TITLE")
 	for _, node := range nodes {
 		title := node.Item.Title
 		if len(node.Item.Labels) > 0 {
@@ -6563,7 +6824,8 @@ func printItemsTree(items []model.Item) {
 		if format.IsStale(node.Item, now) {
 			title = "⚠ " + title
 		}
-		fmt.Printf("%-12s %-12s %-4d %s%s\n", node.Item.ID, status, node.Item.Priority, prefix, title)
+		itemType := string(node.Item.Type)
+		fmt.Printf("%-12s %-12s %-4d %-6s %s%s\n", node.Item.ID, status, node.Item.Priority, itemType, prefix, title)
 	}
 }
 

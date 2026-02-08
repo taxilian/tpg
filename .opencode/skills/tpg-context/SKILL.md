@@ -38,7 +38,7 @@ Load this skill when the user asks for any of:
 
 **You MUST use this skill when:**
 
-1. **End-of-session reflection** — Before ending any significant work session, check if there are insights worth logging with `tpg learn`
+1. **End-of-session reflection** — Before ending any significant work session, check if there are insights worth capturing with `tpg learn`
 2. **Starting work on a task** — Retrieve relevant context with `tpg context -c <concept>` to avoid rediscovering known issues
 3. **Encountering gotchas** — When you find non-obvious behavior, edge cases, or "why" decisions that would help the next agent
 4. **Knowledge maintenance** — When `tpg prime` flags concepts needing attention (5+ learnings or old entries)
@@ -317,6 +317,37 @@ tpg learn stale lrn-old --reason "Superseded by lrn-new with better detail"
 **Concept fragmentation:**
 - Use `tpg concepts <name> --rename <new-name>` to consolidate
 - Prefer broader concept names
+
+## Integration with Task Execution
+
+### For Agents (tpg-agent)
+
+**Before starting work:**
+1. Run `tpg concepts` to see what knowledge exists
+2. If your task domain matches concepts with learnings, check them:
+   ```bash
+   tpg context -c auth --summary      # Quick check
+   tpg context -c <concept> --id <id> # Full detail if relevant
+   ```
+3. Only load full detail for learnings that seem directly relevant
+
+**After completing work:**
+1. Reflect: "What did I learn that wasn't obvious from the code?"
+2. If valuable, capture it: `tpg learn "..." -c <concept>`
+3. Prefer end-of-task capture (learning is validated by implementation)
+
+### For Orchestrators (tpg-orchestrator)
+
+**Before delegating:**
+- Quick scan: `tpg concepts`
+- If relevant concepts exist, tell agent to check them:
+  ```
+  @tpg-agent Work on <id>. Before starting, check `tpg context -c auth --summary` for known gotchas.
+  ```
+
+**After task completion:**
+- Prompt agent: "Any insights worth capturing as learnings?"
+- Guide them to use `tpg learn` with appropriate concepts
 
 ## Quality rubric
 

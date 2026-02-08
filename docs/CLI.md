@@ -536,6 +536,115 @@ tpg stale                  # Default: 5 minute threshold
 tpg stale --threshold 10m  # Custom threshold
 ```
 
+## Shell Completion
+
+tpg provides intelligent shell autocompletion for commands, flags, and IDs.
+
+### Setup
+
+**Important:** Completion must be installed via a completion file, not sourced directly.
+
+**Bash:**
+```bash
+# Save to bash completions directory
+mkdir -p ~/.local/share/bash-completion/completions
+tpg completion bash > ~/.local/share/bash-completion/completions/tpg
+
+# Or system-wide (may require sudo)
+tpg completion bash > /etc/bash_completion.d/tpg
+
+# Then reload your shell or source the file
+source ~/.local/share/bash-completion/completions/tpg
+```
+
+**Zsh:**
+```bash
+# Method 1: User-local completions (recommended)
+mkdir -p ~/.zsh/completions
+tpg completion zsh > ~/.zsh/completions/_tpg
+
+# Add to ~/.zshrc (must be before any compinit call):
+fpath=(~/.zsh/completions $fpath)
+
+# Then reload:
+source ~/.zshrc
+
+# Method 2: Oh-my-zsh
+mkdir -p ~/.oh-my-zsh/completions
+tpg completion zsh > ~/.oh-my-zsh/completions/_tpg
+
+# Method 3: System-wide (macOS with Homebrew)
+tpg completion zsh > $(brew --prefix)/share/zsh/site-functions/_tpg
+```
+
+**Fish:**
+```bash
+# User-local
+mkdir -p ~/.config/fish/completions
+tpg completion fish > ~/.config/fish/completions/tpg.fish
+
+# Or load temporarily for current session
+tpg completion fish | source
+```
+
+### Troubleshooting
+
+**Completion not working?**
+
+1. Verify the completion file exists:
+   ```bash
+   ls ~/.zsh/completions/_tpg  # zsh
+   ls ~/.local/share/bash-completion/completions/tpg  # bash
+   ```
+
+2. Check that fpath includes your completions directory (zsh):
+   ```bash
+   echo $fpath | tr ' ' '\n' | grep completions
+   ```
+
+3. Ensure compinit is called after updating fpath in ~/.zshrc:
+   ```bash
+   fpath=(~/.zsh/completions $fpath)
+   autoload -Uz compinit && compinit
+   ```
+
+4. Test completion directly:
+   ```bash
+   tpg __complete show ts-
+   # Should output task IDs, not files
+   ```
+
+### What Gets Completed
+
+- **Item IDs**: When typing commands like `tpg show`, `tpg done`, `tpg start`, the shell suggests matching task/epic IDs with their titles
+- **Epic IDs**: Commands that expect epics (`--epic`, `--parent`) filter to show only epic IDs
+- **Labels**: Flag completions for `--label` show available labels
+- **Projects**: Flag completions for `--project` show available project names
+- **Status values**: `--status` suggests valid statuses (open, in_progress, done, etc.)
+- **Template IDs**: `--template` suggests available template IDs
+
+### Examples
+
+```bash
+# Type partial ID and press TAB
+tpg show ts-a<TAB>
+# ts-a0c335  TUI: Add log viewing to task detail screen
+# ts-abc123  Implement authentication
+
+# Complete epic IDs for --epic flag
+tpg ready --epic ep-<TAB>
+# ep-oop  Worktree support for shared database
+# ep-b4m  Template system improvements
+
+# Complete status values
+tpg list --status <TAB>
+# open
+# in_progress
+# done
+# blocked
+# canceled
+```
+
 ## Environment Variables
 
 | Variable | Description |

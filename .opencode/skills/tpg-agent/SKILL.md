@@ -65,6 +65,23 @@ tpg dep <task-id> list
 tpg ready --epic <epic-id>
 ```
 
+**Check for relevant knowledge (optional but recommended):**
+
+```bash
+# See what knowledge concepts exist
+tpg concepts
+
+# If your task relates to a concept with learnings, check them:
+tpg context -c auth --summary      # See one-liner summaries
+tpg context -c <concept> --id <id> # Load full detail if relevant
+```
+
+**When to check context:**
+- ✅ Before complex work (auth flows, database migrations, API integrations)
+- ✅ When task mentions a domain that has learnings (check `tpg concepts` first)
+- ✅ When implementing something with known pitfalls
+- ❌ Skip for straightforward tasks with no obvious knowledge domain
+
 **Important:** Task IDs are meaningless - don't infer order or relationships from ID patterns.
 Always query tpg for the truth.
 
@@ -88,14 +105,22 @@ EOF
 ```
 
 **Log immediately when:**
-- You create a dependency or follow-up task
-- You choose between alternatives
-- You discover existing code that changes your plan
-- You answer a key unknown that required searching/testing
-- You hit something unexpected (error, missing API, wrong assumption)
-- You finish a key milestone (core logic works, tests pass)
 
-**Do NOT log routine actions** (opened a file, read docs, ran a command).
+| Situation | Example Log Entry |
+|-----------|-------------------|
+| **Changed approach** | "Discovered existing UserService in internal/users/ — pivoting from creating new service to extending existing one" |
+| **Decision with trade-offs** | "Chose gorilla/mux over chi for middleware chaining. Chi's context approach cleaner but mux has better ecosystem for our auth middleware." |
+| **Unexpected behavior** | "API returns 202 Accepted, not 200 — adjusted client to handle async pattern" |
+| **Created dependency** | "Blocked by schema issue in DB-456. Using workaround until fixed. Created follow-up ts-789 to remove workaround." |
+| **Key milestone** | "Core parsing logic complete, all edge case tests passing" |
+| **Answered key unknown** | "Confirmed: migration order matters, must run 003 before 004 due to FK constraint" |
+| **Hit blocker** | "OAuth integration blocked — state param encoding issue. Debugging continues." |
+
+**Do NOT log:**
+- ❌ Routine actions (opened file, read docs, ran command)
+- ❌ Obvious behavior (function returns error as documented)
+- ❌ Things already in code comments
+- ❌ Every small step — only significant milestones
 
 ### 4. Create follow-up tasks (if needed)
 
@@ -150,6 +175,41 @@ Before marking complete, verify:
 ```bash
 tpg done <task-id> "Completed: [brief summary]. Follow-ups: [list any]"
 ```
+
+### 7. Capture Learnings (Optional but Valuable)
+
+After completing the task, reflect on whether any insights are worth preserving:
+
+**Ask yourself:**
+- Did I discover anything non-obvious?
+- Were there edge cases or gotchas?
+- Did I make a "why" decision that future agents should know?
+- Was the solution different from the obvious/intuitive approach?
+
+**If yes, log it:**
+```bash
+# Good learning example:
+tpg learn "OAuth state param must be URL-encoded twice due to redirect handling" \
+  -c auth \
+  -f auth/callback.go \
+  --detail "The state is decoded once by the OAuth provider, then again by our handler. Double-encoding prevents corruption."
+```
+
+**What makes a good learning:**
+- ✅ Non-obvious behavior discovered during implementation
+- ✅ Edge cases or gotchas
+- ✅ "Why" decisions (why approach X over Y)
+- ✅ Patterns not obvious from reading the code
+
+**Skip when:**
+- ❌ It's obvious from reading the code
+- ❌ It's already documented in comments
+- ❌ It's temporary (will be fixed soon)
+- ❌ It's specific to this task's unique requirements (not reusable)
+
+**Good concepts to use:** `auth`, `database`, `api`, `config`, `testing`, `performance`, `security`
+
+**Check first:** `tpg concepts` — reuse existing concepts rather than creating new ones.
 
 ## Commands reference
 

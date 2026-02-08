@@ -24,6 +24,23 @@ You are a project manager, not an implementer. When the user wants to work on ta
 
 The subagents will use the `tpg-agent` skill to execute individual tasks.
 
+## Orchestrator vs Agent Responsibilities
+
+**You (orchestrator) focus on:**
+- Finding and queuing ready work
+- Delegating tasks to agents
+- Coordinating parallel execution
+- Tracking patterns for templates
+- Monitoring overall progress
+
+**Agents focus on:**
+- Executing individual tasks from start to completion
+- Following the detailed workflow in the `tpg-agent` skill
+- Logging progress and making decisions
+- Handling worktrees and cleanup
+
+**When delegating:** Keep your instructions brief. The `tpg-agent` skill contains the detailed workflow. Just tell them which task to work on and any special context (worktrees, relevant concepts, etc.).
+
 ## ALWAYS use this skill when
 
 - You are asked to start, continue, or coordinate implementation work.
@@ -92,26 +109,57 @@ tpg list --status in_progress # What's currently active
 tpg template list            # What patterns are available
 ```
 
-### 2. Launch tpg-agent Subagents
+### 2. Check for Relevant Knowledge (Optional but Recommended)
+
+Before delegating, check if there's existing knowledge that could help the agent:
+
+```bash
+# See what knowledge concepts exist
+tpg concepts
+
+# Or see what concepts relate to this specific task
+tpg concepts --related <task-id>
+```
+
+**If relevant concepts exist**, instruct the agent to check them:
+
+```
+@tpg-agent Work on task <id>: <description>.
+
+**Before starting**, check `tpg context -c auth --summary` for known gotchas about authentication.
+Full context is in tpg task <id>.
+```
+
+This prevents agents from rediscovering known issues.
+
+### 3. Launch tpg-agent Subagents
 
 For each ready task:
 1. Read the task description completely (`tpg show <id>`)
 2. Verify it has all context (check parent chain too)
 3. Check if task belongs to a worktree epic
-4. Launch tpg-agent with the task ID
-5. Move to next ready task (don't wait)
+4. Check for relevant knowledge concepts (optional)
+5. Launch tpg-agent with the task ID
+6. Move to next ready task (don't wait)
 
 **Delegation pattern:**
 ```
 @tpg-agent Work on task <id>: <brief description>.
-The full context is in tpg task <id> and its parent.
+
+Follow the workflow in the tpg-agent skill:
+- Check relevant concepts with `tpg context -c <concept> --summary` (if applicable to this task)
+- Log milestones with `tpg log <id>` throughout your work
+- Mark complete with `tpg done <id>` when finished
+
+Full context is in `tpg show <id>`.
 ```
 
 **For worktree epic tasks:**
 ```
 @tpg-agent Work on <id>: <description>.
+
 This task belongs to epic <epic-id> with worktree at .worktrees/<epic-id>/.
-Verify context with `tpg show <id>` before starting.
+Follow the tpg-agent skill workflow and remember to handle worktree cleanup when complete.
 ```
 
 ### 3. Coordinate Parallel Work
@@ -126,9 +174,43 @@ Verify context with `tpg show <id>` before starting.
 As work progresses:
 - Check `tpg ready` for newly unblocked work
 - Review `tpg list --status in_progress` for ongoing tasks
-- Check `tpg show <id>` on completed tasks to understand what was learned
+- Check `tpg show <id>` on completed tasks to see what was logged and learned
+  - Look at the log entries to understand decisions made
+  - Review the done results for completion summary
 - Track patterns nearing completion (template candidates)
 - **Always create follow-up tasks for temporary solutions**
+
+**Monitor for logging:** If an agent completes a task with no log entries, they likely didn't log milestones during work. Remind them in future delegations to use `tpg log <id>` for key decisions and discoveries.
+
+### 5. Capture Learnings from Completed Work
+
+When an agent reports task completion, prompt them to capture valuable knowledge:
+
+**Ask the agent:**
+> "Any non-obvious insights from this task worth capturing as learnings? Consider: edge cases discovered, 'why' decisions, gotchas, patterns that weren't obvious from the code."
+
+**If they have insights, guide them:**
+```bash
+# Good learning example:
+tpg learn "OAuth state param must be URL-encoded twice due to redirect handling" \
+  -c auth \
+  -f auth/callback.go \
+  --detail "The state is decoded once by the OAuth provider, then again by our handler. Double-encoding prevents corruption."
+```
+
+**What makes a good learning:**
+- Non-obvious behavior discovered during implementation
+- Edge cases or gotchas
+- "Why" decisions that future agents should know
+- Patterns not obvious from reading the code
+
+**Skip capturing when:**
+- It's obvious from reading the code
+- It's already documented in comments
+- It's temporary (will be fixed soon)
+- It's specific to this task's unique requirements
+
+Use concepts like: `auth`, `database`, `api`, `config`, `testing`, `performance`, `security`. Check `tpg concepts` first — reuse existing ones.
 
 ## Template Checking (MANDATORY)
 

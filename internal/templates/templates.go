@@ -23,6 +23,8 @@ type Template struct {
 	ID          string              `json:"-"`
 	Title       string              `yaml:"title" toml:"title"`
 	Description string              `yaml:"description" toml:"description"`
+	Context     string              `yaml:"context" toml:"context"`   // Shared context for epic (when multi-step)
+	OnClose     string              `yaml:"on_close" toml:"on_close"` // Cleanup instructions for epic (when multi-step)
 	Worktree    bool                `yaml:"worktree" toml:"worktree"` // When true, creates epic with worktree
 	Variables   map[string]Variable `yaml:"variables" toml:"variables"`
 	Steps       []Step              `yaml:"steps" toml:"steps"`

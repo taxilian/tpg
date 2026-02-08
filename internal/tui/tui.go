@@ -102,6 +102,7 @@ type Model struct {
 	detailBlocks []db.DepStatus // "blocks" (what this item blocks)
 	logsVisible  bool
 	logScroll    int // scroll offset for logs
+	descScroll   int // scroll offset for description
 	depCursor    int // cursor within deps for navigation
 	depSection   int // 0 = "blocked by", 1 = "blocks"
 	depNavActive bool
@@ -301,6 +302,38 @@ func (m Model) templateVisibleHeight() int {
 		visibleHeight = 5
 	}
 	return visibleHeight
+}
+
+// detailDescriptionVisibleHeight returns the number of lines available for description in detail view.
+func (m Model) detailDescriptionVisibleHeight() int {
+	// Reserve space for: header (~15 lines) + dependencies + logs section + footer (~3 lines)
+	visibleHeight := m.height - 25
+	if visibleHeight < 10 {
+		visibleHeight = 10
+	}
+	return visibleHeight
+}
+
+// scrollText clips text to show only visible lines based on scroll offset.
+// Returns the visible portion and total line count.
+func scrollText(text string, scrollOffset, maxVisible int) (visible string, totalLines int) {
+	lines := strings.Split(text, "\n")
+	totalLines = len(lines)
+
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+	if scrollOffset >= totalLines {
+		return "", totalLines
+	}
+
+	end := scrollOffset + maxVisible
+	if end > totalLines {
+		end = totalLines
+	}
+
+	visible = strings.Join(lines[scrollOffset:end], "\n")
+	return visible, totalLines
 }
 
 // depStatusIcon returns a colored icon for a dependency's status string.
@@ -643,6 +676,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailDeps = msg.deps
 		m.detailBlocks = msg.blocks
 		m.logScroll = 0
+		m.descScroll = 0
 		m.depCursor = 0
 		m.depSection = 0
 		m.depNavActive = false
@@ -1253,6 +1287,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.logScroll < maxScroll {
 				m.logScroll++
 			}
+		} else {
+			// Scroll description
+			m.descScroll++
 		}
 	case "k", "up":
 		if m.depNavActive {
@@ -1266,6 +1303,9 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else if m.logsVisible && m.logScroll > 0 {
 			m.logScroll--
+		} else if m.descScroll > 0 {
+			// Scroll description
+			m.descScroll--
 		}
 
 	// Dependency navigation
@@ -3442,7 +3482,7 @@ func (m Model) detailView() string {
 				}
 			}
 		} else {
-			// Show rendered or stored description
+			// Show rendered or stored description with scrolling
 			descLabel := "\nDescription"
 			switch m.descViewMode {
 			case DescViewRendered:
@@ -3451,14 +3491,28 @@ func (m Model) detailView() string {
 				descLabel += " " + dimStyle.Render("[stored]")
 			}
 			descLabel += ":"
+			if m.descScroll > 0 {
+				descLabel += " " + dimStyle.Render(fmt.Sprintf("[scroll: %d]", m.descScroll))
+			}
 			b.WriteString(detailLabelStyle.Render(descLabel) + "\n")
 
+			var descText string
 			if m.descViewMode == DescViewStored {
-				b.WriteString(item.Description + "\n")
+				descText = item.Description
 			} else {
 				// Default: show rendered description
-				rendered := renderTemplateForItem(item)
-				b.WriteString(rendered + "\n")
+				descText = renderTemplateForItem(item)
+			}
+
+			// Apply scrolling
+			maxVisible := m.detailDescriptionVisibleHeight()
+			visibleDesc, totalLines := scrollText(descText, m.descScroll, maxVisible)
+			b.WriteString(visibleDesc + "\n")
+
+			// Show scroll indicator if there are more lines
+			if m.descScroll+maxVisible < totalLines {
+				remaining := totalLines - (m.descScroll + maxVisible)
+				b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more lines (j/k to scroll)", remaining)) + "\n")
 			}
 
 			// Show unused variables at the end (only when showing rendered description)
@@ -3487,10 +3541,24 @@ func (m Model) detailView() string {
 			}
 		}
 	} else {
-		// Non-templated item: just show description
+		// Non-templated item: just show description with scrolling
 		if item.Description != "" {
-			b.WriteString("\n" + detailLabelStyle.Render("Description:") + "\n")
-			b.WriteString(item.Description + "\n")
+			descLabel := "Description"
+			if m.descScroll > 0 {
+				descLabel += " " + dimStyle.Render(fmt.Sprintf("[scroll: %d]", m.descScroll))
+			}
+			b.WriteString("\n" + detailLabelStyle.Render(descLabel) + "\n")
+
+			// Apply scrolling
+			maxVisible := m.detailDescriptionVisibleHeight()
+			visibleDesc, totalLines := scrollText(item.Description, m.descScroll, maxVisible)
+			b.WriteString(visibleDesc + "\n")
+
+			// Show scroll indicator if there are more lines
+			if m.descScroll+maxVisible < totalLines {
+				remaining := totalLines - (m.descScroll + maxVisible)
+				b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more lines (j/k to scroll)", remaining)) + "\n")
+			}
 		}
 	}
 

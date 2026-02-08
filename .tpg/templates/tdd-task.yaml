@@ -13,6 +13,29 @@
 title: "TDD Task"
 description: "General TDD workflow: write tests, implement, review, verify"
 
+context: |
+  ## Feature: {{.feature_name}}
+
+  **Problem:** {{.problem}}
+  **Scope:** {{.scope}}
+  **Requirements:** {{.requirements}}
+  {{- if hasValue .constraints}}
+  **Constraints:** {{.constraints}}
+  {{- end}}
+  {{- if hasValue .special_concerns}}
+  **Concerns:** {{.special_concerns}}
+  {{- end}}
+  {{- if hasValue .additional_context}}
+  **Additional Context:** {{.additional_context}}
+  {{- end}}
+
+on_close: |
+  Before completing this epic:
+  - [ ] All tests pass
+  - [ ] Code reviewed and meets standards
+  - [ ] Documentation updated (if applicable)
+  - [ ] No regressions introduced
+
 variables:
   feature_name:
     description: "Feature name (e.g., 'user authentication', 'password hashing service')"
@@ -40,18 +63,7 @@ steps:
 
       Write comprehensive tests for {{.feature_name}} BEFORE implementation.
 
-      **Problem:** {{.problem}}
-      **Scope:** {{.scope}}
-      **Requirements:** {{.requirements}}
-      {{- if hasValue .constraints}}
-      **Constraints:** {{.constraints}}
-      {{- end}}
-      {{- if hasValue .special_concerns}}
-      **Concerns:** {{.special_concerns}}
-      {{- end}}
-      {{- if hasValue .additional_context}}
-      **Context:** {{.additional_context}}
-      {{- end}}
+      See epic context for problem, scope, and requirements.
 
       ---
 
@@ -95,18 +107,7 @@ steps:
 
       Implement {{.feature_name}} to make tests pass.
 
-      **Problem:** {{.problem}}
-      **Scope:** {{.scope}}
-      **Requirements:** {{.requirements}}
-      {{- if hasValue .constraints}}
-      **Constraints:** {{.constraints}}
-      {{- end}}
-      {{- if hasValue .special_concerns}}
-      **Concerns:** {{.special_concerns}}
-      {{- end}}
-      {{- if hasValue .additional_context}}
-      **Context:** {{.additional_context}}
-      {{- end}}
+      See epic context for problem, scope, and requirements.
 
       ---
 
@@ -139,16 +140,7 @@ steps:
 
       Review {{.feature_name}} implementation and iterate until correct.
 
-      **Requirements:** {{.requirements}}
-      {{- if hasValue .constraints}}
-      **Constraints:** {{.constraints}}
-      {{- end}}
-      {{- if hasValue .special_concerns}}
-      **Concerns:** {{.special_concerns}}
-      {{- end}}
-      {{- if hasValue .additional_context}}
-      **Context:** {{.additional_context}}
-      {{- end}}
+      See epic context for requirements, constraints, and concerns.
 
       ---
 
