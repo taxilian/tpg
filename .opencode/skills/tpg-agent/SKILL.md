@@ -300,19 +300,23 @@ Worktree:
 
 ### When completing the last task in an epic:
 
-When you run `tpg done` on the final task in an epic, the system automatically shows epic completion info. **You must handle the worktree cleanup yourself:**
+When you run `tpg done` on the final task in an epic, the system automatically shows epic completion info. **DO NOT handle worktree cleanup yourself** - the orchestrator will handle it.
 
-**After seeing the cleanup instructions, you should:**
+**When you mark the last task done:**
 
-1. Commit any remaining changes in the worktree
-2. Push your branch: `git push -u origin <branch-name>`
-3. Merge into the parent branch (main or parent epic branch):
-   ```bash
-   git checkout <parent-branch>
-   git merge <worktree-branch>
+1. The system will display epic completion info
+2. **Report to the orchestrator:** 
    ```
-4. Remove the worktree: `git worktree remove <path>`
-5. Delete the branch: `git branch -d <branch-name>`
+   Completed TASK-123. Epic ep-abc123 auto-completed.
+   Worktree at .worktrees/ep-abc123/ needs cleanup.
+   ```
+3. The orchestrator (primary agent) will handle:
+   - Committing any remaining changes
+   - Merging the worktree branch
+   - Removing the worktree directory
+   - Deleting the branch
+
+**DO NOT run git merge, git worktree remove, or git branch -d yourself.**
 
 **CRITICAL:** Always follow the workflow:
 1. **Mark start:** `tpg start <task-id>` when you begin

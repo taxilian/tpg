@@ -259,6 +259,30 @@ When an epic auto-completes, run `tpg epic finish <id>` to see cleanup steps:
 - Merge branch commands
 - Worktree removal commands
 
+**5. Worktree cleanup (Orchestrator responsibility):**
+When an agent reports completing the last task in a worktree epic, YOU must handle cleanup:
+
+```bash
+# Check cleanup instructions
+tpg epic finish <epic-id>
+
+# Navigate to worktree and complete any pending work
+cd .worktrees/<epic-id>
+git status  # Check for uncommitted changes
+git add . && git commit -m "final: complete epic <epic-id>"  # If needed
+
+# Merge to parent branch (main or parent epic branch)
+cd ../..
+git checkout <parent-branch>
+git merge <worktree-branch>
+
+# Remove worktree and branch
+git worktree remove .worktrees/<epic-id>
+git branch -d <worktree-branch>
+```
+
+**Note:** Check AGENTS.md for project-specific merge instructions that may override direct merge (e.g., requiring PRs).
+
 ## Handling Blockers
 
 Blockers surface through the dependency system. When an agent hits a blocker, it creates a task and adds a dependency — the system automatically reverts the blocked task to open.
@@ -317,35 +341,39 @@ tpg history <id>             # See full timeline
 
 ## Epic Completion and Worktree Cleanup
 
-When all children of an epic are done, the epic auto-completes automatically. The agent who finishes the last task **must** handle the worktree cleanup.
+When all children of an epic are done, the epic auto-completes automatically. **The orchestrator (you) handles worktree cleanup, NOT the subagent.**
 
 **Expected workflow:**
-1. Agent marks task done with `tpg done`
-2. System displays epic completion and worktree cleanup instructions
-3. **Agent handles cleanup:**
-   - Commits remaining changes
-   - Pushes branch
-   - Merges to parent branch (main or parent epic)
-   - Removes worktree
-   - Deletes branch
-4. **Agent reports to you:**
+1. Agent marks last task done with `tpg done`
+2. System displays epic completion info
+3. **Agent reports to you:**
    ```
    Completed TASK-123. Epic ep-abc123 auto-completed.
-   Merged branch feature/ep-abc123-name into main and cleaned up worktree.
+   Worktree at .worktrees/ep-abc123/ needs cleanup.
+   ```
+4. **YOU handle cleanup:**
+   ```bash
+   tpg epic finish ep-abc123  # View cleanup instructions
+   
+   # Complete and merge
+   cd .worktrees/ep-abc123
+   git status  # Check for uncommitted changes
+   git add . && git commit -m "final: complete epic"  # If needed
+   
+   cd ../..
+   git checkout main  # or parent epic branch
+   git merge feature/ep-abc123-name
+   
+   # Cleanup
+   git worktree remove .worktrees/ep-abc123
+   git branch -d feature/ep-abc123-name
    ```
 
 **Your role:**
-- Expect agents to handle their own epic cleanup
-- Verify cleanup was completed by checking `tpg show <epic-id>`
-- If cleanup wasn't reported, ask the completing agent about it
-- Only intervene if the agent fails to handle cleanup
-- Check AGENTS.md for project-specific instructions that may override defaults
-
-**If agent doesn't handle cleanup:**
-```bash
-tpg epic finish <epic-id>  # Shows cleanup instructions again
-```
-Then delegate cleanup to an agent or handle it yourself.
+- Expect agents to REPORT that cleanup is needed, not do it themselves
+- When agent reports epic completion with worktree, YOU handle cleanup immediately
+- Check AGENTS.md for project-specific instructions (some projects require PRs instead of direct merge)
+- Verify cleanup: `tpg show <epic-id>` should show status "done" and worktree removed
 
 ## Communication Style
 
