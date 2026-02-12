@@ -51,6 +51,7 @@ var (
 	flagPriority         int
 	flagForce            bool
 	flagDeleteForce      bool
+	flagDeleteRecursive  bool
 	flagCancelForce      bool
 	flagParent           string
 	flagBlocks           string
@@ -2810,6 +2811,31 @@ Example:
 	},
 }
 
+var touchCmd = &cobra.Command{
+	Use:   "touch <id>",
+	Short: "Update a task's timestamp to prevent it from appearing stale",
+	Long: `Update the updated_at timestamp of a task without adding a log entry
+or changing any other fields. Useful when you're still actively working
+on a task but haven't made a loggable change.
+
+Example:
+  tpg touch ts-a1b2c3`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		if err := database.TouchItem(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Touched %s\n", args[0])
+		return nil
+	},
+}
+
 var flagBlockForce bool
 
 var blockCmd = &cobra.Command{
@@ -2871,12 +2897,15 @@ var deleteCmd = &cobra.Command{
 This removes the item, its logs, and any dependencies.
 This action cannot be undone.
 
-By default, deletion is blocked if other tasks depend on this item.
-Use --force to delete anyway (dependencies will be removed).
+By default, deletion is blocked if:
+- Other tasks depend on this item (use --force to remove dependencies)
+- The item has children (use -r to delete recursively)
 
-Example:
-  tpg delete ts-a1b2c3
-  tpg delete ts-a1b2c3 --force   # Remove even if other tasks depend on it
+Examples:
+  tpg delete ts-a1b2c3                    # Delete task (blocked if has deps or children)
+  tpg delete ts-a1b2c3 --force            # Delete and remove dependencies
+  tpg delete ep-a1b2c3 -r                 # Delete epic and all children recursively
+  tpg delete ep-a1b2c3 -r --force         # Delete recursively and remove dependencies
 
 See also: 'tpg cancel' to close a task while preserving history.`,
 	Args: cobra.ExactArgs(1),
@@ -2887,7 +2916,7 @@ See also: 'tpg cancel' to close a task while preserving history.`,
 		}
 		defer func() { _ = database.Close() }()
 
-		if err := database.DeleteItem(args[0], flagDeleteForce); err != nil {
+		if err := database.DeleteItem(args[0], flagDeleteForce, flagDeleteRecursive); err != nil {
 			return err
 		}
 		fmt.Printf("Deleted %s\n", args[0])
@@ -5349,6 +5378,42 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Println("\n   These must be fixed manually. Use 'tpg dep <id> remove <other-id>' to break the cycle.")
 	}
 
+	// Check 3: Tasks with non-epic parents
+	fmt.Println("\n3. Checking for tasks with non-epic parents...")
+	invalidParents, err := database.FindTasksWithNonEpicParents()
+	if err != nil {
+		return fmt.Errorf("failed to check invalid parents: %w", err)
+	}
+
+	if len(invalidParents) == 0 {
+		fmt.Println("   ✓ All tasks have valid epic parents")
+	} else {
+		fmt.Printf("   ⚠️  Found %d tasks with invalid parents:\n", len(invalidParents))
+		for _, inv := range invalidParents {
+			fmt.Printf("      - %s (%s) has parent %s (type: %s)\n", inv.ItemID, inv.ItemTitle, inv.ParentID, inv.ParentType)
+		}
+
+		if !flagDoctorDryRun {
+			fmt.Print("\n   Remove invalid parent relationships? [y/N]: ")
+			var response string
+			fmt.Scanln(&response)
+			if strings.ToLower(response) == "y" {
+				fixed := 0
+				for _, inv := range invalidParents {
+					if err := database.ClearParent(inv.ItemID); err != nil {
+						fmt.Printf("      ✗ Failed to clear parent for %s: %v\n", inv.ItemID, err)
+						continue
+					}
+					fixed++
+					fmt.Printf("      ✓ Cleared parent for %s\n", inv.ItemID)
+				}
+				fmt.Printf("   ✓ Fixed %d invalid parent relationships\n", fixed)
+			}
+		} else {
+			fmt.Println("\n   (dry-run mode - no changes made)")
+		}
+	}
+
 	fmt.Println("\n✅ Doctor check complete!")
 	return nil
 }
@@ -6130,7 +6195,8 @@ func init() {
 	cleanCmd.Flags().BoolVar(&flagForce, "force", false, "Skip confirmation prompt")
 
 	// delete flags
-	deleteCmd.Flags().BoolVar(&flagDeleteForce, "force", false, "Delete even if tasks depend on this item")
+	deleteCmd.Flags().BoolVarP(&flagDeleteForce, "force", "f", false, "Delete even if tasks depend on this item")
+	deleteCmd.Flags().BoolVarP(&flagDeleteRecursive, "recursive", "r", false, "Recursively delete all children (for epics)")
 	// cancel flags
 	cancelCmd.Flags().BoolVar(&flagCancelForce, "force", false, "Cancel even if tasks depend on this item")
 
@@ -6215,6 +6281,7 @@ func init() {
 	blockCmd.Flags().BoolVar(&flagBlockForce, "force", false, "Force manual block (prefer dependencies instead)")
 	rootCmd.AddCommand(blockCmd)
 	rootCmd.AddCommand(staleCmd)
+	rootCmd.AddCommand(touchCmd)
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(logCmd)
@@ -6309,6 +6376,7 @@ func addCompletionFunctions() {
 	depCmd.ValidArgsFunction = itemIDCompletion
 	impactCmd.ValidArgsFunction = itemIDCompletion
 	replaceCmd.ValidArgsFunction = itemIDCompletion
+	touchCmd.ValidArgsFunction = itemIDCompletion
 	planCmd.ValidArgsFunction = epicIDCompletion
 
 	// Commands that need two item IDs

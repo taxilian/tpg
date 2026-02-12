@@ -365,6 +365,19 @@ func (db *DB) AutoCompleteEpic(epicID string) error {
 	return db.CompleteItem(epicID, results, AgentContext{})
 }
 
+// TouchItem updates the updated_at timestamp without changing any other fields.
+func (db *DB) TouchItem(id string) error {
+	result, err := db.Exec(`UPDATE items SET updated_at = ? WHERE id = ?`, sqlTime(time.Now()), id)
+	if err != nil {
+		return fmt.Errorf("failed to touch item: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	return nil
+}
+
 // AppendDescription appends text to an item's description.
 func (db *DB) AppendDescription(id string, text string) error {
 	result, err := db.Exec(`
@@ -704,7 +717,8 @@ func (db *DB) UpdatePriority(id string, priority int) error {
 
 // DeleteItem removes an item and its associated logs and dependencies.
 // If force is false, deletion is blocked when other items depend on this item.
-func (db *DB) DeleteItem(id string, force bool) error {
+// If recursive is true, all descendants are deleted recursively (for epics with children).
+func (db *DB) DeleteItem(id string, force, recursive bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -721,6 +735,7 @@ func (db *DB) DeleteItem(id string, force bool) error {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 
+	// Check for blocking dependencies
 	if !force {
 		var blockedCount int
 		err = tx.QueryRow(`SELECT COUNT(*) FROM deps WHERE depends_on = ?`, id).Scan(&blockedCount)
@@ -732,8 +747,48 @@ func (db *DB) DeleteItem(id string, force bool) error {
 		}
 	}
 
+	// Check for children
+	if !recursive {
+		var childCount int
+		err = tx.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ?`, id).Scan(&childCount)
+		if err != nil {
+			return fmt.Errorf("failed to check children: %w", err)
+		}
+		if childCount > 0 {
+			return fmt.Errorf("cannot delete %s: has %d children (use -r to delete recursively)", id, childCount)
+		}
+	}
+
+	// If recursive, delete all descendants first (deepest first)
+	if recursive {
+		descendants, err := db.getDescendantIDs(tx, id)
+		if err != nil {
+			return fmt.Errorf("failed to get descendants: %w", err)
+		}
+		for i := len(descendants) - 1; i >= 0; i-- {
+			if err := db.deleteItemInternal(tx, descendants[i]); err != nil {
+				return fmt.Errorf("failed to delete descendant %s: %w", descendants[i], err)
+			}
+		}
+	}
+
+	// Delete the item itself
+	if err := db.deleteItemInternal(tx, id); err != nil {
+		return fmt.Errorf("failed to delete item: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// deleteItemInternal deletes a single item and its associated data (logs, deps, labels).
+// This is used internally by DeleteItem and should be called within a transaction.
+func (db *DB) deleteItemInternal(tx *sql.Tx, id string) error {
 	// Delete logs
-	_, err = tx.Exec(`DELETE FROM logs WHERE item_id = ?`, id)
+	_, err := tx.Exec(`DELETE FROM logs WHERE item_id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete logs: %w", err)
 	}
@@ -742,6 +797,12 @@ func (db *DB) DeleteItem(id string, force bool) error {
 	_, err = tx.Exec(`DELETE FROM deps WHERE item_id = ? OR depends_on = ?`, id, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete dependencies: %w", err)
+	}
+
+	// Clear parent_id for all children
+	_, err = tx.Exec(`UPDATE items SET parent_id = NULL WHERE parent_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to clear parent references: %w", err)
 	}
 
 	// Delete item label associations
@@ -756,11 +817,35 @@ func (db *DB) DeleteItem(id string, force bool) error {
 		return fmt.Errorf("failed to delete item: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
 	return nil
+}
+
+// getDescendantIDs returns all descendant IDs using a transaction.
+func (db *DB) getDescendantIDs(tx *sql.Tx, itemID string) ([]string, error) {
+	query := `
+		WITH RECURSIVE descendants(id) AS (
+			SELECT id FROM items WHERE parent_id = ?
+			UNION ALL
+			SELECT i.id FROM items i
+			JOIN descendants d ON i.parent_id = d.id
+		)
+		SELECT id FROM descendants
+	`
+	rows, err := tx.Query(query, itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // GetChildren returns all items that have the given ID as their parent.
@@ -999,4 +1084,46 @@ func (db *DB) ReplaceItem(oldID string, newItem *model.Item) (string, error) {
 	}
 
 	return newItem.ID, nil
+}
+
+// InvalidParent represents a task that has a non-epic parent
+type InvalidParent struct {
+	ItemID     string
+	ItemTitle  string
+	ParentID   string
+	ParentType string // The actual type of the parent (task, etc.)
+}
+
+// FindTasksWithNonEpicParents finds all tasks that have a parent that is not an epic.
+// This is a data integrity issue - only epics should have children.
+func (db *DB) FindTasksWithNonEpicParents() ([]InvalidParent, error) {
+	query := `
+		SELECT child.id, child.title, child.parent_id, parent.type
+		FROM items child
+		JOIN items parent ON child.parent_id = parent.id
+		WHERE child.type = 'task'
+		AND parent.type != 'epic'
+	`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query invalid parents: %w", err)
+	}
+	defer rows.Close()
+
+	var invalid []InvalidParent
+	for rows.Next() {
+		var itemID, itemTitle, parentID, parentType string
+		if err := rows.Scan(&itemID, &itemTitle, &parentID, &parentType); err != nil {
+			continue
+		}
+		invalid = append(invalid, InvalidParent{
+			ItemID:     itemID,
+			ItemTitle:  itemTitle,
+			ParentID:   parentID,
+			ParentType: parentType,
+		})
+	}
+
+	return invalid, rows.Err()
 }

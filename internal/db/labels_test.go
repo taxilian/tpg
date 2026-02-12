@@ -229,7 +229,7 @@ func TestDeleteItem_RemovesItemLabels(t *testing.T) {
 		t.Fatalf("failed to add label to item: %v", err)
 	}
 
-	if err := db.DeleteItem(item.ID, false); err != nil {
+	if err := db.DeleteItem(item.ID, false, false); err != nil {
 		t.Fatalf("failed to delete item: %v", err)
 	}
 
