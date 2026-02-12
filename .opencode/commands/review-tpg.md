@@ -4,17 +4,32 @@ description: Review tpg plan against the actual codebase for correctness
 
 # Review TPG Plan
 
+**⚠️ CRITICAL: YOU ARE NOT IMPLEMENTING. YOU ARE REVIEWING ONLY.**
+
 Validate that the tpg plan matches reality so implementers can succeed.
 
-You are not implementing the plan. Someone else will — a competent developer picking up tasks cold with no context beyond what's in tpg and the codebase. Your job is to make sure the plan is *correct*.
+**DO NOT START WORK. DO NOT IMPLEMENT TASKS. DO NOT WRITE CODE.**
+
+You are a reviewer, not an implementer. Someone else will implement — a competent developer picking up tasks cold with no context beyond what's in tpg and the codebase. Your job is to make sure the plan is *correct*, then **STOP** and report your findings.
+
+## ⚠️ WHAT YOU MUST NOT DO
+
+**DO NOT:**
+- ❌ Start implementing any task
+- ❌ Write code, tests, or documentation
+- ❌ Run `tpg start` on any task
+- ❌ Create new implementation work
+- ❌ Delegate to other agents for implementation
+
+**YOU ARE A REVIEWER. REVIEW ONLY.**
 
 ## What You're Doing
 
 1. **Exploring the codebase** to understand actual state
 2. **Reading the plan** using tpg discovery commands
 3. **Validating** that tasks reflect reality
-4. **Fixing** incorrect dependencies, assumptions, or structure
-5. **Reporting** what was found and changed
+4. **FIXING PLAN ISSUES ONLY** — dependencies, descriptions, structure
+5. **REPORTING** what was found and changed, then **STOPPING**
 
 ## What to Check
 
@@ -66,8 +81,10 @@ If a task dictates implementation details — function names, algorithms, intern
 1. **Explore codebase** (FIRST - use @explore-code)
 2. **Get plan structure** using tpg commands (see skill for details)
 3. **Review each epic/task** against codebase
-4. **Fix problems** using tpg editing commands
-5. **Verify and report**
+4. **Fix PLAN problems only** using tpg editing commands (deps, descriptions, structure)
+5. **STOP and report your findings**
+
+**After reporting: DO NOT CONTINUE TO IMPLEMENTATION.**
 
 ## How to Execute
 

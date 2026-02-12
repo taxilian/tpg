@@ -294,9 +294,33 @@ Worktree:
 2. Use `tpg ready --epic <id>` to filter to the epic's tasks
 3. All tpg commands work the same regardless of location
 4. Navigate to the worktree directory if work needs to be done there
-5. Run git commands as needed (commit, push, etc.)
+5. **Commit your changes atomically** as you work (unless AGENTS.md says otherwise)
+
+**Worktree commit workflow:**
+```bash
+cd .worktrees/<epic-id>
+# ... do work ...
+git add <files>
+git commit -m "feat: <description> (<task-id>)"
+```
 
 **Note:** The `tpg` CLI tool prints git instructions but doesn't execute them - you must run git commands yourself.
+
+### When working on non-worktree tasks:
+
+**DO NOT commit.** The orchestrator handles commits for non-worktree tasks.
+
+**When you complete the task, report:**
+```
+Completed TASK-123.
+
+Files changed:
+- cmd/tpg/main.go
+- internal/db/queries.go
+- docs/CLI.md
+```
+
+This allows the orchestrator to create an atomic commit for your task.
 
 ### When completing the last task in an epic:
 

@@ -8,8 +8,14 @@ description: >-
 
 # tpg-review
 
+**⚠️ CRITICAL: YOU ARE NOT IMPLEMENTING. YOU ARE REVIEWING ONLY.**
+
 Review tpg plans against the actual codebase to ensure implementers can succeed.
 This skill teaches you how to use tpg commands effectively for discovery and plan modification.
+
+**DO NOT START WORK. DO NOT IMPLEMENT TASKS. DO NOT WRITE CODE.**
+
+Your role is to review the plan, identify issues, fix the plan structure, and **STOP**. Implementation is someone else's job.
 
 ## ALWAYS use this skill when
 
@@ -17,6 +23,24 @@ This skill teaches you how to use tpg commands effectively for discovery and pla
 - Need to verify dependencies, assumptions, or templates against the codebase.
 - Running the `review-tpg` command.
 - Need to restructure plans (split tasks into epics, fix dependencies, etc.).
+
+## ⚠️ WHAT YOU MUST NOT DO
+
+**CRITICAL: YOU ARE A REVIEWER, NOT AN IMPLEMENTER.**
+
+**DO NOT:**
+- ❌ Start implementing any task (`tpg start`, writing code, etc.)
+- ❌ Write code, tests, or documentation
+- ❌ Delegate to other agents for implementation
+- ❌ Continue to implementation after reviewing
+
+**YOU MAY:**
+- ✅ Fix plan structure (dependencies, descriptions, epic organization)
+- ✅ Update task descriptions and acceptance criteria
+- ✅ Restructure epics using `tpg epic replace`
+- ✅ Report findings when complete
+
+**After reporting your review findings: STOP. Do not continue to implementation.**
 
 ## Discovery: Getting the Full Picture
 
@@ -115,8 +139,10 @@ tpg dep <id> list
    - Assumptions match current code
    - No duplication of existing code
    - Tasks describe problems, not solutions
-4. **Fix issues** - Use `tpg desc`, `tpg epic replace`, `tpg dep`
-5. **Verify** - Re-export and confirm fixes
+4. **Fix PLAN issues** - Use `tpg desc`, `tpg epic replace`, `tpg dep` (NOT implementation)
+5. **STOP and report** - Report your findings. **DO NOT continue to implementation.**
+
+**Remember: You are reviewing the plan, not executing it.**
 
 ## What to Check
 
@@ -222,8 +248,13 @@ tpg template show <id>
 
 ## Gotchas
 
+- **DON'T IMPLEMENT** - You are reviewing, not executing. Stop after your report.
 - Don't review the plan in isolation - always check against codebase
 - Don't over-constrain tasks with implementation details
 - Don't create "close the epic" tasks - epics auto-complete
 - Don't duplicate context across tasks - use epic shared context
 - Always use HEREDOC for multi-line text
+
+## Final Reminder
+
+**You are a plan reviewer. After you report your findings, STOP. Implementation is someone else's job.**

@@ -259,8 +259,24 @@ When an epic auto-completes, run `tpg epic finish <id>` to see cleanup steps:
 - Merge branch commands
 - Worktree removal commands
 
-**5. Worktree cleanup (Orchestrator responsibility):**
-When an agent reports completing the last task in a worktree epic, YOU must handle cleanup:
+**5. Detecting completed worktree epics (Critical):**
+
+After ANY agent reports task completion, you MUST check if the parent epic completed:
+
+```bash
+# After agent reports: "Completed TASK-123"
+# Check if parent epic is now done
+
+tpg show TASK-123                    # Get parent epic ID
+tpg show <epic-id>                   # Check epic status
+
+# If status is "done" AND epic has worktree_branch set:
+# → Epic auto-completed, handle cleanup NOW
+```
+
+**6. Worktree cleanup (Orchestrator responsibility):**
+
+When you detect an epic is done and has a worktree, handle cleanup immediately:
 
 ```bash
 # Check cleanup instructions
@@ -282,6 +298,8 @@ git branch -d <worktree-branch>
 ```
 
 **Note:** Check AGENTS.md for project-specific merge instructions that may override direct merge (e.g., requiring PRs).
+
+**Why this matters:** The agent completing the last task triggers epic auto-completion, but YOU must detect it and cleanup. Don't wait for the agent to tell you - they already reported task completion. Check the epic status yourself.
 
 ## Handling Blockers
 
@@ -343,35 +361,44 @@ tpg history <id>             # See full timeline
 
 When all children of an epic are done, the epic auto-completes automatically. **The orchestrator (you) handles worktree cleanup, NOT the subagent.**
 
-**Expected workflow:**
-1. Agent marks last task done with `tpg done`
-2. System displays epic completion info
-3. **Agent reports to you:**
+**The Problem:** The agent completing the last task triggers epic auto-completion. You need to DETECT this and handle cleanup.
+
+**Your workflow after EVERY task completion:**
+
+1. **Agent reports task done:**
    ```
-   Completed TASK-123. Epic ep-abc123 auto-completed.
-   Worktree at .worktrees/ep-abc123/ needs cleanup.
+   Completed TASK-123.
+   Files changed: cmd/tpg/main.go, internal/db/items.go
+   Worktree task: yes
    ```
-4. **YOU handle cleanup:**
+
+2. **YOU check parent epic status:**
    ```bash
-   tpg epic finish ep-abc123  # View cleanup instructions
+   tpg show TASK-123              # Get parent epic ID
+   tpg show <epic-id>             # Check if epic status is "done"
+   ```
+
+3. **If epic is done and has worktree:**
+   ```bash
+   tpg epic finish <epic-id>      # View cleanup instructions
    
-   # Complete and merge
-   cd .worktrees/ep-abc123
-   git status  # Check for uncommitted changes
+   # Handle cleanup (see "Worktree cleanup" section below)
+   cd .worktrees/<epic-id>
+   git status                     # Check for uncommitted changes
    git add . && git commit -m "final: complete epic"  # If needed
    
    cd ../..
-   git checkout main  # or parent epic branch
-   git merge feature/ep-abc123-name
-   
-   # Cleanup
-   git worktree remove .worktrees/ep-abc123
-   git branch -d feature/ep-abc123-name
+   git checkout <parent-branch>
+   git merge <worktree-branch>
+   git worktree remove .worktrees/<epic-id>
+   git branch -d <worktree-branch>
    ```
 
+**Critical:** Don't wait for the agent to tell you the epic is done. Check the epic status yourself after every task completion. The agent only knows their task is done - you must verify if that completed the epic.
+
 **Your role:**
-- Expect agents to REPORT that cleanup is needed, not do it themselves
-- When agent reports epic completion with worktree, YOU handle cleanup immediately
+- **Proactively check** epic status after every task completion
+- Handle cleanup immediately when you find a done epic with a worktree
 - Check AGENTS.md for project-specific instructions (some projects require PRs instead of direct merge)
 - Verify cleanup: `tpg show <epic-id>` should show status "done" and worktree removed
 
@@ -404,6 +431,37 @@ Before considering coordination complete:
 - You monitor tpg state (`tpg ready`, `tpg list --status in_progress`) to see results
 
 **Task IDs are meaningless:** Never infer order, relationships, or priority from ID patterns. Always use `tpg ready`, `tpg show`, and `tpg dep <id> list` to understand state.
+
+## Git Commit Policy
+
+**Unless project instructions (AGENTS.md) say differently, every task MUST have atomic commits.**
+
+### Worktree tasks
+**Agent handles commits.** When delegating to an agent working in a worktree:
+- The agent commits their changes as they work
+- Agent commits are scoped to the worktree branch
+- Agent reports files changed with completion
+
+### Non-worktree tasks
+**YOU (orchestrator) handle commits.** When an agent completes a non-worktree task:
+
+1. Ask the agent to report: "What files did you change for this task?"
+2. Review the changes: `git diff <files>`
+3. Create an atomic commit for just that task's changes:
+   ```bash
+   git add <task-specific-files>
+   git commit -m "feat: <brief description> (TASK-ID)"
+   ```
+
+**CRITICAL:** Do NOT batch multiple tasks into one commit. Each task gets its own atomic commit unless AGENTS.md explicitly allows batching.
+
+### Checking AGENTS.md
+Before committing, check if the project has specific commit rules:
+```bash
+cat AGENTS.md | grep -A5 -i "commit\|atomic"
+```
+
+If AGENTS.md specifies different commit rules (e.g., "squash all work into one commit per epic"), follow those instead.
 
 **Template lifecycle:**
 1. First instance → Build carefully, it becomes the template
