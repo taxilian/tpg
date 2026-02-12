@@ -358,6 +358,41 @@ func scrollText(text string, scrollOffset, maxVisible int) (visible string, tota
 	return visible, totalLines
 }
 
+// syncListScroll ensures listScroll keeps the cursor visible.
+// Must be called from Update (pointer receiver) so the mutation persists.
+func (m *Model) syncListScroll() {
+	treeNodes := m.buildTree()
+	visibleHeight := m.height - listReservedRows
+	if visibleHeight < 3 {
+		visibleHeight = 3
+	}
+	calculateScrollRange(m.cursor, len(treeNodes), visibleHeight, &m.listScroll)
+}
+
+func (m *Model) syncTemplateScroll() {
+	visibleHeight := m.height - templateReservedRows
+	if visibleHeight < 3 {
+		visibleHeight = 3
+	}
+	calculateScrollRange(m.templateCursor, len(m.templates), visibleHeight, &m.templateScroll)
+}
+
+func (m *Model) syncVarPickerScroll(itemCount int) {
+	visibleHeight := m.height - 8
+	if visibleHeight < 3 {
+		visibleHeight = 3
+	}
+	calculateScrollRange(m.varCursor, itemCount, visibleHeight, &m.varPickerScroll)
+}
+
+func (m *Model) syncConfigScroll() {
+	visibleHeight := m.height - 6
+	if visibleHeight < 3 {
+		visibleHeight = 3
+	}
+	calculateScrollRange(m.configCursor, len(m.configFields), visibleHeight, &m.configScroll)
+}
+
 // calculateScrollRange calculates the visible range for a scrolled list.
 // Updates scrollPos to keep cursor visible with edge-based scrolling.
 // Returns start and end indices for slicing the list.
@@ -752,6 +787,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		m.syncListScroll()
 		if m.viewMode == ViewDetail {
 			return m, m.loadDetail()
 		}
@@ -809,6 +845,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.readyIDs = msg.ids
 		if m.filterReady {
 			m.applyFilters()
+			m.syncListScroll()
 		}
 		return m, nil
 
@@ -1345,6 +1382,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadConfig()
 	}
 
+	m.syncListScroll()
 	return m, nil
 }
 
@@ -1689,6 +1727,7 @@ func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadTemplates()
 	}
 
+	m.syncTemplateScroll()
 	return m, nil
 }
 
@@ -1800,6 +1839,7 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadConfig()
 	}
 
+	m.syncConfigScroll()
 	return m, nil
 }
 
@@ -1950,6 +1990,7 @@ func (m Model) handleVariablePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.startTextareaEdit("var:"+varName, item.TemplateVars[varName])
 		}
 	}
+	m.syncVarPickerScroll(len(varNames))
 	return m, nil
 }
 
