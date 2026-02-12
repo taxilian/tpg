@@ -195,69 +195,57 @@ You have {{.SubagentTaskCount}} tasks assigned to this session:
 **Start:** 'tpg ready' → 'tpg show <id>' → 'tpg start <id>'
 **During:** Log milestones (always use heredoc for detail):
   tpg log <id> - <<EOF
-  What was decided, alternatives considered, blockers, next steps.
+  Decisions made, alternatives considered, blockers, next steps.
   EOF
-**Finish:** 'tpg done <id>' | blocked? → 'tpg dep <blocker> blocks <id>'
+**Finish:** 'tpg done <id> - <<EOF' (then results, then EOF)
+**Blocked?:** 'tpg dep <blocker> blocks <id>'
 **Context:** 'tpg concepts' → 'tpg context -c <name>'
 
-**Logging:** You MUST call 'tpg log <id> - <<EOF ... EOF' when any of these happen:
-- You discover a blocker or create a dependency
-- You choose between alternatives (log what and why)
-- You find existing code/patterns that change your approach
-- You answer a key unknown that required searching or testing to resolve
-- You hit something unexpected (error, missing API, wrong assumption)
-- You finish a key milestone (core logic works, tests pass)
-Do NOT log routine actions (opened file, read docs, ran a command).
-If you complete a task with zero logs, 'tpg done' will warn you.
+**Logging:** Log decisions, blockers, discoveries, milestones. Do NOT log routine actions or instructions already in the task. Zero logs triggers a warning on 'tpg done'.
+
+## Creating Work
+
+**Epics** (use --from-yaml for best practice, --worktree is optional):
+  tpg epic add "OAuth Integration" --worktree --from-yaml <<EOF
+  context: |
+    Use OAuth 2.0 with PKCE. See docs/auth.md.
+  on_close: |
+    - [ ] Update API docs
+    - [ ] Add changelog entry
+  EOF
+
+**Tasks** (always use heredoc for description):
+  tpg add "Implement token refresh" -p 1 --desc - <<EOF
+  What to do, why it matters, constraints, acceptance criteria.
+  EOF
+  tpg add "Task" --parent <epic> --template <id> --vars-yaml <<EOF
+  problem: "..."
+  requirements: |
+    - requirement 1
+  EOF
 
 ## Templates
 
 {{if gt .TemplateCount 0 -}}
-Available templates ({{.TemplateCount}}):
-{{range .Templates}}  {{.ID}} ({{len .Variables}} vars): {{.Description}}
-{{end}}
-Use:
-  tpg add "Title" --template <id> --vars-yaml <<EOF
-  problem: "What we're solving"
-  requirements: |
-    - Specific requirement 1
-    - Specific requirement 2
-  context: "Any helpful background or constraints"
-  EOF
+Available ({{.TemplateCount}}): {{range .Templates}}{{.ID}} {{end}}
+Create tasks: see examples above.
 {{else -}}
-No templates found. Create templates in .tpg/templates/ to standardize workflows.
+No templates. Create in .tpg/templates/ to standardize workflows.
 {{end -}}
-
-## Epics
-
-Epics group related tasks. They auto-complete when all children are done.
-
-  tpg epic add "Title"             # Create epic
-  tpg add "Task" --parent <epic>   # Task under epic
-  tpg ready --epic <id>            # Filter work by epic
 
 ## Key Commands
 
-  tpg ready                        # Available work
-  tpg ready --epic <id>            # Work in specific epic
-  tpg show <id>                    # Task details
-  tpg start <id>                   # Claim task
-  tpg done <id>                    # Complete
-  tpg dep <id> blocks <other-id>   # Set dependency
-  tpg dep <id> list                # Show dependencies
-  tpg status                       # Overview
-  tpg context -c X                 # Load learnings
+  tpg ready                  # Available work
+  tpg ready --epic <id>      # Work in specific epic
+  tpg show <id>              # Task details + parent context
+  tpg start <id>             # Claim task
+  tpg done <id>              # Complete with results
+  tpg dep <id> blocks <id>   # Set dependency
+  tpg dep <id> list          # Show dependencies
+  tpg status                 # Overview
+  tpg context -c <concept>   # Load learnings
 
-  # Always use heredoc for add and log:
-  tpg add "Title" -p 1 --desc - <<EOF
-  What to do, why it matters, constraints, acceptance criteria.
-  Future agents won't have your current context—be thorough.
-  EOF
-
-  tpg log <id> - <<EOF
-  Decisions made, alternatives considered, blockers found,
-  milestones reached. Skip routine actions (opened file, ran cmd).
-  EOF
+**⚠️ CRITICAL:** Never modify '.tpg/tpg.db' directly. Use only 'tpg' CLI commands.
 `
 }
 
