@@ -13,7 +13,6 @@ func TestScrollText(t *testing.T) {
 		maxVisible   int
 		wantLines    int    // expected total lines
 		wantFirst    string // expected first line of visible output
-		wantEmpty    bool   // expect empty string
 	}{
 		{
 			name:         "no scroll",
@@ -32,12 +31,12 @@ func TestScrollText(t *testing.T) {
 			wantFirst:    "Line 3",
 		},
 		{
-			name:         "scroll past end",
+			name:         "scroll past end clamps to last page",
 			text:         "Line 1\nLine 2\nLine 3",
 			scrollOffset: 10,
 			maxVisible:   3,
 			wantLines:    3,
-			wantEmpty:    true,
+			wantFirst:    "Line 1", // 3 lines, 3 visible → clamped to offset 0
 		},
 		{
 			name:         "scroll negative",
@@ -81,13 +80,6 @@ func TestScrollText(t *testing.T) {
 				t.Errorf("scrollText() totalLines = %d, want %d", totalLines, tt.wantLines)
 			}
 
-			if tt.wantEmpty {
-				if visible != "" {
-					t.Errorf("scrollText() visible = %q, want empty string", visible)
-				}
-				return
-			}
-
 			if tt.wantFirst != "" {
 				lines := strings.Split(visible, "\n")
 				if len(lines) == 0 {
@@ -103,45 +95,6 @@ func TestScrollText(t *testing.T) {
 			visibleLines := len(strings.Split(visible, "\n"))
 			if visible != "" && visibleLines > tt.maxVisible {
 				t.Errorf("scrollText() returned %d visible lines, max allowed is %d", visibleLines, tt.maxVisible)
-			}
-		})
-	}
-}
-
-func TestDetailDescriptionVisibleHeight(t *testing.T) {
-	tests := []struct {
-		name   string
-		height int
-		want   int
-	}{
-		{
-			name:   "large terminal",
-			height: 50,
-			want:   25,
-		},
-		{
-			name:   "medium terminal",
-			height: 30,
-			want:   10, // 30-25=5, but minimum is 10
-		},
-		{
-			name:   "small terminal",
-			height: 25,
-			want:   10, // minimum
-		},
-		{
-			name:   "very small terminal",
-			height: 10,
-			want:   10, // minimum
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := Model{height: tt.height}
-			got := m.detailDescriptionVisibleHeight()
-			if got != tt.want {
-				t.Errorf("detailDescriptionVisibleHeight() = %d, want %d", got, tt.want)
 			}
 		})
 	}

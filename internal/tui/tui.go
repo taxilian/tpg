@@ -29,6 +29,7 @@ const (
 	ViewTemplateDetail
 	ViewConfig
 	ViewCreateWizard
+	ViewVariablePicker
 )
 
 // InputMode represents what kind of text input is active.
@@ -71,12 +72,13 @@ const (
 
 // Model is the main Bubble Tea model for the TUI.
 type Model struct {
-	db       *db.DB
-	project  string       // current project (for default filtering)
-	items    []model.Item // all items from db
-	filtered []model.Item // items after filtering
-	cursor   int
-	viewMode ViewMode
+	db         *db.DB
+	project    string       // current project (for default filtering)
+	items      []model.Item // all items from db
+	filtered   []model.Item // items after filtering
+	cursor     int
+	listScroll int // scroll position for list view
+	viewMode   ViewMode
 
 	// Filter state
 	filterProject  string
@@ -101,8 +103,7 @@ type Model struct {
 	detailDeps   []db.DepStatus // "depends on" (blockers)
 	detailBlocks []db.DepStatus // "blocks" (what this item blocks)
 	logsVisible  bool
-	logScroll    int // scroll offset for logs
-	descScroll   int // scroll offset for description
+	descScroll   int // scroll offset for the entire detail view
 	depCursor    int // cursor within deps for navigation
 	depSection   int // 0 = "blocked by", 1 = "blocks"
 	depNavActive bool
@@ -110,9 +111,14 @@ type Model struct {
 	// Stale tracking
 	staleItems map[string]bool // item IDs that are stale (no updates > 5 min)
 
+	// Ready filter cache
+	filterReady bool            // whether ready filter is active
+	readyIDs    map[string]bool // cached set of ready item IDs
+
 	// Template browser state
 	templates        []*templates.Template
 	templateCursor   int
+	templateScroll   int
 	selectedTemplate *templates.Template
 
 	// Selection mode state
@@ -125,8 +131,9 @@ type Model struct {
 	graphCurrentID string // ID of the center task in graph view
 
 	// Template variable expansion state (for detail view)
-	varExpanded map[string]bool
-	varCursor   int // which variable is selected for editing (-1 = none)
+	varExpanded     map[string]bool
+	varCursor       int // which variable is selected for editing (-1 = none)
+	varPickerScroll int // scroll position for variable picker
 
 	// Template description view state
 	descViewMode DescViewMode
@@ -144,11 +151,11 @@ type Model struct {
 	// Config view state
 	configFields  []db.ConfigField
 	configCursor  int
+	configScroll  int
 	configEditing bool
 
 	// Tree view state
 	treeExpanded map[string]bool // item ID -> expanded state
-	treeCursor   int             // cursor position in tree view
 
 	// Create wizard state
 	createWizardStep  int
@@ -255,6 +262,11 @@ var (
 
 	// Content area padding
 	contentPadding = 2
+
+	// Reserved rows for view chrome
+	listReservedRows     = 6 // header (2) + footer (3) + padding (1)
+	templateReservedRows = 8
+	detailReservedRows   = 3 // help line + scroll indicator + padding
 )
 
 // min returns the minimum of two integers.
@@ -273,6 +285,24 @@ func max(a, b int) int {
 	return b
 }
 
+// truncateWidth truncates s to fit within maxWidth display columns, adding "..." if needed.
+func truncateWidth(s string, maxWidth int) string {
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	if maxWidth <= 3 {
+		return "..."[:maxWidth]
+	}
+	target := maxWidth - 3
+	runes := []rune(s)
+	for i := len(runes); i > 0; i-- {
+		if lipgloss.Width(string(runes[:i])) <= target {
+			return string(runes[:i]) + "..."
+		}
+	}
+	return "..."
+}
+
 func trimLastRune(text string) string {
 	if text == "" {
 		return text
@@ -284,38 +314,25 @@ func trimLastRune(text string) string {
 	return string(runes[:len(runes)-1])
 }
 
-// listVisibleHeight returns the number of items that can be displayed in the list view.
 func (m Model) listVisibleHeight() int {
-	// Header: 2 lines (title + blank), Footer: 3 lines (blank + 2 help lines), Padding: 1 line top
-	visibleHeight := m.height - 6
+	visibleHeight := m.height - listReservedRows
 	if visibleHeight < 3 {
 		visibleHeight = 3
 	}
 	return visibleHeight
 }
 
-// templateVisibleHeight returns the number of templates that can be displayed in the template list view.
 func (m Model) templateVisibleHeight() int {
-	// Header: 2 lines (title + blank), Footer: 2 lines (blank + help), Padding: varies
-	visibleHeight := m.height - 8
+	visibleHeight := m.height - templateReservedRows
 	if visibleHeight < 5 {
 		visibleHeight = 5
 	}
 	return visibleHeight
 }
 
-// detailDescriptionVisibleHeight returns the number of lines available for description in detail view.
-func (m Model) detailDescriptionVisibleHeight() int {
-	// Reserve space for: header (~15 lines) + dependencies + logs section + footer (~3 lines)
-	visibleHeight := m.height - 25
-	if visibleHeight < 10 {
-		visibleHeight = 10
-	}
-	return visibleHeight
-}
-
 // scrollText clips text to show only visible lines based on scroll offset.
 // Returns the visible portion and total line count.
+// Clamps scrollOffset so the result is never empty when text has content.
 func scrollText(text string, scrollOffset, maxVisible int) (visible string, totalLines int) {
 	lines := strings.Split(text, "\n")
 	totalLines = len(lines)
@@ -323,8 +340,13 @@ func scrollText(text string, scrollOffset, maxVisible int) (visible string, tota
 	if scrollOffset < 0 {
 		scrollOffset = 0
 	}
-	if scrollOffset >= totalLines {
-		return "", totalLines
+	// Clamp to last page instead of returning empty
+	maxScroll := totalLines - maxVisible
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if scrollOffset > maxScroll {
+		scrollOffset = maxScroll
 	}
 
 	end := scrollOffset + maxVisible
@@ -334,6 +356,50 @@ func scrollText(text string, scrollOffset, maxVisible int) (visible string, tota
 
 	visible = strings.Join(lines[scrollOffset:end], "\n")
 	return visible, totalLines
+}
+
+// calculateScrollRange calculates the visible range for a scrolled list.
+// Updates scrollPos to keep cursor visible with edge-based scrolling.
+// Returns start and end indices for slicing the list.
+func calculateScrollRange(cursor, totalItems, visibleHeight int, scrollPos *int) (start, end int) {
+	if totalItems == 0 {
+		*scrollPos = 0
+		return 0, 0
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= totalItems {
+		cursor = totalItems - 1
+	}
+	if visibleHeight >= totalItems {
+		*scrollPos = 0
+		return 0, totalItems
+	}
+
+	// Scroll down if cursor below visible area
+	for cursor >= *scrollPos+visibleHeight {
+		(*scrollPos)++
+	}
+	// Scroll up if cursor above visible area
+	for cursor < *scrollPos && *scrollPos > 0 {
+		(*scrollPos)--
+	}
+	// Clamp to valid range
+	if *scrollPos < 0 {
+		*scrollPos = 0
+	}
+	maxScroll := totalItems - visibleHeight
+	if *scrollPos > maxScroll {
+		*scrollPos = maxScroll
+	}
+
+	start = *scrollPos
+	end = start + visibleHeight
+	if end > totalItems {
+		end = totalItems
+	}
+	return start, end
 }
 
 // depStatusIcon returns a colored icon for a dependency's status string.
@@ -458,6 +524,11 @@ type staleMsg struct {
 	err   error
 }
 
+type readyIDsMsg struct {
+	ids map[string]bool
+	err error
+}
+
 // configMsg carries config data.
 type configMsg struct {
 	fields []db.ConfigField
@@ -509,6 +580,20 @@ func (m Model) loadStaleItems() tea.Cmd {
 			return staleMsg{err: err}
 		}
 		return staleMsg{stale: stale}
+	}
+}
+
+func (m Model) loadReadyIDs() tea.Cmd {
+	return func() tea.Msg {
+		items, err := m.db.ReadyItems(m.project)
+		if err != nil {
+			return readyIDsMsg{err: err}
+		}
+		ids := make(map[string]bool, len(items))
+		for _, item := range items {
+			ids[item.ID] = true
+		}
+		return readyIDsMsg{ids: ids}
 	}
 }
 
@@ -591,6 +676,10 @@ func (m *Model) applyFilters() {
 				continue
 			}
 		}
+		// Ready filter (uses cached readyIDs)
+		if m.filterReady && m.readyIDs != nil && !m.readyIDs[item.ID] {
+			continue
+		}
 		m.filtered = append(m.filtered, item)
 	}
 
@@ -610,16 +699,14 @@ func (m *Model) applyFilters() {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadItems(), m.loadStaleItems(), tickCmd())
+	return tea.Batch(m.loadItems(), m.loadStaleItems(), m.loadReadyIDs(), tickCmd())
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Clear message on any key
 		m.message = ""
-		m.err = nil
 		return m.handleKey(msg)
 
 	case tea.WindowSizeMsg:
@@ -641,7 +728,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
 			preserveID = treeNodes[m.cursor].Item.ID
 		}
-		return m, tea.Batch(m.loadItemsPreserving(preserveID), m.loadStaleItems(), tickCmd())
+		return m, tea.Batch(m.loadItemsPreserving(preserveID), m.loadStaleItems(), m.loadReadyIDs(), tickCmd())
 
 	case itemsMsg:
 		if msg.err != nil {
@@ -665,6 +752,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if m.viewMode == ViewDetail {
+			return m, m.loadDetail()
+		}
 		return m, nil
 
 	case detailMsg:
@@ -675,7 +765,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailLogs = msg.logs
 		m.detailDeps = msg.deps
 		m.detailBlocks = msg.blocks
-		m.logScroll = 0
 		m.descScroll = 0
 		m.depCursor = 0
 		m.depSection = 0
@@ -686,6 +775,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
+			m.err = nil
 			m.message = msg.message
 		}
 		return m, tea.Batch(m.loadItems(), m.loadStaleItems())
@@ -708,6 +798,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.staleItems = make(map[string]bool)
 		for _, item := range msg.stale {
 			m.staleItems[item.ID] = true
+		}
+		return m, nil
+
+	case readyIDsMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.readyIDs = msg.ids
+		if m.filterReady {
+			m.applyFilters()
 		}
 		return m, nil
 
@@ -758,6 +859,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfigKey(msg)
 	case ViewCreateWizard:
 		return m.handleCreateWizardKey(msg)
+	case ViewVariablePicker:
+		return m.handleVariablePickerKey(msg)
 	}
 	return m, nil
 }
@@ -1057,30 +1160,34 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "g", "home":
 		m.cursor = 0
+		m.listScroll = 0
 
 	case "G", "end":
 		treeNodes := m.buildTree()
 		m.cursor = max(0, len(treeNodes)-1)
 
 	case "pgup", "ctrl+b":
-		// Page up - move cursor up by visible height
+		// Page up - move cursor up by visible height and sync scroll
 		pageSize := m.listVisibleHeight()
 		m.cursor -= pageSize
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		// Sync scroll to show cursor at top of visible area
+		m.listScroll = m.cursor
 
 	case "pgdown", "ctrl+f":
-		// Page down - move cursor down by visible height
+		// Page down - move cursor down by visible height and sync scroll
 		treeNodes := m.buildTree()
 		pageSize := m.listVisibleHeight()
 		m.cursor += pageSize
 		if m.cursor >= len(treeNodes) {
 			m.cursor = max(0, len(treeNodes)-1)
 		}
+		// Sync scroll to show cursor at bottom of visible area
+		m.listScroll = max(0, m.cursor-pageSize+1)
 
 	case "ctrl+u":
-		// Half page up
 		pageSize := m.listVisibleHeight() / 2
 		if pageSize < 1 {
 			pageSize = 1
@@ -1089,9 +1196,9 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		m.listScroll = m.cursor
 
 	case "ctrl+d":
-		// Half page down
 		treeNodes := m.buildTree()
 		pageSize := m.listVisibleHeight() / 2
 		if pageSize < 1 {
@@ -1101,6 +1208,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(treeNodes) {
 			m.cursor = max(0, len(treeNodes)-1)
 		}
+		m.listScroll = max(0, m.cursor-pageSize+1)
 
 	case "right":
 		// Expand current node if it has children
@@ -1194,10 +1302,11 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "esc":
 		// If filters are set, clear them; otherwise quit
-		if m.filterSearch != "" || m.filterProject != "" || m.filterLabel != "" {
+		if m.filterSearch != "" || m.filterProject != "" || m.filterLabel != "" || m.filterReady {
 			m.filterSearch = ""
 			m.filterProject = ""
 			m.filterLabel = ""
+			m.filterReady = false
 			m.applyFilters()
 		} else {
 			return m, tea.Quit
@@ -1205,6 +1314,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		return m, m.loadItems()
+
+	case "R":
+		m.filterReady = !m.filterReady
+		m.applyFilters()
 
 	// Dependencies
 	case "a":
@@ -1241,12 +1354,6 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc", "h", "backspace":
-		if m.descViewMode == DescViewVars {
-			// Exit variable edit mode, go back to rendered view
-			m.descViewMode = DescViewRendered
-			m.varCursor = -1
-			return m, nil
-		}
 		if m.depNavActive {
 			m.depNavActive = false
 			return m, nil
@@ -1254,12 +1361,10 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewMode = ViewList
 		m.logsVisible = false
 		m.varCursor = -1
-		m.descViewMode = DescViewRendered // Reset to default view mode
 
 	// Log toggle and scroll
 	case "v":
 		m.logsVisible = !m.logsVisible
-		m.logScroll = 0
 	case "j", "down":
 		if m.depNavActive {
 			m.depCursor++
@@ -1270,25 +1375,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.depCursor < 0 {
 				m.depCursor = 0
 			}
-		} else if m.varCursor >= 0 {
-			// Navigate variables
-			treeNodes := m.buildTree()
-			if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
-				item := treeNodes[m.cursor].Item
-				varNames := m.getSortedVarNames(item)
-				if m.varCursor < len(varNames)-1 {
-					m.varCursor++
-				}
-			}
-		} else if m.logsVisible {
-			// maxVisible matches the display constant in detailView
-			maxVisible := 20
-			maxScroll := max(0, len(m.detailLogs)-maxVisible)
-			if m.logScroll < maxScroll {
-				m.logScroll++
-			}
 		} else {
-			// Scroll description
 			m.descScroll++
 		}
 	case "k", "up":
@@ -1296,16 +1383,19 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.depCursor > 0 {
 				m.depCursor--
 			}
-		} else if m.varCursor >= 0 {
-			// Navigate variables
-			if m.varCursor > 0 {
-				m.varCursor--
-			}
-		} else if m.logsVisible && m.logScroll > 0 {
-			m.logScroll--
 		} else if m.descScroll > 0 {
-			// Scroll description
 			m.descScroll--
+		}
+	case "pgdown":
+		if !m.depNavActive {
+			m.descScroll += 10
+		}
+	case "pgup":
+		if !m.depNavActive && m.descScroll > 0 {
+			m.descScroll -= 10
+			if m.descScroll < 0 {
+				m.descScroll = 0
+			}
 		}
 
 	// Dependency navigation
@@ -1366,21 +1456,16 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Otherwise edit description
 			return m.startTextareaEdit("description", item.Description)
 		}
-	case "E":
-		// Toggle variable edit mode for templated items
+
+	case "V":
 		treeNodes := m.buildTree()
 		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
 			item := treeNodes[m.cursor].Item
 			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
-				if m.descViewMode == DescViewVars {
-					// Exit variable edit mode, go back to rendered view
-					m.descViewMode = DescViewRendered
-					m.varCursor = -1
-				} else {
-					// Enter variable edit mode
-					m.descViewMode = DescViewVars
-					m.varCursor = 0
-				}
+				m.viewMode = ViewVariablePicker
+				m.varCursor = 0
+				m.varPickerScroll = 0
+				return m, nil
 			}
 		}
 
@@ -1392,43 +1477,6 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.buildGraph()
 		m.viewMode = ViewGraph
 		return m, nil
-
-	// Toggle template variable expansion
-	case "x":
-		treeNodes := m.buildTree()
-		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
-			item := treeNodes[m.cursor].Item
-			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
-				// Toggle all variables
-				allExpanded := true
-				for k := range item.TemplateVars {
-					if !m.varExpanded[k] {
-						allExpanded = false
-						break
-					}
-				}
-				for k := range item.TemplateVars {
-					m.varExpanded[k] = !allExpanded
-				}
-			}
-		}
-
-	// Toggle description view mode (rendered/stored/vars)
-	case "X":
-		treeNodes := m.buildTree()
-		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
-			item := treeNodes[m.cursor].Item
-			if item.TemplateID != "" {
-				// Cycle through view modes: rendered -> stored -> vars -> rendered
-				m.descViewMode = (m.descViewMode + 1) % 3
-				// Reset variable cursor when entering/exiting vars mode
-				if m.descViewMode == DescViewVars {
-					m.varCursor = 0
-				} else {
-					m.varCursor = -1
-				}
-			}
-		}
 
 	// Refresh stored description from rendered template
 	case "R":
@@ -1588,6 +1636,7 @@ func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "g", "home":
 		m.templateCursor = 0
+		m.templateScroll = 0
 
 	case "G", "end":
 		m.templateCursor = max(0, len(m.templates)-1)
@@ -1724,6 +1773,7 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "g", "home":
 		m.configCursor = 0
+		m.configScroll = 0
 
 	case "G", "end":
 		m.configCursor = max(0, len(m.configFields)-1)
@@ -1775,9 +1825,9 @@ func (m Model) handleGraphKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.graphCursor >= 0 && m.graphCursor < len(m.graphNodes) {
 			targetID := m.graphNodes[m.graphCursor].ID
-			// Find the target in filtered items
-			for i, item := range m.filtered {
-				if item.ID == targetID {
+			treeNodes := m.buildTree()
+			for i, node := range treeNodes {
+				if node.Item.ID == targetID {
 					m.cursor = i
 					m.viewMode = ViewDetail
 					return m, m.loadDetail()
@@ -1859,6 +1909,47 @@ func (m Model) handleCreateWizardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m, nil
+}
+
+func (m Model) handleVariablePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
+		return m, nil
+	}
+	item := treeNodes[m.cursor].Item
+	if item.TemplateID == "" || len(item.TemplateVars) == 0 {
+		m.viewMode = ViewDetail
+		return m, nil
+	}
+
+	varNames := m.getSortedVarNames(item)
+	if m.varCursor >= len(varNames) {
+		m.varCursor = max(0, len(varNames)-1)
+	}
+
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.viewMode = ViewDetail
+		m.varCursor = -1
+		return m, nil
+	case "j", "down":
+		if m.varCursor < len(varNames)-1 {
+			m.varCursor++
+		}
+	case "k", "up":
+		if m.varCursor > 0 {
+			m.varCursor--
+		}
+	case "enter":
+		if m.varCursor >= 0 && m.varCursor < len(varNames) {
+			varName := varNames[m.varCursor]
+			m.viewMode = ViewDetail
+			return m.startTextareaEdit("var:"+varName, item.TemplateVars[varName])
+		}
+	}
 	return m, nil
 }
 
@@ -2201,12 +2292,12 @@ func (m Model) startTextareaEdit(target, content string) (Model, tea.Cmd) {
 	m.inputMode = InputTextarea
 	// Resize textarea to fit available space
 	width := m.width - (contentPadding * 2) - 4
-	if width < 40 {
-		width = 80
+	if width < 20 {
+		width = 20
 	}
-	height := m.height - 10 // Leave room for header and help
-	if height < 5 {
-		height = 10
+	height := m.height - 10
+	if height < 3 {
+		height = 3
 	}
 	m.textarea.SetWidth(width)
 	m.textarea.SetHeight(height)
@@ -2389,7 +2480,7 @@ func (m Model) doDelete() (Model, tea.Cmd) {
 	}
 	item := treeNodes[m.cursor].Item
 	return m, func() tea.Msg {
-		if err := m.db.DeleteItem(item.ID, false); err != nil {
+		if err := m.db.DeleteItem(item.ID, false, false); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Deleted %s", item.ID)}
@@ -2542,8 +2633,7 @@ func (m Model) handleEditorFinished(msg editorFinishedMsg) (Model, tea.Cmd) {
 	}
 
 	m.message = fmt.Sprintf("Updated description for %s", msg.itemID)
-	// Reload items to reflect the change
-	return m, tea.Batch(m.loadItems(), m.loadDetail())
+	return m, tea.Batch(m.loadItemsPreserving(msg.itemID), m.loadDetail())
 }
 
 // View implements tea.Model.
@@ -2572,6 +2662,8 @@ func (m Model) View() string {
 			b.WriteString(m.configView())
 		case ViewCreateWizard:
 			b.WriteString(m.createWizardView())
+		case ViewVariablePicker:
+			b.WriteString(m.variablePickerView())
 		}
 
 		// Input line (for non-textarea input modes)
@@ -2840,36 +2932,16 @@ func (m Model) listView() string {
 	if len(treeNodes) == 0 {
 		b.WriteString("No items match filters\n")
 	} else {
-		// Calculate visible height accounting for header, footer, and padding
-		// Header: 3 lines (title + filters + blank), Footer: 3 lines (blank + 2 help lines)
-		visibleHeight := m.height - 6
+		visibleHeight := m.height - listReservedRows
 		if visibleHeight < 3 {
-			visibleHeight = 3 // Minimum visible items
-		}
-		if visibleHeight > len(treeNodes) {
-			visibleHeight = len(treeNodes)
+			visibleHeight = 3
 		}
 
-		// Calculate start position to keep cursor visible
-		// When cursor is near the bottom, scroll up
-		// When cursor is near the top, scroll down
-		start := 0
-		if m.cursor >= visibleHeight {
-			start = m.cursor - visibleHeight + 1
-		}
-		// Ensure start doesn't go beyond valid range
-		if start < 0 {
-			start = 0
-		}
-		if start > len(treeNodes)-visibleHeight && len(treeNodes) >= visibleHeight {
-			start = len(treeNodes) - visibleHeight
-		}
-
-		end := min(start+visibleHeight, len(treeNodes))
+		start, end := calculateScrollRange(m.cursor, len(treeNodes), visibleHeight, &m.listScroll)
 
 		rowWidth := m.width - (contentPadding * 2)
-		if rowWidth < 60 {
-			rowWidth = 80
+		if rowWidth < 40 {
+			rowWidth = 40
 		}
 
 		for i := start; i < end; i++ {
@@ -2896,9 +2968,9 @@ func (m Model) listView() string {
 		b.WriteString("\n")
 		b.WriteString(helpStyle.Render("ctrl+v:exit-select  esc:clear-filters  q:quit"))
 	} else {
-		b.WriteString(helpStyle.Render("j/k:nav  ^u/^d:½pg  pgup/dn:pg  g/G:top/end  enter:detail  s:start d:done n:new"))
+		b.WriteString(helpStyle.Render("j/k:nav  ctrl+u/d:halfpg  pgup/dn:pg  g/G:top/end  enter:detail  s:start d:done n:new"))
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  b:block L:log c:cancel  T:templates C:config  r:refresh q:quit"))
+		b.WriteString(helpStyle.Render("/:search p:project t:label R:ready 1-5:status 0:all  b:block L:log c:cancel D:delete  T:templates C:config  r:refresh q:quit"))
 	}
 
 	return b.String()
@@ -2917,11 +2989,9 @@ func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
 		status = formatStatus(item.Status)
 	}
 
-	// Build tree prefix with indentation and expand/collapse indicators
 	treePrefix := m.buildTreePrefix(node)
-	treePrefixWidth := len(treePrefix)
+	treePrefixWidth := lipgloss.Width(treePrefix)
 
-	// Selection indicator
 	selectPrefix := ""
 	selectWidth := 0
 	if m.selectMode {
@@ -2933,7 +3003,6 @@ func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
 		selectWidth = 2
 	}
 
-	// Agent indicator
 	agent := ""
 	agentWidth := 0
 	if item.AgentID != nil && *item.AgentID != "" {
@@ -2941,43 +3010,36 @@ func (m Model) formatTreeNodeLinePlain(node treeNode, width int) string {
 		agentWidth = 2
 	}
 
-	// Type indicator (abbreviated)
 	itemType := string(item.Type)
 	if len(itemType) > 4 {
 		itemType = itemType[:4]
 	}
-	typeWidth := 5 // 4 chars + space
+	typeWidth := 5
 
-	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
 	statusWidth := 9
 
-	// Format: status type id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
 		project = "[" + item.Project + "]"
-		projectWidth = len(project) + 1
+		projectWidth = lipgloss.Width(project) + 1
 	}
 
-	// Build labels string
 	labels := ""
 	labelsWidth := 0
 	for _, lbl := range item.Labels {
 		labels += " [" + lbl + "]"
-		labelsWidth += len(lbl) + 3 // brackets + space
+		labelsWidth += lipgloss.Width("["+lbl+"]") + 1
 	}
 
-	// Calculate available space for title
 	fixedWidth := 10 + labelsWidth + projectWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
 	titleWidth := width - fixedWidth
-	if titleWidth < 20 {
-		titleWidth = 40
+	if titleWidth < 10 {
+		titleWidth = 10
 	}
 
 	title := item.Title
-	if len(title) > titleWidth {
-		title = title[:titleWidth-3] + "..."
-	}
+	title = truncateWidth(title, titleWidth)
 
 	if agent != "" {
 		return fmt.Sprintf("%s%s%-8s %-4s %s %s %-*s%s %s", selectPrefix, treePrefix, status, itemType, item.ID, agent, titleWidth, title, labels, project)
@@ -3000,11 +3062,9 @@ func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
 		statusStyled = lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%-8s", icon+" "+text))
 	}
 
-	// Build tree prefix with indentation and expand/collapse indicators
 	treePrefix := m.buildTreePrefix(node)
-	treePrefixWidth := len(treePrefix)
+	treePrefixWidth := lipgloss.Width(treePrefix)
 
-	// Selection indicator
 	selectPrefix := ""
 	selectWidth := 0
 	if m.selectMode {
@@ -3016,7 +3076,6 @@ func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
 		selectWidth = 2
 	}
 
-	// Agent indicator
 	agent := ""
 	agentWidth := 0
 	if item.AgentID != nil && *item.AgentID != "" {
@@ -3026,44 +3085,37 @@ func (m Model) formatTreeNodeLineStyled(node treeNode, width int) string {
 
 	id := dimStyle.Render(item.ID)
 
-	// Type indicator (abbreviated, dimmed)
 	itemType := string(item.Type)
 	if len(itemType) > 4 {
 		itemType = itemType[:4]
 	}
 	typeStyled := dimStyle.Render(fmt.Sprintf("%-4s", itemType))
-	typeWidth := 5 // 4 chars + space
+	typeWidth := 5
 
-	// Status width: icon (1-2) + space + text (up to 6) = 9 chars padded
 	statusWidth := 9
 
-	// Format: status type id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
 		project = dimStyle.Render("[" + item.Project + "]")
-		projectWidth = len(item.Project) + 3 // brackets + space
+		projectWidth = lipgloss.Width("["+item.Project+"]") + 1
 	}
 
-	// Build labels string
 	labels := ""
 	labelsWidth := 0
 	for _, lbl := range item.Labels {
 		labels += " " + labelStyle.Render("["+lbl+"]")
-		labelsWidth += len(lbl) + 3 // brackets + space
+		labelsWidth += lipgloss.Width("["+lbl+"]") + 1
 	}
 
-	// Calculate available space for title
 	fixedWidth := 10 + labelsWidth + projectWidth + agentWidth + typeWidth + statusWidth + selectWidth + treePrefixWidth
 	titleWidth := width - fixedWidth
-	if titleWidth < 20 {
-		titleWidth = 40
+	if titleWidth < 10 {
+		titleWidth = 10
 	}
 
 	title := item.Title
-	if len(title) > titleWidth {
-		title = title[:titleWidth-3] + "..."
-	}
+	title = truncateWidth(title, titleWidth)
 
 	// Render tree prefix with appropriate styling
 	styledTreePrefix := dimStyle.Render(treePrefix)
@@ -3145,6 +3197,10 @@ func (m Model) activeFiltersString() string {
 
 	if m.filterLabel != "" {
 		parts = append(parts, "label:\""+m.filterLabel+"\"")
+	}
+
+	if m.filterReady {
+		parts = append(parts, "ready")
 	}
 
 	return strings.Join(parts, " ")
@@ -3414,187 +3470,130 @@ func (m Model) detailView() string {
 		}
 	}
 
-	// Description section - behavior depends on whether this is a templated item
+	// Description section
 	if item.TemplateID != "" {
-		// Templated item: show based on view mode and template validity
-		showVars := m.descViewMode == DescViewVars || tmplInfo.notFound || tmplInfo.invalidStep
+		descLabel := "\nDescription"
+		if tmplInfo.notFound || tmplInfo.invalidStep {
+			descLabel += " " + dimStyle.Render("[stored - template error]")
+		}
+		descLabel += ":"
+		b.WriteString(detailLabelStyle.Render(descLabel) + "\n")
+		b.WriteString(renderTemplateForItem(item) + "\n")
 
-		if showVars {
-			// Show raw variables (either user requested via E key, or fallback due to error)
-			if len(item.TemplateVars) > 0 {
-				// Check if any variables need expansion hint
-				hasExpandable := false
-				for _, v := range item.TemplateVars {
-					if strings.Contains(v, "\n") || len(v) > 60 {
-						hasExpandable = true
-						break
-					}
+		// Template Variables
+		if len(item.TemplateVars) > 0 {
+			b.WriteString("\n" + detailLabelStyle.Render("Template Variables:") + " " + dimStyle.Render("(V to edit)") + "\n")
+			varNames := m.getSortedVarNames(item)
+			for _, name := range varNames {
+				value := item.TemplateVars[name]
+				displayValue := value
+				if len(value) > 60 {
+					displayValue = value[:57] + "..."
 				}
-
-				varsHeader := "\nVariables:"
-				if m.varCursor >= 0 {
-					varsHeader = "\n▸ Variables:" + " " + dimStyle.Render("[j/k:nav e:edit esc:exit]")
-				} else if hasExpandable {
-					varsHeader += " " + dimStyle.Render("[x:expand E:exit]")
-				} else {
-					varsHeader += " " + dimStyle.Render("[E:exit]")
+				if strings.Contains(value, "\n") {
+					displayValue = strings.Split(value, "\n")[0] + "..."
 				}
-				b.WriteString(detailLabelStyle.Render(varsHeader) + "\n")
-
-				// Sort variable names for consistent display
-				varNames := m.getSortedVarNames(item)
-
-				for i, name := range varNames {
-					value := item.TemplateVars[name]
-					displayValue := value
-
-					// Check if value needs truncation
-					if m.varExpanded[name] {
-						// Show full value, indented for multi-line
-						if strings.Contains(value, "\n") {
-							lines := strings.Split(value, "\n")
-							displayValue = lines[0]
-							for j := 1; j < len(lines); j++ {
-								displayValue += "\n      " + lines[j]
-							}
-						}
-					} else {
-						// Truncate if needed
-						if strings.Contains(value, "\n") {
-							// Show first line only with indicator
-							firstLine := strings.Split(value, "\n")[0]
-							if len(firstLine) > 60 {
-								firstLine = firstLine[:57] + "..."
-							}
-							displayValue = firstLine + " " + dimStyle.Render("(...)")
-						} else if len(value) > 60 {
-							displayValue = value[:57] + dimStyle.Render("(...)")
-						}
-					}
-
-					// Highlight selected variable
-					if m.varCursor == i {
-						line := fmt.Sprintf("  ▸ %s: %s", name, displayValue)
-						b.WriteString(selectedRowStyle.Render(line) + "\n")
-					} else {
-						b.WriteString("    " + labelStyle.Render(name) + ": " + displayValue + "\n")
-					}
-				}
-			}
-		} else {
-			// Show rendered or stored description with scrolling
-			descLabel := "\nDescription"
-			switch m.descViewMode {
-			case DescViewRendered:
-				descLabel += " " + dimStyle.Render("[rendered]")
-			case DescViewStored:
-				descLabel += " " + dimStyle.Render("[stored]")
-			}
-			descLabel += ":"
-			if m.descScroll > 0 {
-				descLabel += " " + dimStyle.Render(fmt.Sprintf("[scroll: %d]", m.descScroll))
-			}
-			b.WriteString(detailLabelStyle.Render(descLabel) + "\n")
-
-			var descText string
-			if m.descViewMode == DescViewStored {
-				descText = item.Description
-			} else {
-				// Default: show rendered description
-				descText = renderTemplateForItem(item)
-			}
-
-			// Apply scrolling
-			maxVisible := m.detailDescriptionVisibleHeight()
-			visibleDesc, totalLines := scrollText(descText, m.descScroll, maxVisible)
-			b.WriteString(visibleDesc + "\n")
-
-			// Show scroll indicator if there are more lines
-			if m.descScroll+maxVisible < totalLines {
-				remaining := totalLines - (m.descScroll + maxVisible)
-				b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more lines (j/k to scroll)", remaining)) + "\n")
-			}
-
-			// Show unused variables at the end (only when showing rendered description)
-			if m.descViewMode == DescViewRendered && tmplInfo.tmpl != nil {
-				unused := getUnusedVariables(tmplInfo.tmpl, item.TemplateVars, item.StepIndex)
-				if len(unused) > 0 {
-					b.WriteString("\n" + detailLabelStyle.Render("Unused Variables:") + "\n")
-					// Sort for consistent display
-					unusedNames := make([]string, 0, len(unused))
-					for name := range unused {
-						unusedNames = append(unusedNames, name)
-					}
-					sort.Strings(unusedNames)
-					for _, name := range unusedNames {
-						value := unused[name]
-						displayValue := value
-						if len(displayValue) > 50 {
-							displayValue = displayValue[:47] + "..."
-						}
-						if strings.Contains(displayValue, "\n") {
-							displayValue = strings.Split(displayValue, "\n")[0] + "..."
-						}
-						b.WriteString("    " + dimStyle.Render(name+": "+displayValue) + "\n")
-					}
-				}
+				b.WriteString(fmt.Sprintf("  %s: %s\n", labelStyle.Render(name), displayValue))
 			}
 		}
 	} else {
-		// Non-templated item: just show description with scrolling
+		// Non-templated item
 		if item.Description != "" {
-			descLabel := "Description"
-			if m.descScroll > 0 {
-				descLabel += " " + dimStyle.Render(fmt.Sprintf("[scroll: %d]", m.descScroll))
-			}
-			b.WriteString("\n" + detailLabelStyle.Render(descLabel) + "\n")
-
-			// Apply scrolling
-			maxVisible := m.detailDescriptionVisibleHeight()
-			visibleDesc, totalLines := scrollText(item.Description, m.descScroll, maxVisible)
-			b.WriteString(visibleDesc + "\n")
-
-			// Show scroll indicator if there are more lines
-			if m.descScroll+maxVisible < totalLines {
-				remaining := totalLines - (m.descScroll + maxVisible)
-				b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more lines (j/k to scroll)", remaining)) + "\n")
-			}
+			b.WriteString("\n" + detailLabelStyle.Render("Description:") + "\n")
+			b.WriteString(item.Description + "\n")
 		}
 	}
 
-	// Logs (toggle with v, scrollable)
+	// Logs (toggle with v)
 	logCount := len(m.detailLogs)
 	if logCount > 0 {
 		if m.logsVisible {
-			maxVisible := 20
-			b.WriteString("\n" + detailLabelStyle.Render(fmt.Sprintf("Logs (%d):", logCount)) + " " + dimStyle.Render("v:hide j/k:scroll") + "\n")
-			end := min(m.logScroll+maxVisible, logCount)
-			for i := m.logScroll; i < end; i++ {
-				log := m.detailLogs[i]
+			b.WriteString("\n" + detailLabelStyle.Render(fmt.Sprintf("Logs (%d):", logCount)) + " " + dimStyle.Render("v:hide") + "\n")
+			for _, log := range m.detailLogs {
 				ts := dimStyle.Render(log.CreatedAt.Format("2006-01-02 15:04"))
 				b.WriteString("  " + ts + " " + log.Message + "\n")
-			}
-			if end < logCount {
-				b.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more (scroll with j/k)", logCount-end)) + "\n")
 			}
 		} else {
 			b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("Logs: %d entries (v to show)", logCount)) + "\n")
 		}
 	}
 
-	b.WriteString("\n")
-	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep e:edit  v:logs  g:graph  q:quit"
+	content := b.String()
+
+	maxVisible := m.height - detailReservedRows
+	if maxVisible < 10 {
+		maxVisible = 10
+	}
+	visibleContent, totalLines := scrollText(content, m.descScroll, maxVisible)
+
+	// Build final output
+	var result strings.Builder
+	result.WriteString(visibleContent)
+
+	// Scroll indicator if needed
+	if m.descScroll+maxVisible < totalLines {
+		remaining := totalLines - (m.descScroll + maxVisible)
+		result.WriteString(dimStyle.Render(fmt.Sprintf("\n... %d more lines (j/k to scroll)", remaining)) + "\n")
+	}
+
+	// Help line
+	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep e:edit v:logs  j/k:scroll q:quit"
 	if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
-		help += "  tab:deps enter:jump"
+		help += "  tab:deps"
 	}
 	if item.TemplateID != "" {
-		if len(item.TemplateVars) > 0 {
-			help += "  x:expand"
-		}
-		help += "  E:vars X:view R:refresh"
+		help += "  V:variables"
 	}
-	b.WriteString(helpStyle.Render(help))
+	result.WriteString(helpStyle.Render(help))
 
+	return result.String()
+}
+
+func (m Model) variablePickerView() string {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
+		return "No item selected"
+	}
+
+	item := treeNodes[m.cursor].Item
+	if item.TemplateID == "" || len(item.TemplateVars) == 0 {
+		return "No template variables to edit"
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Edit Template Variable") + "\n\n")
+	b.WriteString(dimStyle.Render("Select a variable to edit:") + "\n\n")
+
+	varNames := m.getSortedVarNames(item)
+
+	// Calculate visible area (header: 4 lines, footer: 2 lines)
+	visibleHeight := m.height - 6
+	if visibleHeight < 3 {
+		visibleHeight = 3
+	}
+
+	start, end := calculateScrollRange(m.varCursor, len(varNames), visibleHeight, &m.varPickerScroll)
+
+	for i := start; i < end; i++ {
+		name := varNames[i]
+		value := item.TemplateVars[name]
+		displayValue := value
+		if len(value) > 60 {
+			displayValue = value[:57] + "..."
+		}
+		if strings.Contains(value, "\n") {
+			displayValue = strings.Split(value, "\n")[0] + "..."
+		}
+
+		if m.varCursor == i {
+			line := fmt.Sprintf("▸ %s: %s", name, displayValue)
+			b.WriteString(selectedRowStyle.Render(line) + "\n")
+		} else {
+			b.WriteString(fmt.Sprintf("  %s: %s\n", labelStyle.Render(name), displayValue))
+		}
+	}
+
+	b.WriteString("\n" + helpStyle.Render("j/k:nav  enter:edit  esc:back"))
 	return b.String()
 }
 
@@ -3639,8 +3638,15 @@ func (m Model) graphView() string {
 		maxRows = 1
 	}
 
-	// Render each row
-	colWidth := 20 // Width for each column
+	// Adapt column width to terminal (3 columns + 2 connectors of 6 chars each)
+	contentWidth := m.width - (contentPadding * 2)
+	colWidth := (contentWidth - 12) / 3
+	if colWidth < 12 {
+		colWidth = 12
+	}
+	if colWidth > 30 {
+		colWidth = 30
+	}
 	for row := 0; row < maxRows; row++ {
 		var leftPart, midPart, rightPart string
 		var leftSelected, midSelected, rightSelected bool
@@ -3794,17 +3800,13 @@ func (m Model) templateListView() string {
 	} else {
 		visibleHeight := m.height - 8
 		if visibleHeight < 5 {
-			visibleHeight = 15
+			visibleHeight = 5
 		}
-		start := 0
-		if m.templateCursor >= visibleHeight {
-			start = m.templateCursor - visibleHeight + 1
-		}
-		end := min(start+visibleHeight, len(m.templates))
+		start, end := calculateScrollRange(m.templateCursor, len(m.templates), visibleHeight, &m.templateScroll)
 
 		rowWidth := m.width - (contentPadding * 2)
-		if rowWidth < 60 {
-			rowWidth = 80
+		if rowWidth < 40 {
+			rowWidth = 40
 		}
 
 		for i := start; i < end; i++ {
@@ -3916,17 +3918,13 @@ func (m Model) configView() string {
 	} else {
 		visibleHeight := m.height - 8
 		if visibleHeight < 5 {
-			visibleHeight = 15
+			visibleHeight = 5
 		}
-		start := 0
-		if m.configCursor >= visibleHeight {
-			start = m.configCursor - visibleHeight + 1
-		}
-		end := min(start+visibleHeight, len(m.configFields))
+		start, end := calculateScrollRange(m.configCursor, len(m.configFields), visibleHeight, &m.configScroll)
 
 		rowWidth := m.width - (contentPadding * 2)
-		if rowWidth < 60 {
-			rowWidth = 80
+		if rowWidth < 40 {
+			rowWidth = 40
 		}
 
 		for i := start; i < end; i++ {
