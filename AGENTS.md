@@ -106,3 +106,74 @@ The TPG OpenCode plugin (`internal/plugin/opencode.ts`) automatically injects `A
 - Start implementation → tpg-orchestrator
 - Single task → tpg-agent
 - Understand codebase → explore-code
+
+## Worktree Merge Protocol
+
+Worktree-enabled epics use dedicated git worktrees for isolated development. Each worktree epic has its own branch and directory (`.worktrees/<epic-id>`). This protocol governs how worktree epics merge back to their parent branch.
+
+### Epic Lifecycle
+
+**Worktree epics stay OPEN until explicitly merged** via `tpg epic merge`. Unlike regular epics that auto-close when all children complete, worktree epics require manual merge because:
+
+1. The git merge step is distinct from task completion
+2. Merge order must follow git's ancestry graph
+3. The merge may fail if the parent branch has moved
+
+**Ready to merge:** A worktree epic shows "ready to merge" when all child tasks are done. This does NOT automatically merge - it signals that the epic is eligible for merge.
+
+### Merge Order
+
+**Child epics must be merged before parent epics.** The git graph enforces this: if epic B is based on epic A's branch, you must merge A before you can merge B.
+
+tpg tracks this via worktree parent relationships. When you run `tpg epic merge`, it verifies that all child worktree epics are already merged.
+
+**Example:**
+```
+main
+ └─ feature/ep-auth      (Epic A: Auth system)
+     └─ feature/ep-oauth (Epic B: OAuth integration)
+```
+
+Merge order: ep-oauth → ep-auth → main
+
+If you try to merge ep-auth before ep-oauth, tpg will error.
+
+### The Merge Protocol
+
+**Command:** `tpg epic merge <epic-id>`
+
+**What it does:**
+
+1. **Verify worktree is clean** - No uncommitted changes allowed
+2. **Rebase worktree onto parent branch** - `git rebase <parent-branch>` in worktree directory
+3. **Checkout parent branch** - Switch to the parent branch
+4. **Fast-forward merge** - `git merge --ff-only <worktree-branch>`
+5. **Mark merged in database** - Epic status becomes "merged"
+6. **Auto-close epic** - Epic transitions to "done" after successful merge
+
+**If step 4 fails** (parent branch has moved since rebase), the protocol automatically retries from step 2. This handles race conditions when multiple epics merge concurrently.
+
+**Error cases:**
+- Uncommitted changes in worktree → Manual resolution required
+- Child worktree epics not merged → Merge children first
+- Rebase conflicts → Manual conflict resolution required
+
+### Commands
+
+```bash
+# Check if epic is ready to merge
+tpg show <epic-id>
+
+# Execute merge protocol
+tpg epic merge <epic-id>
+
+# View worktree status
+tpg show <task-id>  # Shows worktree context for tasks
+```
+
+**Agent workflow:**
+
+- **tpg-agent (subagent):** Completes tasks, commits changes to worktree branch, reports when last task done
+- **tpg-orchestrator (primary):** Runs `tpg epic merge` after all children complete
+
+**CRITICAL:** Subagents do NOT merge. Only the orchestrator handles merges via `tpg epic merge`.
