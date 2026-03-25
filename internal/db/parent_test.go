@@ -447,3 +447,93 @@ func TestCanCloseParentWithNoChildren(t *testing.T) {
 		t.Errorf("unexpected error when closing parent with no children: %v", err)
 	}
 }
+
+func TestWorktreeEpicSkipsAutoComplete(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Worktree Epic",
+		Status:         model.StatusOpen,
+		WorktreeBranch: "feature/test-branch",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	child := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Child Task",
+		Status:    model.StatusDone,
+		ParentID:  &epic.ID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(child); err != nil {
+		t.Fatalf("failed to create child: %v", err)
+	}
+
+	info, err := db.CheckParentEpicCompletion(child.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info != nil {
+		t.Error("expected nil completion info for worktree epic, got non-nil")
+	}
+
+	item, err := db.GetItem(epic.ID)
+	if err != nil {
+		t.Fatalf("failed to get epic: %v", err)
+	}
+	if item.Status != model.StatusOpen {
+		t.Errorf("expected epic status to remain open, got %s", item.Status)
+	}
+}
+
+func TestNonWorktreeEpicAutoCompletes(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Regular Epic",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	child := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Child Task",
+		Status:    model.StatusDone,
+		ParentID:  &epic.ID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(child); err != nil {
+		t.Fatalf("failed to create child: %v", err)
+	}
+
+	info, err := db.CheckParentEpicCompletion(child.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info == nil {
+		t.Fatal("expected completion info for regular epic, got nil")
+	}
+	if info.Epic.ID != epic.ID {
+		t.Errorf("expected epic ID %s, got %s", epic.ID, info.Epic.ID)
+	}
+}

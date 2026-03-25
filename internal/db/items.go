@@ -345,6 +345,11 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 		return nil, nil // Still has open children
 	}
 
+	// Skip auto-complete for worktree epics - they must be merged explicitly
+	if parent.WorktreeBranch != "" {
+		return nil, nil
+	}
+
 	return &EpicCompletionInfo{
 		Epic:                parent,
 		ClosingInstructions: parent.ClosingInstructions,
