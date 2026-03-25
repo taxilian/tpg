@@ -324,37 +324,36 @@ This allows the orchestrator to create an atomic commit for your task.
 
 ### When completing the last task in an epic:
 
-When you run `tpg done` on the final task in an epic, the system automatically shows epic completion info. **DO NOT handle worktree cleanup yourself** - the orchestrator will handle it.
+When you run `tpg done` on the final task in an epic, the system will show that all children are complete. **DO NOT handle merge yourself** - that is the orchestrator's job.
 
 **When you mark the last task done:**
 
-1. The system will display epic completion info
-2. **Report to the orchestrator:** 
+1. Complete your task normally with `tpg done <task-id>`
+2. The system will display epic completion info
+3. **Report to the orchestrator:** 
    ```
-   Completed TASK-123. Epic ep-abc123 auto-completed.
-   Worktree at .worktrees/ep-abc123/ needs cleanup.
+   Completed TASK-123. Epic ep-abc123 ready to merge - all children done.
    ```
-3. The orchestrator (primary agent) will handle:
-   - Committing any remaining changes
-   - Merging the worktree branch
-   - Removing the worktree directory
-   - Deleting the branch
 
-**DO NOT run git merge, git worktree remove, or git branch -d yourself.**
+**The orchestrator will then run:**
+```bash
+tpg epic merge ep-abc123
+```
+
+This command handles the full merge protocol:
+- Rebasing the worktree branch onto its parent
+- Fast-forward merging into the parent branch
+- Marking the epic as merged in the database
+
+**DO NOT attempt merge yourself.** The orchestrator handles it via `tpg epic merge` after you report readiness.
 
 **CRITICAL:** Always follow the workflow:
 1. **Mark start:** `tpg start <task-id>` when you begin
 2. **Log progress:** `tpg log <task-id>` for milestones, decisions, blockers
 3. **Mark done:** `tpg done <task-id>` when complete with results
+4. **Report readiness** if it's the last task in an epic
 
-**Report to orchestrator:**
-After completing the task (and handling any epic cleanup), report what was done:
-```
-Completed TASK-123. Epic ep-abc123 auto-completed. 
-Merged branch feature/ep-abc123-name into main and cleaned up worktree.
-```
-
-**Note:** Check AGENTS.md for any project-specific merge instructions that override the default workflow.
+**Merge is a separate operational step handled by the orchestrator after the epic is ready.**
 
 ## Epic shared context
 
