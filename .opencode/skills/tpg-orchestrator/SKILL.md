@@ -253,53 +253,53 @@ This task belongs to epic <epic-id> with worktree at .worktrees/<epic-id>/.
 Verify context with `tpg show <id>` before starting.
 ```
 
-**4. Epic completion:**
-When an epic auto-completes, run `tpg epic finish <id>` to see cleanup steps:
-- Closing instructions (if set with `--on-close`)
-- Merge branch commands
-- Worktree removal commands
+**4. Epic merge readiness:**
+Worktree epics don't auto-complete. When all children are done, run `tpg epic finish <id>` to see epic status:
+- If epic has worktree AND all children done → ready to merge
+- Use `tpg epic merge <id>` to execute merge protocol
+- After merge, `tpg epic finish` shows worktree cleanup commands
 
-**5. Detecting completed worktree epics (Critical):**
+**5. Detecting ready-to-merge worktree epics (Critical):**
 
-After ANY agent reports task completion, you MUST check if the parent epic completed:
+After ANY agent reports task completion, you MUST check if the parent epic is ready to merge:
 
 ```bash
 # After agent reports: "Completed TASK-123"
-# Check if parent epic is now done
+# Check if parent epic is ready to merge
 
 tpg show TASK-123                    # Get parent epic ID
 tpg show <epic-id>                   # Check epic status
 
-# If status is "done" AND epic has worktree_branch set:
-# → Epic auto-completed, handle cleanup NOW
+# If all children done AND epic has worktree_branch set AND merge_status='pending':
+# → Epic ready to merge, handle merge NOW
 ```
 
-**6. Worktree cleanup (Orchestrator responsibility):**
+**6. Worktree merge (Orchestrator responsibility):**
 
-When you detect an epic is done and has a worktree, handle cleanup immediately:
+When you detect an epic is ready to merge (all children done, has worktree, merge_status='pending'), handle merge immediately:
 
 ```bash
-# Check cleanup instructions
-tpg epic finish <epic-id>
+# Use the tpg epic merge command - it handles the full protocol
+tpg epic merge <epic-id>
 
-# Navigate to worktree and complete any pending work
-cd .worktrees/<epic-id>
-git status  # Check for uncommitted changes
-git add . && git commit -m "final: complete epic <epic-id>"  # If needed
+# This command:
+# 1. Verifies worktree is clean (no uncommitted changes)
+# 2. Verifies all child epics with worktrees are merged
+# 3. Rebases worktree branch onto parent branch
+# 4. Fast-forward merges into parent branch (retries if parent moved)
+# 5. Marks epic as merged and closed in DB
+# 6. Shows cleanup instructions for worktree removal
 
-# Merge to parent branch (main or parent epic branch)
-cd ../..
-git checkout <parent-branch>
-git merge <worktree-branch>
-
-# Remove worktree and branch
+# After successful merge, clean up worktree:
 git worktree remove .worktrees/<epic-id>
 git branch -d <worktree-branch>
 ```
 
-**Note:** Check AGENTS.md for project-specific merge instructions that may override direct merge (e.g., requiring PRs).
+**Important:** The `tpg epic merge` command handles the full rebase-and-merge protocol. Don't run raw git commands manually - use the tpg command.
 
-**Why this matters:** The agent completing the last task triggers epic auto-completion, but YOU must detect it and cleanup. Don't wait for the agent to tell you - they already reported task completion. Check the epic status yourself.
+**Note:** Check AGENTS.md for project-specific merge instructions that may override this workflow (e.g., requiring PRs).
+
+**Why this matters:** Worktree epics don't auto-complete. When all children are done, the epic becomes "ready to merge". YOU must detect this state and run `tpg epic merge`. Don't wait for the agent to tell you - they already reported task completion. Check the epic status yourself.
 
 ## Handling Blockers
 
@@ -357,11 +357,11 @@ tpg history <id>             # See full timeline
 2. Assign to a new agent; they should continue from where it left off
 3. Do NOT use `--set-status` — that's for fixing unfixable errors only
 
-## Epic Completion and Worktree Cleanup
+## Worktree Epic Merge Protocol
 
-When all children of an epic are done, the epic auto-completes automatically. **The orchestrator (you) handles worktree cleanup, NOT the subagent.**
+Worktree epics don't auto-complete when all children are done. Instead, they become "ready to merge". **The orchestrator (you) handles the merge, NOT the subagent.**
 
-**The Problem:** The agent completing the last task triggers epic auto-completion. You need to DETECT this and handle cleanup.
+**The Problem:** The agent completing the last task doesn't trigger epic completion. You need to DETECT when an epic is ready to merge and execute the merge protocol.
 
 **Your workflow after EVERY task completion:**
 
@@ -375,32 +375,35 @@ When all children of an epic are done, the epic auto-completes automatically. **
 2. **YOU check parent epic status:**
    ```bash
    tpg show TASK-123              # Get parent epic ID
-   tpg show <epic-id>             # Check if epic status is "done"
+   tpg show <epic-id>             # Check epic status
    ```
 
-3. **If epic is done and has worktree:**
+3. **If epic is ready to merge (all children done AND has worktree_branch AND merge_status='pending'):**
    ```bash
-   tpg epic finish <epic-id>      # View cleanup instructions
+   # Execute the merge protocol
+   tpg epic merge <epic-id>
    
-   # Handle cleanup (see "Worktree cleanup" section below)
-   cd .worktrees/<epic-id>
-   git status                     # Check for uncommitted changes
-   git add . && git commit -m "final: complete epic"  # If needed
+   # This command handles:
+   # - Verifies worktree clean (no uncommitted changes)
+   # - Verifies all child epics with worktrees are merged
+   # - Rebases worktree onto parent branch
+   # - Fast-forward merges (retries if parent moved)
+   # - Marks epic as merged and closed in DB
+   # - Shows cleanup instructions
    
-   cd ../..
-   git checkout <parent-branch>
-   git merge <worktree-branch>
+   # After successful merge, clean up worktree:
    git worktree remove .worktrees/<epic-id>
    git branch -d <worktree-branch>
    ```
 
-**Critical:** Don't wait for the agent to tell you the epic is done. Check the epic status yourself after every task completion. The agent only knows their task is done - you must verify if that completed the epic.
+**Critical:** Don't wait for the agent to tell you the epic is ready. Check the epic status yourself after every task completion. The agent only knows their task is done - you must verify if that makes the epic ready to merge.
 
 **Your role:**
 - **Proactively check** epic status after every task completion
-- Handle cleanup immediately when you find a done epic with a worktree
+- Execute `tpg epic merge` when epic is ready to merge
 - Check AGENTS.md for project-specific instructions (some projects require PRs instead of direct merge)
-- Verify cleanup: `tpg show <epic-id>` should show status "done" and worktree removed
+- Clean up worktree after successful merge
+- Verify completion: `tpg show <epic-id>` should show merge_status="merged" and status="done"
 
 ## Communication Style
 
