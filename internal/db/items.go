@@ -51,14 +51,16 @@ func (db *DB) CreateItem(item *model.Item) error {
 		INSERT INTO items (
 			id, project, type, title, description, status, priority, parent_id,
 			template_id, step_index, variables, template_hash, results,
-			worktree_branch, worktree_base, shared_context, closing_instructions,
+			worktree_branch, worktree_base, merge_status, worktree_fork_point,
+			shared_context, closing_instructions,
 			created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Project, item.Type, item.Title, item.Description,
 		item.Status, item.Priority, item.ParentID,
 		item.TemplateID, item.StepIndex, varsJSON, item.TemplateHash, item.Results,
-		item.WorktreeBranch, item.WorktreeBase, item.SharedContext, item.ClosingInstructions,
+		item.WorktreeBranch, item.WorktreeBase, item.MergeStatus, item.WorktreeForkPoint,
+		item.SharedContext, item.ClosingInstructions,
 		sqlTime(item.CreatedAt), sqlTime(item.UpdatedAt),
 	)
 	if err != nil {
@@ -82,7 +84,8 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 		SELECT id, project, type, title, description, status, priority, parent_id,
 			agent_id, agent_last_active,
 			template_id, step_index, variables, template_hash, results,
-			worktree_branch, worktree_base, shared_context, closing_instructions,
+			worktree_branch, worktree_base, merge_status, worktree_fork_point,
+			shared_context, closing_instructions,
 			created_at, updated_at
 		FROM items WHERE id = ?`, id)
 
@@ -97,6 +100,8 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	var results sql.NullString
 	var worktreeBranch sql.NullString
 	var worktreeBase sql.NullString
+	var mergeStatus sql.NullString
+	var worktreeForkPoint sql.NullString
 	var sharedContext sql.NullString
 	var closingInstructions sql.NullString
 	err := row.Scan(
@@ -104,7 +109,8 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 		&item.Status, &item.Priority, &parentID,
 		&agentID, &agentLastActive,
 		&templateID, &stepIndex, &variables, &templateHash, &results,
-		&worktreeBranch, &worktreeBase, &sharedContext, &closingInstructions,
+		&worktreeBranch, &worktreeBase, &mergeStatus, &worktreeForkPoint,
+		&sharedContext, &closingInstructions,
 		&item.CreatedAt, &item.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -148,6 +154,12 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 	}
 	if worktreeBase.Valid {
 		item.WorktreeBase = worktreeBase.String
+	}
+	if mergeStatus.Valid {
+		item.MergeStatus = mergeStatus.String
+	}
+	if worktreeForkPoint.Valid {
+		item.WorktreeForkPoint = worktreeForkPoint.String
 	}
 	if sharedContext.Valid {
 		item.SharedContext = sharedContext.String
@@ -343,11 +355,6 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 
 	if openChildren > 0 {
 		return nil, nil // Still has open children
-	}
-
-	// Skip auto-complete for worktree epics - they must be merged explicitly
-	if parent.WorktreeBranch != "" {
-		return nil, nil
 	}
 
 	return &EpicCompletionInfo{
@@ -1131,29 +1138,4 @@ func (db *DB) FindTasksWithNonEpicParents() ([]InvalidParent, error) {
 	}
 
 	return invalid, rows.Err()
-}
-
-func (db *DB) MarkEpicMerged(epicID string) error {
-	item, err := db.GetItem(epicID)
-	if err != nil {
-		return fmt.Errorf("epic not found: %w", err)
-	}
-	if item.Type != model.ItemTypeEpic {
-		return fmt.Errorf("%s is not an epic", epicID)
-	}
-	if item.WorktreeBranch == "" {
-		return fmt.Errorf("%s is not a worktree epic", epicID)
-	}
-
-	now := sqlTime(time.Now())
-	_, err = db.Exec(`
-		UPDATE items 
-		SET merge_status = 'merged', status = 'done', closed_at = ?, updated_at = ? 
-		WHERE id = ?`,
-		now, now, epicID)
-	if err != nil {
-		return fmt.Errorf("failed to mark epic as merged: %w", err)
-	}
-
-	return nil
 }

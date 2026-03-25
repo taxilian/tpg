@@ -33,7 +33,7 @@ func sqlTime(t time.Time) string {
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -189,6 +189,9 @@ ALTER TABLE items ADD COLUMN worktree_base TEXT;
 	// Version 7: Add closed_at column and history table for audit tracking
 	// This migration is handled specially in runMigrationV7 to be idempotent
 	"", // Empty placeholder - actual logic in runMigrationV7
+	// Version 8: Add merge_status and worktree_fork_point columns for worktree merge tracking
+	// This migration is handled specially in runMigrationV8 to be idempotent
+	"", // Empty placeholder - actual logic in runMigrationV8
 }
 
 // DB wraps a SQL database connection with task-specific operations.
@@ -392,6 +395,10 @@ func (db *DB) Migrate() error {
 			if err := db.runMigrationV7(); err != nil {
 				return fmt.Errorf("migration to v7 failed: %w", err)
 			}
+		} else if targetVersion == 8 {
+			if err := db.runMigrationV8(); err != nil {
+				return fmt.Errorf("migration to v8 failed: %w", err)
+			}
 		} else {
 			if _, err := db.Exec(migration); err != nil {
 				return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
@@ -554,6 +561,47 @@ func (db *DB) runMigrationV7() error {
 		if _, err := db.Exec(idx.sql); err != nil {
 			return fmt.Errorf("failed to create %s index: %w", idx.name, err)
 		}
+	}
+
+	return nil
+}
+
+// runMigrationV8 adds merge_status and worktree_fork_point columns.
+// This migration is idempotent - it checks if columns exist before adding them.
+func (db *DB) runMigrationV8() error {
+	// Check if merge_status column exists
+	exists, err := db.columnExists("items", "merge_status")
+	if err != nil {
+		return fmt.Errorf("failed to check merge_status column: %w", err)
+	}
+	if !exists {
+		if _, err := db.Exec("ALTER TABLE items ADD COLUMN merge_status TEXT"); err != nil {
+			return fmt.Errorf("failed to add merge_status column: %w", err)
+		}
+	}
+
+	// Check if worktree_fork_point column exists
+	exists, err = db.columnExists("items", "worktree_fork_point")
+	if err != nil {
+		return fmt.Errorf("failed to check worktree_fork_point column: %w", err)
+	}
+	if !exists {
+		if _, err := db.Exec("ALTER TABLE items ADD COLUMN worktree_fork_point TEXT"); err != nil {
+			return fmt.Errorf("failed to add worktree_fork_point column: %w", err)
+		}
+	}
+
+	// Backfill existing worktree epics with merge_status='pending'
+	_, err = db.Exec(`
+		UPDATE items 
+		SET merge_status = 'pending' 
+		WHERE type = 'epic' 
+		  AND worktree_branch IS NOT NULL 
+		  AND worktree_branch != '' 
+		  AND merge_status IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to backfill merge_status: %w", err)
 	}
 
 	return nil
