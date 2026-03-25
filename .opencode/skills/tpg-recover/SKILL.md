@@ -64,13 +64,66 @@ tpg start <task-id> --resume
 
 - If `tpg show` lists a worktree, use its instructions to enter the right directory.
 - Verify the worktree exists (for example, with `git worktree list`) before editing files.
-- When an epic is fully complete (auto-completed), run:
+- When an epic is ready to merge (all children done), run:
 
 ```bash
-tpg epic finish <epic-id>
+tpg epic merge <epic-id>
 ```
 
-This shows cleanup steps (merge branch, remove worktree). `tpg epic finish` does not complete the epic.
+This performs the rebase-then-ff-merge protocol and cleans up the worktree.
+
+### Merge recovery scenarios
+
+**Epic stuck in "ready to merge" but merge keeps failing:**
+
+- Check: worktree has uncommitted changes
+- Resolution: commit or discard changes, then retry `tpg epic merge`
+
+```bash
+cd .worktrees/<epic-id>
+git status                     # Check for uncommitted changes
+git add . && git commit -m "..." # Or git restore . to discard
+tpg epic merge <epic-id>       # Retry merge
+```
+
+**Epic "ready to merge" but worktree was deleted externally:**
+
+- Check: `git worktree list` shows worktree missing
+- Resolution: recreate worktree or abandon merge
+
+```bash
+git worktree list              # Verify missing
+# Option 1: Recreate worktree
+git worktree add -b <branch> .worktrees/<epic-id> <base-branch>
+cd .worktrees/<epic-id>
+# Complete work, then merge
+
+# Option 2: If work was already completed and committed to branch
+git checkout <parent-branch>
+git merge --ff-only <worktree-branch>
+# Then manually mark epic as merged in DB if needed
+```
+
+**Merge failed partway through rebase:**
+
+- Check: worktree in rebasing state (`git status` shows rebase in progress)
+- Resolution: `git rebase --abort` to clean up, then retry
+
+```bash
+cd .worktrees/<epic-id>
+git status                     # Confirms rebase in progress
+git rebase --abort             # Clean state
+tpg epic merge <epic-id>       # Retry merge
+```
+
+**Merge failed on ff-only (parent moved):**
+
+- The merge command auto-retries after re-rebasing
+- If manually interrupted: just run `tpg epic merge` again
+
+```bash
+tpg epic merge <epic-id>       # Will rebase and retry
+```
 
 5. Record recovery actions
 
@@ -91,7 +144,9 @@ tpg list --status in_progress
 tpg show <id>
 tpg history <id>
 tpg start <id> --resume
-tpg epic finish <epic-id>
+tpg epic merge <epic-id>
+git worktree list
+git rebase --abort
 ```
 
 ## Gotchas and rules
