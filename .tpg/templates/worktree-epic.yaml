@@ -68,18 +68,24 @@ steps:
       ```
 
       **Complete:**
-      ```bash
-      cd ../..                              # Return to main repo
-      git merge feature/{{.item_id}}-{{.epic_name | slugify}}  # Merge branch
-      git worktree remove .worktrees/{{.item_id}}              # Remove worktree
-      git branch -d feature/{{.item_id}}-{{.epic_name | slugify}}  # Delete branch
-      ```
 
-      **Using PRs?** Push branch and create PR instead of direct merge:
+      When all tasks are done, the epic shows "ready to merge".
+      Run: `tpg epic merge {{.item_id}}`
+
+      This will:
+      1. Verify worktree is clean (no uncommitted changes)
+      2. Rebase worktree branch onto parent branch
+      3. Fast-forward merge into parent branch
+      4. Mark epic as merged and close it
+
+      Do NOT run `git merge` manually - use `tpg epic merge`.
+
+      **Using PRs?** Push branch and create PR instead of using tpg merge:
       ```bash
       cd .worktrees/{{.item_id}}
       git push origin feature/{{.item_id}}-{{.epic_name | slugify}}
-      # Create PR in GitHub/GitLab
+      # Create PR in GitHub/GitLab, then merge through platform
+      # After PR is merged, mark epic complete with: tpg epic finish {{.item_id}}
       ```
 
       ## Acceptance Criteria
@@ -89,8 +95,7 @@ steps:
       - [ ] Worktree created
       - [ ] All tasks completed
       - [ ] Changes committed to worktree branch
-      - [ ] Branch merged (or PR merged)
-      - [ ] Worktree cleaned up
+      - [ ] Epic merged with `tpg epic merge` (or PR merged and epic closed with `tpg epic finish`)
 
       ## Parallel Execution
 
