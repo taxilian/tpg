@@ -949,6 +949,149 @@ Examples:
 	},
 }
 
+var epicMergeCmd = &cobra.Command{
+	Use:   "merge <id>",
+	Short: "Merge a worktree epic's branch into its parent",
+	Long: `Execute the merge protocol for a worktree epic.
+
+This command merges the epic's worktree branch into its parent branch using
+the rebase-then-ff-merge protocol. After successful merge, the epic is marked
+as merged and closed.
+
+Protocol:
+  1. Verify worktree is clean (no uncommitted changes)
+  2. Verify all child epics with worktrees are merged
+  3. cd to worktree path
+  4. git rebase <parent_branch>
+  5. git checkout <parent_branch>
+  6. git merge --ff-only <worktree_branch>
+  7. If ff-only fails: retry from step 4 (parent may have moved)
+  8. Mark epic as merged in database
+
+Conflicts during rebase will halt the merge with an error. You must resolve
+conflicts manually, then re-run this command.
+
+Examples:
+  tpg epic merge ep-abc123`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		epicID := args[0]
+
+		item, err := database.GetItem(epicID)
+		if err != nil {
+			return err
+		}
+		if item.Type != model.ItemTypeEpic {
+			return fmt.Errorf("%s is not an epic", epicID)
+		}
+		if item.WorktreeBranch == "" {
+			return fmt.Errorf("%s is not a worktree epic (no worktree configured)", epicID)
+		}
+		if item.MergeStatus == "merged" {
+			return fmt.Errorf("%s is already merged", epicID)
+		}
+
+		total, open, inProgress, done, err := database.GetChildrenStats(epicID)
+		if err != nil {
+			return fmt.Errorf("failed to get children stats: %w", err)
+		}
+		if open > 0 || inProgress > 0 {
+			return fmt.Errorf("cannot merge: %d children still open/in-progress (complete all children first)", open+inProgress)
+		}
+
+		descendants, err := database.GetDescendants(epicID)
+		if err != nil {
+			return fmt.Errorf("failed to get descendants: %w", err)
+		}
+		for _, d := range descendants {
+			if d.Type == model.ItemTypeEpic && d.WorktreeBranch != "" && d.MergeStatus != "merged" {
+				return fmt.Errorf("cannot merge: child epic %s has worktree but is not merged yet", d.ID)
+			}
+		}
+
+		config, _ := db.LoadConfig()
+		ctx, worktrees := detectWorktreeState()
+		repoRoot := ""
+		if ctx != nil {
+			repoRoot = ctx.RepoRoot
+		}
+
+		worktreePath := ""
+		if worktrees != nil {
+			if path, ok := worktrees[item.WorktreeBranch]; ok {
+				worktreePath = path
+			}
+		}
+		if worktreePath == "" {
+			worktreePath = filepath.Join(repoRoot, config.Worktree.Root, epicID)
+		}
+
+		if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+			return fmt.Errorf("worktree path does not exist: %s", worktreePath)
+		}
+
+		parentBranch := item.WorktreeBase
+		if parentBranch == "" {
+			parentBranch = "main"
+		}
+
+		fmt.Printf("Merging epic: %s\n", item.Title)
+		fmt.Printf("  Branch: %s\n", item.WorktreeBranch)
+		fmt.Printf("  Target: %s\n", parentBranch)
+		fmt.Printf("  Worktree: %s\n", worktreePath)
+		if total > 0 {
+			fmt.Printf("  Children: %d/%d done\n", done, total)
+		}
+		fmt.Println()
+
+		if !flagMergeConfirm {
+			fmt.Print("Proceed with merge? [y/N]: ")
+			var response string
+			fmt.Scanln(&response)
+			response = strings.ToLower(strings.TrimSpace(response))
+			if response != "y" && response != "yes" {
+				return fmt.Errorf("merge cancelled")
+			}
+		}
+
+		result, err := worktree.MergeWorktree(epicID, item.WorktreeBranch, parentBranch, worktreePath)
+		if err != nil {
+			if result != nil && result.ConflictOccurred {
+				fmt.Fprintf(os.Stderr, "\nMerge failed due to conflicts.\n")
+				fmt.Fprintf(os.Stderr, "Resolve conflicts in %s and re-run this command.\n", worktreePath)
+			}
+			return err
+		}
+
+		if err := database.MarkEpicMerged(epicID); err != nil {
+			return fmt.Errorf("merge succeeded but failed to update database: %w", err)
+		}
+
+		_ = database.AddLog(epicID, "Worktree merged into "+parentBranch)
+
+		fmt.Printf("\n✓ Merge successful\n")
+		fmt.Printf("Epic %s marked as merged and closed\n", epicID)
+
+		if item.ClosingInstructions != "" {
+			fmt.Printf("\nClosing instructions:\n%s\n", item.ClosingInstructions)
+		}
+
+		fmt.Printf("\nCleanup commands:\n")
+		fmt.Printf("  git worktree remove %s\n", displayWorktreePath(repoRoot, worktreePath))
+		fmt.Printf("  git branch -d %s\n", item.WorktreeBranch)
+
+		database.BackupQuiet()
+
+		return nil
+	},
+}
+
 var addCmd = &cobra.Command{
 	Use:   "add <title>",
 	Short: "Create a new task",
@@ -2101,6 +2244,20 @@ Example:
 			return err
 		}
 
+		// For worktree epics, check children status for merge readiness display
+		var incompleteChildren []model.Item
+		if item.Type == model.ItemTypeEpic && item.WorktreeBranch != "" {
+			allChildren, err := database.GetChildren(item.ID)
+			if err != nil {
+				return err
+			}
+			for _, child := range allChildren {
+				if child.Status != model.StatusDone && child.Status != model.StatusCanceled {
+					incompleteChildren = append(incompleteChildren, child)
+				}
+			}
+		}
+
 		// Output based on format
 		switch flagShowFormat {
 		case "json":
@@ -2110,7 +2267,7 @@ Example:
 		case "markdown":
 			return printItemMarkdown(item, logs, deps, blockers, latestProgress, concepts, templateNotice, children, parentChain, depChain, worktreeInfo)
 		default:
-			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars, worktreeInfo, epicPath, sharedContext)
+			printItemDetail(item, logs, deps, blockers, latestProgress, concepts, templateNotice, flagShowVars, worktreeInfo, epicPath, sharedContext, incompleteChildren)
 			if flagShowWithParent && len(parentChain) > 0 {
 				fmt.Printf("\nParent Chain:\n")
 				for _, parent := range parentChain {
@@ -6233,12 +6390,16 @@ func init() {
 	epicReplaceCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
 	epicReplaceCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
 
+	// epicMergeCmd flags
+	epicMergeCmd.Flags().BoolVarP(&flagMergeConfirm, "yes", "y", false, "Skip confirmation prompt")
+
 	epicCmd.AddCommand(epicAddCmd)
 	epicCmd.AddCommand(epicEditCmd)
 	epicCmd.AddCommand(epicListCmd)
 	epicCmd.AddCommand(epicReplaceCmd)
 	epicCmd.AddCommand(epicWorktreeCmd)
 	epicCmd.AddCommand(epicFinishCmd)
+	epicCmd.AddCommand(epicMergeCmd)
 	rootCmd.AddCommand(epicCmd)
 
 	rootCmd.AddCommand(addCmd)
@@ -7067,7 +7228,7 @@ type DepEdgeJSON struct {
 	DependsOnStatus string `json:"depends_on_status"`
 }
 
-func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool, worktreeInfo *WorktreeInfo, epicPath []model.Item, sharedContext []db.SharedContextEntry) {
+func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers []db.DepStatus, latestProgress *model.Log, concepts []model.Concept, templateNotice string, showVars bool, worktreeInfo *WorktreeInfo, epicPath []model.Item, sharedContext []db.SharedContextEntry, incompleteChildren []model.Item) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
@@ -7127,6 +7288,36 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 		} else if !worktreeInfo.InWorktree {
 			fmt.Printf("\n  To work in the correct directory:\n")
 			fmt.Printf("    cd %s\n", worktreeInfo.Location)
+		}
+
+		// Display merge status for worktree epics
+		if item.Type == model.ItemTypeEpic && item.WorktreeBranch != "" {
+			fmt.Println()
+			base := item.WorktreeBase
+			if base == "" {
+				base = "main"
+			}
+
+			if item.MergeStatus == "merged" {
+				fmt.Printf("  ✓ Merged to %s", base)
+				if item.ClosedAt != nil {
+					fmt.Printf(" at %s", item.ClosedAt.Format("2006-01-02 15:04"))
+				}
+				fmt.Println()
+			} else if len(incompleteChildren) > 0 {
+				fmt.Printf("  ○ Waiting for children:\n")
+				for _, child := range incompleteChildren {
+					fmt.Printf("    - %s [%s] %s\n", child.ID, child.Status, child.Title)
+				}
+			} else {
+				fmt.Printf("  ✓ Ready to merge\n")
+				fmt.Printf("    Run: tpg epic merge %s\n", item.ID)
+				fmt.Printf("\n")
+				fmt.Printf("    Merge protocol:\n")
+				fmt.Printf("      1. Worktree must be clean (no uncommitted changes)\n")
+				fmt.Printf("      2. Rebase onto %s\n", base)
+				fmt.Printf("      3. Fast-forward merge to %s\n", base)
+			}
 		}
 	}
 
@@ -7519,6 +7710,23 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 		fmt.Println("Blocked:")
 		for _, item := range report.BlockedItems {
 			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
+		}
+		fmt.Println()
+	}
+
+	if report.WorktreeEpicStats != nil && (report.WorktreeEpicStats.ReadyToMerge > 0 || report.WorktreeEpicStats.WaitingOnChildren > 0) {
+		fmt.Println("Worktree Epics:")
+		if report.WorktreeEpicStats.ReadyToMerge > 0 {
+			fmt.Printf("  %d ready to merge (run: tpg epic merge <id>)\n", report.WorktreeEpicStats.ReadyToMerge)
+			for _, epic := range report.WorktreeEpicStats.ReadyEpics {
+				fmt.Printf("    %s\n", formatStatusItem(epic, showProject, false))
+			}
+		}
+		if report.WorktreeEpicStats.WaitingOnChildren > 0 {
+			fmt.Printf("  %d waiting on children\n", report.WorktreeEpicStats.WaitingOnChildren)
+			for _, epic := range report.WorktreeEpicStats.WaitingEpics {
+				fmt.Printf("    %s\n", formatStatusItem(epic, showProject, false))
+			}
 		}
 		fmt.Println()
 	}

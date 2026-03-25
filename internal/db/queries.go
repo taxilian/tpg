@@ -8,7 +8,7 @@ import (
 	"github.com/taxilian/tpg/internal/model"
 )
 
-const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, agent_id, agent_last_active, template_id, step_index, variables, template_hash, results, worktree_branch, worktree_base, shared_context, closing_instructions, closed_at, created_at, updated_at"
+const itemSelectColumns = "id, project, type, title, description, status, priority, parent_id, agent_id, agent_last_active, template_id, step_index, variables, template_hash, results, worktree_branch, worktree_base, worktree_fork_point, merge_status, shared_context, closing_instructions, closed_at, created_at, updated_at"
 
 // ListFilter contains optional filters for listing items.
 type ListFilter struct {
@@ -323,21 +323,22 @@ func (db *DB) InProgressItemsByAgent(agentID string) ([]model.Item, error) {
 
 // StatusReport contains aggregated project status.
 type StatusReport struct {
-	Project          string
-	Open             int
-	InProgress       int
-	Blocked          int
-	Done             int
-	Canceled         int
-	Ready            int
-	RecentDone       []model.Item // last 3 completed
-	InProgItems      []model.Item // current in-progress (all)
-	BlockedItems     []model.Item // blocked with reasons
-	ReadyItems       []model.Item // ready for work
-	StaleItems       []model.Item // in-progress with no updates > 5 min
-	AgentID          string
-	MyInProgItems    []model.Item // this agent's in-progress tasks
-	OtherInProgCount int          // count of other agents' tasks
+	Project           string
+	Open              int
+	InProgress        int
+	Blocked           int
+	Done              int
+	Canceled          int
+	Ready             int
+	RecentDone        []model.Item // last 3 completed
+	InProgItems       []model.Item // current in-progress (all)
+	BlockedItems      []model.Item // blocked with reasons
+	ReadyItems        []model.Item // ready for work
+	StaleItems        []model.Item // in-progress with no updates > 5 min
+	AgentID           string
+	MyInProgItems     []model.Item // this agent's in-progress tasks
+	OtherInProgCount  int          // count of other agents' tasks
+	WorktreeEpicStats *WorktreeEpicStats
 }
 
 // ProjectStatus returns an aggregated status report for a project.
@@ -473,6 +474,12 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string, agentID str
 	// Get stale in-progress items (no updates in > 5 minutes)
 	staleCutoff := time.Now().Add(-5 * time.Minute)
 	report.StaleItems, err = db.StaleItems(project, staleCutoff)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get worktree epic statistics
+	report.WorktreeEpicStats, err = db.GetWorktreeEpicStats(project)
 	if err != nil {
 		return nil, err
 	}
@@ -732,6 +739,58 @@ func (db *DB) FindEpicsNeedingWorktreeSetup(existingBranches map[string]string) 
 	return needingSetup, nil
 }
 
+// WorktreeEpicStats returns statistics about worktree epics.
+type WorktreeEpicStats struct {
+	ReadyToMerge      int // Epics with all children done
+	WaitingOnChildren int // Epics with open children
+	ReadyEpics        []model.Item
+	WaitingEpics      []model.Item
+}
+
+// GetWorktreeEpicStats returns statistics about worktree-enabled epics for a project.
+func (db *DB) GetWorktreeEpicStats(project string) (*WorktreeEpicStats, error) {
+	stats := &WorktreeEpicStats{}
+
+	// Get all worktree epics for the project that are still open
+	query := fmt.Sprintf(`
+		SELECT %s 
+		FROM items 
+		WHERE type = 'epic' 
+		AND worktree_branch IS NOT NULL 
+		AND worktree_branch != ''
+		AND status = 'open'`, itemSelectColumns)
+
+	args := []any{}
+	if project != "" {
+		query += " AND project = ?"
+		args = append(args, project)
+	}
+
+	epics, err := db.queryItems(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query worktree epics: %w", err)
+	}
+
+	// For each epic, check if all children are done
+	for _, epic := range epics {
+		var openChildren int
+		err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, epic.ID).Scan(&openChildren)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check children for %s: %w", epic.ID, err)
+		}
+
+		if openChildren > 0 {
+			stats.WaitingOnChildren++
+			stats.WaitingEpics = append(stats.WaitingEpics, epic)
+		} else {
+			stats.ReadyToMerge++
+			stats.ReadyEpics = append(stats.ReadyEpics, epic)
+		}
+	}
+
+	return stats, nil
+}
+
 // queryItems is a helper to scan item rows.
 func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 	rows, err := db.Query(query, args...)
@@ -753,6 +812,8 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		var results sql.NullString
 		var worktreeBranch sql.NullString
 		var worktreeBase sql.NullString
+		var worktreeForkPoint sql.NullString
+		var mergeStatus sql.NullString
 		var sharedContext sql.NullString
 		var closingInstructions sql.NullString
 		var closedAt sql.NullTime
@@ -761,7 +822,8 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 			&item.Status, &item.Priority, &parentID,
 			&agentID, &agentLastActive,
 			&templateID, &stepIndex, &variables, &templateHash, &results,
-			&worktreeBranch, &worktreeBase, &sharedContext, &closingInstructions,
+			&worktreeBranch, &worktreeBase, &worktreeForkPoint, &mergeStatus,
+			&sharedContext, &closingInstructions,
 			&closedAt, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan item: %w", err)
@@ -800,6 +862,12 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 		}
 		if worktreeBase.Valid {
 			item.WorktreeBase = worktreeBase.String
+		}
+		if worktreeForkPoint.Valid {
+			item.WorktreeForkPoint = worktreeForkPoint.String
+		}
+		if mergeStatus.Valid {
+			item.MergeStatus = mergeStatus.String
 		}
 		if sharedContext.Valid {
 			item.SharedContext = sharedContext.String

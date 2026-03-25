@@ -1132,3 +1132,28 @@ func (db *DB) FindTasksWithNonEpicParents() ([]InvalidParent, error) {
 
 	return invalid, rows.Err()
 }
+
+func (db *DB) MarkEpicMerged(epicID string) error {
+	item, err := db.GetItem(epicID)
+	if err != nil {
+		return fmt.Errorf("epic not found: %w", err)
+	}
+	if item.Type != model.ItemTypeEpic {
+		return fmt.Errorf("%s is not an epic", epicID)
+	}
+	if item.WorktreeBranch == "" {
+		return fmt.Errorf("%s is not a worktree epic", epicID)
+	}
+
+	now := sqlTime(time.Now())
+	_, err = db.Exec(`
+		UPDATE items 
+		SET merge_status = 'merged', status = 'done', closed_at = ?, updated_at = ? 
+		WHERE id = ?`,
+		now, now, epicID)
+	if err != nil {
+		return fmt.Errorf("failed to mark epic as merged: %w", err)
+	}
+
+	return nil
+}

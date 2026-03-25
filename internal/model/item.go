@@ -95,6 +95,8 @@ type Item struct {
 	Results             string            // Results message when done
 	WorktreeBranch      string            // Git branch name for worktree (NULL = no worktree)
 	WorktreeBase        string            // Base branch hint for instructions (NULL = no worktree)
+	WorktreeForkPoint   string            // Commit SHA where worktree forked from base (NULL = no worktree)
+	MergeStatus         string            // Merge status for worktree epics: "" (not merged) or "merged"
 	SharedContext       string            // Context shared with all children (epics only)
 	ClosingInstructions string            // Instructions to display when completing epic
 	Labels              []string          // Attached label names (populated separately)
