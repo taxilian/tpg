@@ -315,6 +315,39 @@ func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
 	return nil
 }
 
+// MarkEpicMerged marks an epic as merged and closes it.
+// This is called after a successful worktree merge.
+func (db *DB) MarkEpicMerged(id string) error {
+	now := sqlTime(time.Now())
+	result, err := db.Exec(`
+		UPDATE items SET status = ?, merge_status = ?, merged_at = ?, updated_at = ?
+		WHERE id = ? AND type = 'epic'`,
+		model.StatusDone, "merged", now, now, id)
+	if err != nil {
+		return fmt.Errorf("failed to mark epic merged: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("epic not found: %s", id)
+	}
+
+	// Release agent assignment when done
+	_, err = db.Exec(`UPDATE items
+		SET agent_id = NULL, agent_last_active = NULL
+		WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to clear agent: %w", err)
+	}
+
+	// Record history
+	_ = db.RecordHistory(id, EventTypeCompleted, map[string]any{
+		"merged": true,
+	})
+
+	return nil
+}
+
 // EpicCompletionInfo contains information about an epic ready to be auto-completed.
 type EpicCompletionInfo struct {
 	Epic                *model.Item
@@ -343,6 +376,11 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 
 	// Already done or canceled
 	if parent.Status == model.StatusDone || parent.Status == model.StatusCanceled {
+		return nil, nil
+	}
+
+	// Skip auto-complete for worktree epics - they need explicit merge
+	if parent.WorktreeBranch != "" {
 		return nil, nil
 	}
 
@@ -388,6 +426,18 @@ func (db *DB) TouchItem(id string) error {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
 	return nil
+}
+
+// GetWorktreeEpicsReadyToMerge returns epics that have worktrees and are done but not yet merged.
+func (db *DB) GetWorktreeEpicsReadyToMerge(project string) ([]model.Item, error) {
+	query := fmt.Sprintf("SELECT %s FROM items WHERE type = 'epic' AND worktree_branch IS NOT NULL AND worktree_branch != '' AND status = 'done' AND merge_status != 'merged'", itemSelectColumns)
+	args := []any{}
+	if project != "" {
+		query += " AND project = ?"
+		args = append(args, project)
+	}
+	query += " ORDER BY updated_at DESC"
+	return db.queryItems(query, args...)
 }
 
 // AppendDescription appends text to an item's description.

@@ -33,7 +33,7 @@ func sqlTime(t time.Time) string {
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -399,6 +399,10 @@ func (db *DB) Migrate() error {
 			if err := db.runMigrationV8(); err != nil {
 				return fmt.Errorf("migration to v8 failed: %w", err)
 			}
+		} else if targetVersion == 9 {
+			if err := db.runMigrationV9(); err != nil {
+				return fmt.Errorf("migration to v9 failed: %w", err)
+			}
 		} else {
 			if _, err := db.Exec(migration); err != nil {
 				return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
@@ -604,6 +608,20 @@ func (db *DB) runMigrationV8() error {
 		return fmt.Errorf("failed to backfill merge_status: %w", err)
 	}
 
+	return nil
+}
+
+// runMigrationV9 adds merged_at column for tracking when epics were merged.
+func (db *DB) runMigrationV9() error {
+	exists, err := db.columnExists("items", "merged_at")
+	if err != nil {
+		return fmt.Errorf("failed to check merged_at column: %w", err)
+	}
+	if !exists {
+		if _, err := db.Exec("ALTER TABLE items ADD COLUMN merged_at TEXT"); err != nil {
+			return fmt.Errorf("failed to add merged_at column: %w", err)
+		}
+	}
 	return nil
 }
 

@@ -55,6 +55,10 @@ type PrimeData struct {
 	// Available templates
 	Templates     []*templates.Template
 	TemplateCount int
+
+	// Worktree epics ready to merge
+	WorktreeMergeEpics []PrimeItem
+	WorktreeMergeCount int
 }
 
 // PrimeItem is a simplified view of model.Item for templates
@@ -158,6 +162,11 @@ No database - run 'tpg init'
 {{end}}
 {{else -}}
   (too many to list - run 'tpg stale')
+{{end}}
+{{end -}}
+{{if gt .WorktreeMergeCount 0 -}}
+**⚠️ WORKTREE EPICS READY TO MERGE ({{.WorktreeMergeCount}}):**
+{{range .WorktreeMergeEpics}}  • [{{.ID}}] {{.Title}} - run 'tpg epic merge {{.ID}}'
 {{end}}
 {{end -}}
 {{if gt (len .MyInProgItems) 0 -}}
@@ -319,6 +328,17 @@ func BuildPrimeData(report *db.StatusReport, config *db.Config, agentCtx db.Agen
 		}
 		if count, err := database.GetLearningCount(report.Project); err == nil {
 			data.LearningCount = count
+		}
+
+		// Get worktree epics ready to merge
+		if epics, err := database.GetWorktreeEpicsReadyToMerge(report.Project); err == nil {
+			data.WorktreeMergeCount = len(epics)
+			for _, epic := range epics {
+				data.WorktreeMergeEpics = append(data.WorktreeMergeEpics, PrimeItem{
+					ID:    epic.ID,
+					Title: epic.Title,
+				})
+			}
 		}
 	}
 

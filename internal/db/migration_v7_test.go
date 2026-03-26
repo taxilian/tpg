@@ -78,13 +78,13 @@ func TestMigrationV7_AddsClosedAtColumn(t *testing.T) {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
-	// Assert: Verify schema version is 7
+	// Assert: Verify schema version is 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Assert: Verify closed_at column exists and is queryable
@@ -397,13 +397,13 @@ func TestMigrationV7_Idempotent(t *testing.T) {
 		}
 	}
 
-	// Assert: Schema version is still 7
+	// Assert: Schema version is still 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Assert: Data is preserved
@@ -456,13 +456,13 @@ func TestMigrationV7_FreshDatabase(t *testing.T) {
 		t.Fatalf("failed to init db: %v", err)
 	}
 
-	// Assert: Version is 7
+	// Assert: Version is 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Assert: closed_at column exists
@@ -731,13 +731,13 @@ func TestMigrationV7_FromV6(t *testing.T) {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
-	// Assert: Version is 7
+	// Assert: Version is 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Assert: closed_at column added

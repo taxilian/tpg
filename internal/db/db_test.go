@@ -590,9 +590,9 @@ func TestSetClosingInstructions_NotFound(t *testing.T) {
 }
 
 func TestSchemaVersion(t *testing.T) {
-	// Verify SchemaVersion is set to 6
-	if SchemaVersion != 7 {
-		t.Errorf("SchemaVersion = %d, want 7", SchemaVersion)
+	// Verify SchemaVersion is set to 9
+	if SchemaVersion != 9 {
+		t.Errorf("SchemaVersion = %d, want 9", SchemaVersion)
 	}
 }
 
@@ -671,13 +671,13 @@ func TestMigrationV4_ExistingDataPreserved(t *testing.T) {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
-	// Verify version is now 6
+	// Verify version is now 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Verify existing data is preserved
@@ -769,13 +769,13 @@ func TestMigrationV5_Idempotent(t *testing.T) {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
-	// Verify version is now 6
+	// Verify version is now 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Verify existing data is preserved
@@ -860,13 +860,13 @@ func TestMigrationV5_ColumnAlreadyExists(t *testing.T) {
 		t.Fatalf("failed to migrate when column already exists: %v", err)
 	}
 
-	// Verify version is now 6
+	// Verify version is now 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Verify closing_instructions was added
@@ -954,13 +954,13 @@ func TestMigrationV6_ConvertsLegacyTypes(t *testing.T) {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
-	// Verify version is now 6
+	// Verify version is now 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 
 	// Verify legacy types converted to task
@@ -1097,13 +1097,13 @@ func TestMigrationV6_EmptyDatabase(t *testing.T) {
 		t.Fatalf("failed to init db: %v", err)
 	}
 
-	// Verify version is 6
+	// Verify version is 8
 	version, err := db.getSchemaVersion()
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema version = %d, want 8", version)
 	}
 }
 
