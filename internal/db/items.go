@@ -276,9 +276,24 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 
 // CompleteItem marks an item as done, records a results message, and releases agent assignment.
 func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
-	// Cannot close parent with open children
+	var itemType string
+	var worktreeBranch sql.NullString
+	err := db.QueryRow(`SELECT type, worktree_branch FROM items WHERE id = ?`, id).Scan(&itemType, &worktreeBranch)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get item: %w", err)
+	}
+	if itemType == string(model.ItemTypeEpic) {
+		if worktreeBranch.Valid && worktreeBranch.String != "" {
+			return fmt.Errorf("cannot complete worktree epic %s directly: use 'tpg epic merge' instead", id)
+		}
+		return fmt.Errorf("cannot complete epic %s directly: epics auto-complete when all children are done", id)
+	}
+
 	var openChildren int
-	err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
+	err = db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
 	if err != nil {
 		return fmt.Errorf("failed to check children: %w", err)
 	}
@@ -354,19 +369,20 @@ type EpicCompletionInfo struct {
 	ClosingInstructions string
 	WorktreeBranch      string
 	WorktreeBase        string
+	ReadyToMerge        bool
 }
 
 // CheckParentEpicCompletion checks if the parent epic of the given item should be auto-completed.
 // Returns nil if there is no parent, the parent still has open children, or the parent is already done.
+// For worktree epics with all children done, returns EpicCompletionInfo with ReadyToMerge=true.
 func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, error) {
-	// Get the item to find its parent
 	item, err := db.GetItem(itemID)
 	if err != nil {
 		return nil, err
 	}
 
 	if item.ParentID == nil {
-		return nil, nil // No parent
+		return nil, nil
 	}
 
 	parent, err := db.GetItem(*item.ParentID)
@@ -374,17 +390,10 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 		return nil, err
 	}
 
-	// Already done or canceled
 	if parent.Status == model.StatusDone || parent.Status == model.StatusCanceled {
 		return nil, nil
 	}
 
-	// Skip auto-complete for worktree epics - they need explicit merge
-	if parent.WorktreeBranch != "" {
-		return nil, nil
-	}
-
-	// Check if all children are done
 	var openChildren int
 	err = db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, parent.ID).Scan(&openChildren)
 	if err != nil {
@@ -392,7 +401,7 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 	}
 
 	if openChildren > 0 {
-		return nil, nil // Still has open children
+		return nil, nil
 	}
 
 	return &EpicCompletionInfo{
@@ -400,6 +409,7 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 		ClosingInstructions: parent.ClosingInstructions,
 		WorktreeBranch:      parent.WorktreeBranch,
 		WorktreeBase:        parent.WorktreeBase,
+		ReadyToMerge:        parent.WorktreeBranch != "",
 	}, nil
 }
 

@@ -246,12 +246,12 @@ func TestCannotCloseParentWithOpenChildren_CompleteItem(t *testing.T) {
 		t.Fatalf("failed to create child: %v", err)
 	}
 
-	// Try to complete parent - should fail
+	// Try to complete parent - should fail (epics cannot be completed directly)
 	err := db.CompleteItem(parent.ID, "done", AgentContext{})
 	if err == nil {
-		t.Error("expected error when completing parent with open children")
+		t.Error("expected error when completing epic directly")
 	}
-	if err != nil && !strings.Contains(err.Error(), "cannot close") {
+	if err != nil && !strings.Contains(err.Error(), "cannot complete epic") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
@@ -448,7 +448,7 @@ func TestCanCloseParentWithNoChildren(t *testing.T) {
 	}
 }
 
-func TestWorktreeEpicSkipsAutoComplete(t *testing.T) {
+func TestWorktreeEpicReturnsReadyToMerge(t *testing.T) {
 	db := setupTestDB(t)
 
 	epic := &model.Item{
@@ -483,8 +483,14 @@ func TestWorktreeEpicSkipsAutoComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if info != nil {
-		t.Error("expected nil completion info for worktree epic, got non-nil")
+	if info == nil {
+		t.Fatal("expected completion info for worktree epic, got nil")
+	}
+	if !info.ReadyToMerge {
+		t.Error("expected ReadyToMerge=true for worktree epic")
+	}
+	if info.WorktreeBranch != "feature/test-branch" {
+		t.Errorf("expected WorktreeBranch=feature/test-branch, got %s", info.WorktreeBranch)
 	}
 
 	item, err := db.GetItem(epic.ID)
@@ -535,5 +541,62 @@ func TestNonWorktreeEpicAutoCompletes(t *testing.T) {
 	}
 	if info.Epic.ID != epic.ID {
 		t.Errorf("expected epic ID %s, got %s", epic.ID, info.Epic.ID)
+	}
+	if info.ReadyToMerge {
+		t.Error("expected ReadyToMerge=false for non-worktree epic")
+	}
+}
+
+func TestCompleteItem_RegularEpicError(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   "test",
+		Type:      model.ItemTypeEpic,
+		Title:     "Regular Epic",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	err := db.CompleteItem(epic.ID, "test results", AgentContext{})
+	if err == nil {
+		t.Fatal("expected error when completing epic directly")
+	}
+	if !strings.Contains(err.Error(), "cannot complete epic") {
+		t.Errorf("expected error about cannot complete epic, got: %v", err)
+	}
+}
+
+func TestCompleteItem_WorktreeEpicError(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := &model.Item{
+		ID:             model.GenerateID(model.ItemTypeEpic),
+		Project:        "test",
+		Type:           model.ItemTypeEpic,
+		Title:          "Worktree Epic",
+		Status:         model.StatusOpen,
+		WorktreeBranch: "feature/test",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := db.CreateItem(epic); err != nil {
+		t.Fatalf("failed to create epic: %v", err)
+	}
+
+	err := db.CompleteItem(epic.ID, "test results", AgentContext{})
+	if err == nil {
+		t.Fatal("expected error when completing worktree epic directly")
+	}
+	if !strings.Contains(err.Error(), "cannot complete worktree epic") {
+		t.Errorf("expected error about cannot complete worktree epic, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "tpg epic merge") {
+		t.Errorf("expected error to mention 'tpg epic merge', got: %v", err)
 	}
 }

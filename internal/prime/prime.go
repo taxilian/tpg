@@ -166,7 +166,7 @@ No database - run 'tpg init'
 {{end -}}
 {{if gt .WorktreeMergeCount 0 -}}
 **⚠️ WORKTREE EPICS READY TO MERGE ({{.WorktreeMergeCount}}):**
-{{range .WorktreeMergeEpics}}  • [{{.ID}}] {{.Title}} - run 'tpg epic merge {{.ID}}'
+{{range .WorktreeMergeEpics}}  • [{{.ID}}] {{.Title}} - run 'tpg epic set-merged {{.ID}}'
 {{end}}
 {{end -}}
 {{if gt (len .MyInProgItems) 0 -}}

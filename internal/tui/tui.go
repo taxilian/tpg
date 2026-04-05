@@ -80,6 +80,9 @@ type Model struct {
 	listScroll int // scroll position for list view
 	viewMode   ViewMode
 
+	// Auto-refresh tracking: skip scroll sync to preserve manual scroll position
+	skipScrollSync bool
+
 	// Filter state
 	filterProject  string
 	filterStatuses map[model.Status]bool // which statuses to show
@@ -763,11 +766,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
 			preserveID = treeNodes[m.cursor].Item.ID
 		}
+		m.skipScrollSync = true
 		return m, tea.Batch(m.loadItemsPreserving(preserveID), m.loadStaleItems(), m.loadReadyIDs(), tickCmd())
 
 	case itemsMsg:
 		if msg.err != nil {
 			m.err = msg.err
+			m.skipScrollSync = false
 			return m, nil
 		}
 		// Save current ID before applying filters
@@ -787,7 +792,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		m.syncListScroll()
+		// Only sync scroll on user-initiated loads, not auto-refresh
+		if !m.skipScrollSync {
+			m.syncListScroll()
+		}
+		m.skipScrollSync = false
 		if m.viewMode == ViewDetail {
 			return m, m.loadDetail()
 		}

@@ -949,32 +949,36 @@ Examples:
 	},
 }
 
-var epicMergeCmd = &cobra.Command{
-	Use:   "merge <id>",
-	Short: "Merge a worktree epic's branch into its parent",
-	Long: `Execute the merge protocol for a worktree epic.
+var epicSetMergedCmd = &cobra.Command{
+	Use:   "set-merged <id>",
+	Short: "Mark a worktree epic as merged",
+	Long: `Mark a worktree epic as merged after the git merge is complete.
 
-This command merges the epic's worktree branch into its parent branch using
-the rebase-then-ff-merge protocol. After successful merge, the epic is marked
-as merged and closed.
+This command does NOT perform any git operations - it only updates the database
+to reflect that the worktree branch has been merged. You must complete the git
+merge manually before running this command.
 
-Protocol:
-  1. Verify worktree is clean (no uncommitted changes)
-  2. Verify all child epics with worktrees are merged
-  3. cd to worktree path
-  4. git rebase <parent_branch>
-  5. git checkout <parent_branch>
-  6. git merge --ff-only <worktree_branch>
-  7. If ff-only fails: retry from step 4 (parent may have moved)
-  8. Mark epic as merged in database
-
-Conflicts during rebase will halt the merge with an error. You must resolve
-conflicts manually, then re-run this command.
+The --confirm flag is required to prevent accidental status changes.
 
 Examples:
-  tpg epic merge ep-abc123`,
+  tpg epic set-merged ep-abc123 --confirm`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if !flagMergeConfirm {
+			fi, _ := os.Stdin.Stat()
+			if fi == nil || (fi.Mode()&os.ModeCharDevice) == 0 {
+				return fmt.Errorf("refusing to mark epic as merged without --confirm flag\n" +
+					"Double-check that the git merge was completed correctly before re-running with --confirm")
+			}
+			fmt.Print("Mark epic as merged? This should only be done after git merge is complete. [y/N]: ")
+			var response string
+			fmt.Scanln(&response)
+			response = strings.ToLower(strings.TrimSpace(response))
+			if response != "y" && response != "yes" {
+				return fmt.Errorf("cancelled")
+			}
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err
@@ -1002,7 +1006,7 @@ Examples:
 			return fmt.Errorf("failed to get children stats: %w", err)
 		}
 		if open > 0 || inProgress > 0 {
-			return fmt.Errorf("cannot merge: %d children still open/in-progress (complete all children first)", open+inProgress)
+			return fmt.Errorf("cannot mark as merged: %d children still open/in-progress", open+inProgress)
 		}
 
 		descendants, err := database.GetDescendants(epicID)
@@ -1011,79 +1015,30 @@ Examples:
 		}
 		for _, d := range descendants {
 			if d.Type == model.ItemTypeEpic && d.WorktreeBranch != "" && d.MergeStatus != "merged" {
-				return fmt.Errorf("cannot merge: child epic %s has worktree but is not merged yet", d.ID)
+				return fmt.Errorf("cannot mark as merged: child epic %s has worktree but is not merged yet", d.ID)
 			}
-		}
-
-		config, _ := db.LoadConfig()
-		ctx, worktrees := detectWorktreeState()
-		repoRoot := ""
-		if ctx != nil {
-			repoRoot = ctx.RepoRoot
-		}
-
-		worktreePath := ""
-		if worktrees != nil {
-			if path, ok := worktrees[item.WorktreeBranch]; ok {
-				worktreePath = path
-			}
-		}
-		if worktreePath == "" {
-			worktreePath = filepath.Join(repoRoot, config.Worktree.Root, epicID)
-		}
-
-		if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
-			return fmt.Errorf("worktree path does not exist: %s", worktreePath)
-		}
-
-		parentBranch := item.WorktreeBase
-		if parentBranch == "" {
-			parentBranch = "main"
-		}
-
-		fmt.Printf("Merging epic: %s\n", item.Title)
-		fmt.Printf("  Branch: %s\n", item.WorktreeBranch)
-		fmt.Printf("  Target: %s\n", parentBranch)
-		fmt.Printf("  Worktree: %s\n", worktreePath)
-		if total > 0 {
-			fmt.Printf("  Children: %d/%d done\n", done, total)
-		}
-		fmt.Println()
-
-		if !flagMergeConfirm {
-			fmt.Print("Proceed with merge? [y/N]: ")
-			var response string
-			fmt.Scanln(&response)
-			response = strings.ToLower(strings.TrimSpace(response))
-			if response != "y" && response != "yes" {
-				return fmt.Errorf("merge cancelled")
-			}
-		}
-
-		result, err := worktree.MergeWorktree(epicID, item.WorktreeBranch, parentBranch, worktreePath)
-		if err != nil {
-			if result != nil && result.ConflictOccurred {
-				fmt.Fprintf(os.Stderr, "\nMerge failed due to conflicts.\n")
-				fmt.Fprintf(os.Stderr, "Resolve conflicts in %s and re-run this command.\n", worktreePath)
-			}
-			return err
 		}
 
 		if err := database.MarkEpicMerged(epicID); err != nil {
-			return fmt.Errorf("merge succeeded but failed to update database: %w", err)
+			return fmt.Errorf("failed to update database: %w", err)
 		}
 
-		_ = database.AddLog(epicID, "Worktree merged into "+parentBranch)
+		_ = database.AddLog(epicID, "Marked as merged")
 
-		fmt.Printf("\n✓ Merge successful\n")
-		fmt.Printf("Epic %s marked as merged and closed\n", epicID)
+		fmt.Printf("Epic %s marked as merged\n", epicID)
+		fmt.Printf("  Branch: %s\n", item.WorktreeBranch)
+		fmt.Printf("  Children: %d/%d done\n", done, total)
 
 		if item.ClosingInstructions != "" {
 			fmt.Printf("\nClosing instructions:\n%s\n", item.ClosingInstructions)
 		}
 
-		fmt.Printf("\nCleanup commands:\n")
-		fmt.Printf("  git worktree remove %s\n", displayWorktreePath(repoRoot, worktreePath))
+		base := item.WorktreeBase
+		if base == "" {
+			base = "main"
+		}
+		fmt.Printf("\nCleanup (do manually):\n")
+		fmt.Printf("  git worktree remove .worktrees/%s\n", epicID)
 		fmt.Printf("  git branch -d %s\n", item.WorktreeBranch)
 
 		database.BackupQuiet()
@@ -6390,8 +6345,8 @@ func init() {
 	epicReplaceCmd.Flags().StringVar(&flagContext, "context", "", "Context shared with all descendants (use '-' for stdin)")
 	epicReplaceCmd.Flags().StringVar(&flagOnClose, "on-close", "", "Instructions shown when epic auto-completes (use '-' for stdin)")
 
-	// epicMergeCmd flags
-	epicMergeCmd.Flags().BoolVarP(&flagMergeConfirm, "yes", "y", false, "Skip confirmation prompt")
+	// epicSetMergedCmd flags
+	epicSetMergedCmd.Flags().BoolVarP(&flagMergeConfirm, "confirm", "y", false, "Skip confirmation prompt")
 
 	epicCmd.AddCommand(epicAddCmd)
 	epicCmd.AddCommand(epicEditCmd)
@@ -6399,7 +6354,7 @@ func init() {
 	epicCmd.AddCommand(epicReplaceCmd)
 	epicCmd.AddCommand(epicWorktreeCmd)
 	epicCmd.AddCommand(epicFinishCmd)
-	epicCmd.AddCommand(epicMergeCmd)
+	epicCmd.AddCommand(epicSetMergedCmd)
 	rootCmd.AddCommand(epicCmd)
 
 	rootCmd.AddCommand(addCmd)
@@ -7097,13 +7052,29 @@ func autoCompleteParentEpics(database *db.DB, itemID string) error {
 			return err
 		}
 		if info == nil {
-			return nil // No more parents to complete
+			return nil
 		}
 
 		epic := info.Epic
 
-		// Show closing instructions if any
-		hasInstructions := info.ClosingInstructions != "" || info.WorktreeBranch != ""
+		if info.ReadyToMerge {
+			base := info.WorktreeBase
+			if base == "" {
+				base = "main"
+			}
+			fmt.Printf(`
+─── Epic %s: %s ───
+⚠️ WORKTREE EPIC READY TO MERGE
+All child tasks completed. This epic's worktree must be merged before the epic can be closed.
+
+Worktree: %s
+Branch: %s
+Run: tpg epic set-merged %s
+`, epic.ID, epic.Title, info.WorktreeBranch, base, epic.ID)
+			return nil
+		}
+
+		hasInstructions := info.ClosingInstructions != ""
 
 		if hasInstructions {
 			fmt.Printf("\n─── Epic %s: %s ───\n", epic.ID, epic.Title)
@@ -7114,24 +7085,6 @@ func autoCompleteParentEpics(database *db.DB, itemID string) error {
 			fmt.Printf("\n%s\n", info.ClosingInstructions)
 		}
 
-		if info.WorktreeBranch != "" {
-			base := info.WorktreeBase
-			if base == "" {
-				base = "main"
-			}
-			fmt.Printf(`
-Worktree cleanup:
-  1. Review and commit any remaining changes in the worktree
-  2. Push the branch: git push -u origin %s
-  3. Create a pull request to merge into %s
-  4. After merge, remove the worktree: git worktree remove <path>
-  5. Delete the branch if no longer needed: git branch -d %s
-
-Note: If AGENTS.md has specific merge instructions for this project, follow those instead.
-`, info.WorktreeBranch, base, info.WorktreeBranch)
-		}
-
-		// Auto-complete the epic
 		if err := database.AutoCompleteEpic(epic.ID); err != nil {
 			return fmt.Errorf("failed to auto-complete epic %s: %w", epic.ID, err)
 		}
@@ -7139,7 +7092,6 @@ Note: If AGENTS.md has specific merge instructions for this project, follow thos
 
 		fmt.Printf("\nAuto-completed epic %s: %s\n", epic.ID, epic.Title)
 
-		// Continue up the chain to check grandparent epics
 		itemID = epic.ID
 	}
 }
@@ -7311,7 +7263,7 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, blockers
 				}
 			} else {
 				fmt.Printf("  ✓ Ready to merge\n")
-				fmt.Printf("    Run: tpg epic merge %s\n", item.ID)
+				fmt.Printf("    Run: tpg epic set-merged %s\n", item.ID)
 				fmt.Printf("\n")
 				fmt.Printf("    Merge protocol:\n")
 				fmt.Printf("      1. Worktree must be clean (no uncommitted changes)\n")
@@ -7717,7 +7669,7 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	if report.WorktreeEpicStats != nil && (report.WorktreeEpicStats.ReadyToMerge > 0 || report.WorktreeEpicStats.WaitingOnChildren > 0) {
 		fmt.Println("Worktree Epics:")
 		if report.WorktreeEpicStats.ReadyToMerge > 0 {
-			fmt.Printf("  %d ready to merge (run: tpg epic merge <id>)\n", report.WorktreeEpicStats.ReadyToMerge)
+			fmt.Printf("  %d ready to merge (run: tpg epic set-merged <id>)\n", report.WorktreeEpicStats.ReadyToMerge)
 			for _, epic := range report.WorktreeEpicStats.ReadyEpics {
 				fmt.Printf("    %s\n", formatStatusItem(epic, showProject, false))
 			}
