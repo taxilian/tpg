@@ -798,6 +798,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncListScroll()
 		}
 		m.skipScrollSync = false
+		m.prevCursor = m.cursor
 		if m.viewMode == ViewDetail {
 			return m, m.loadDetail()
 		}
