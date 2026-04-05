@@ -82,6 +82,7 @@ type Model struct {
 
 	// Auto-refresh tracking: skip scroll sync to preserve manual scroll position
 	skipScrollSync bool
+	prevCursor     int // Track if cursor position changed to avoid unnecessary scroll recalc
 
 	// Filter state
 	filterProject  string
@@ -2987,7 +2988,14 @@ func (m Model) listView() string {
 			visibleHeight = 3
 		}
 
-		start, end := calculateScrollRange(m.cursor, len(treeNodes), visibleHeight, &m.listScroll)
+		var start, end int
+		if m.cursor != m.prevCursor {
+			start, end = calculateScrollRange(m.cursor, len(treeNodes), visibleHeight, &m.listScroll)
+			m.prevCursor = m.cursor
+		} else {
+			start = m.listScroll
+			end = min(m.listScroll+visibleHeight, len(treeNodes))
+		}
 
 		rowWidth := m.width - (contentPadding * 2)
 		if rowWidth < 40 {

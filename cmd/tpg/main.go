@@ -4002,6 +4002,9 @@ Examples:
 				return fmt.Errorf("failed to read from stdin: %w", err)
 			}
 			descValue = strings.TrimSpace(string(data))
+			if descValue == "" {
+				return fmt.Errorf("--desc - specified but stdin provided no content; description cannot be empty")
+			}
 		}
 
 		// Dry run preview
@@ -4078,6 +4081,8 @@ Examples:
 				if err := database.SetDescription(item.ID, descValue); err != nil {
 					return fmt.Errorf("failed to set description for %s: %w", item.ID, err)
 				}
+			} else {
+				return fmt.Errorf("description cannot be empty")
 			}
 			if flagEditStatus != "" {
 				if err := database.UpdateStatus(item.ID, model.Status(flagEditStatus), db.AgentContext{}, false); err != nil {

@@ -130,6 +130,7 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 		SELECT %s
 		FROM items
 		WHERE status = 'open'
+		  AND type != 'epic'
 		  AND id NOT IN (
 		    SELECT d.item_id FROM deps d
 		    JOIN items i ON d.depends_on = i.id
