@@ -579,11 +579,17 @@ func (db *DB) SetProject(id string, project string) error {
 
 // SetDescription replaces an item's description entirely.
 func (db *DB) SetDescription(id string, text string) error {
-	// Get old description for history
+	// Get old description and template_id for validation
 	var oldDesc sql.NullString
-	err := db.QueryRow(`SELECT description FROM items WHERE id = ?`, id).Scan(&oldDesc)
+	var templateID sql.NullString
+	err := db.QueryRow(`SELECT description, template_id FROM items WHERE id = ?`, id).Scan(&oldDesc, &templateID)
 	if err != nil {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
+	}
+
+	// Template-backed tasks generate description from template variables
+	if templateID.Valid && templateID.String != "" {
+		return fmt.Errorf("cannot set description on template-backed task %s: descriptions are generated from template variables. Edit variables with 'tpg edit %s --var NAME=VALUE' or 'tpg show %s --vars', or use --force to override", id, id, id)
 	}
 
 	result, err := db.Exec(`

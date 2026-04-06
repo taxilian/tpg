@@ -119,6 +119,8 @@ var (
 	flagEditRmLabels  []string
 	flagEditDesc      string
 	flagEditStatus    string
+	flagEditVars      []string
+	flagEditVarsYAML  bool
 	flagEditParentSet bool // tracks if --parent was explicitly set (to allow empty string)
 
 	flagWorktree       bool
@@ -3982,7 +3984,7 @@ Examples:
 		// Check if any field flags are set
 		hasFieldFlags := flagEditTitle != "" || flagEditPriority != 0 || flagEditParentSet ||
 			len(flagEditAddLabels) > 0 || len(flagEditRmLabels) > 0 || flagEditDesc != "" ||
-			flagEditStatus != ""
+			flagEditStatus != "" || len(flagEditVars) > 0
 
 		// If no field flags and single item, open editor for description
 		if !hasFieldFlags && len(items) == 1 {
@@ -3991,7 +3993,7 @@ Examples:
 
 		// If no field flags and multiple items, error
 		if !hasFieldFlags {
-			return fmt.Errorf("no field flags specified for %d items (use --title, --priority, --parent, --add-label, --remove-label, --desc, or --status)", len(items))
+			return fmt.Errorf("no field flags specified for %d items (use --title, --priority, --parent, --add-label, --remove-label, --desc, --status, or --var)", len(items))
 		}
 
 		// Read description from stdin if needed
@@ -4038,6 +4040,16 @@ Examples:
 			}
 			if flagEditStatus != "" {
 				fmt.Printf("  status: %s (forced)\n", flagEditStatus)
+			}
+			if flagEditVarsYAML {
+				fmt.Printf("  vars: (from YAML stdin)\n")
+			} else {
+				for _, varPair := range flagEditVars {
+					parts := strings.SplitN(varPair, "=", 2)
+					if len(parts) == 2 {
+						fmt.Printf("  var %s: (json string value)\n", parts[0])
+					}
+				}
 			}
 			return nil
 		}
@@ -4089,6 +4101,33 @@ Examples:
 					return fmt.Errorf("failed to set status for %s: %w", item.ID, err)
 				}
 			}
+
+			// Handle template variables
+			varPairs := flagEditVars
+			if flagEditVarsYAML {
+				if len(flagEditVars) > 0 {
+					return fmt.Errorf("cannot use both --var and --vars-yaml")
+				}
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				varPairs, err = parseTemplateVarsYAML(data)
+				if err != nil {
+					return fmt.Errorf("failed to parse YAML: %w", err)
+				}
+			}
+			for _, varPair := range varPairs {
+				parts := strings.SplitN(varPair, "=", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("invalid --var format: %s (expected NAME=json-string)", varPair)
+				}
+				varName := strings.TrimSpace(parts[0])
+				varValue := parts[1]
+				if err := database.SetTemplateVar(item.ID, varName, varValue); err != nil {
+					return fmt.Errorf("failed to set variable %s for %s: %w", varName, item.ID, err)
+				}
+			}
 		}
 
 		if len(items) == 1 {
@@ -4105,6 +4144,11 @@ func editInEditor(database *db.DB, id string) error {
 	item, err := database.GetItem(id)
 	if err != nil {
 		return err
+	}
+
+	// Check if item is template-backed
+	if item.TemplateID != "" {
+		return fmt.Errorf("cannot edit description on template-backed task %s: descriptions are generated from template variables. Edit variables with 'tpg edit %s --var NAME=VALUE' or use 'tpg show %s --vars'", id, id, id)
 	}
 
 	// Get editor (prefer $TPG_EDITOR, then nvim, then nano)
@@ -6225,6 +6269,8 @@ func init() {
 	editCmd.Flags().StringArrayVar(&flagEditRmLabels, "remove-label", nil, "Label to remove (repeatable)")
 	editCmd.Flags().StringVar(&flagEditDesc, "desc", "", "New description (single item only, use '-' for stdin)")
 	editCmd.Flags().StringVar(&flagEditStatus, "status", "", "Force status change (requires --force)")
+	editCmd.Flags().StringArrayVar(&flagEditVars, "var", nil, "Template variable NAME=json-string (repeatable, for template tasks)")
+	editCmd.Flags().BoolVar(&flagEditVarsYAML, "vars-yaml", false, "Read template variables from stdin as YAML")
 
 	// edit flags - selection filters (reuse list flag variables)
 	editCmd.Flags().StringVar(&flagStatus, "select-status", "", "Select items by status")

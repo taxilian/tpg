@@ -825,7 +825,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.message = msg.message
 		}
-		return m, tea.Batch(m.loadItems(), m.loadStaleItems())
+		// Preserve cursor position after status changes (start/done/delete)
+		var preserveID string
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			preserveID = treeNodes[m.cursor].Item.ID
+		}
+		m.skipScrollSync = true
+		return m, tea.Batch(m.loadItemsPreserving(preserveID), m.loadStaleItems())
 
 	case templatesMsg:
 		if msg.err != nil {
@@ -854,7 +861,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.readyIDs = msg.ids
-		if m.filterReady {
+		if m.filterReady && !m.skipScrollSync {
 			m.applyFilters()
 			m.syncListScroll()
 		}
@@ -1361,11 +1368,17 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "r":
-		return m, m.loadItems()
+		var preserveID string
+		treeNodes := m.buildTree()
+		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+			preserveID = treeNodes[m.cursor].Item.ID
+		}
+		return m, m.loadItemsPreserving(preserveID)
 
 	case "R":
 		m.filterReady = !m.filterReady
 		m.applyFilters()
+		m.syncListScroll()
 
 	// Dependencies
 	case "a":
@@ -2394,6 +2407,10 @@ func (m Model) saveTextareaEdit() (Model, tea.Cmd) {
 	item := treeNodes[m.cursor].Item
 
 	if target == "description" {
+		if item.TemplateID != "" {
+			m.err = fmt.Errorf("cannot edit description on template-backed task: descriptions are generated from template variables. Press 'V' to edit variables, or 'R' to re-render from template")
+			return m, nil
+		}
 		return m, func() tea.Msg {
 			if err := m.db.SetDescription(item.ID, content); err != nil {
 				return actionMsg{err: fmt.Errorf("failed to save description: %w", err)}
@@ -2441,6 +2458,14 @@ func (m Model) switchToExternalEditor() (Model, tea.Cmd) {
 		return m, nil
 	}
 	item := treeNodes[m.cursor].Item
+
+	// Check if trying to edit description on template task
+	if target == "description" && item.TemplateID != "" {
+		m.err = fmt.Errorf("cannot edit description on template-backed task: descriptions are generated from template variables. Press 'V' to edit variables, or 'R' to re-render from template")
+		m.inputMode = InputNone
+		m.textarea.Blur()
+		return m, nil
+	}
 
 	// Create temp file with current content
 	tmpfile, err := os.CreateTemp("", "tpg-edit-*.md")
