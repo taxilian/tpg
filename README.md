@@ -21,7 +21,7 @@ AI coding agents are stateless. Every new session starts from scratch. When work
 Requires Go 1.24+.
 
 ```bash
-go install github.com/taxilian/tpg/cmd/tpg@v1.17.9
+go install github.com/taxilian/tpg/cmd/tpg@v1.17.10
 ```
 
 Or build from source:
