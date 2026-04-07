@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/taxilian/tpg/internal/model"
 )
 
 func TestScrollText(t *testing.T) {
@@ -11,8 +13,8 @@ func TestScrollText(t *testing.T) {
 		text         string
 		scrollOffset int
 		maxVisible   int
-		wantLines    int    // expected total lines
-		wantFirst    string // expected first line of visible output
+		wantLines    int
+		wantFirst    string
 	}{
 		{
 			name:         "no scroll",
@@ -36,7 +38,7 @@ func TestScrollText(t *testing.T) {
 			scrollOffset: 10,
 			maxVisible:   3,
 			wantLines:    3,
-			wantFirst:    "Line 1", // 3 lines, 3 visible → clamped to offset 0
+			wantFirst:    "Line 1",
 		},
 		{
 			name:         "scroll negative",
@@ -91,11 +93,109 @@ func TestScrollText(t *testing.T) {
 				}
 			}
 
-			// Check visible lines don't exceed maxVisible
 			visibleLines := len(strings.Split(visible, "\n"))
 			if visible != "" && visibleLines > tt.maxVisible {
 				t.Errorf("scrollText() returned %d visible lines, max allowed is %d", visibleLines, tt.maxVisible)
 			}
 		})
+	}
+}
+
+func TestDetailViewScrollPreservedOnRefreshForSameItem(t *testing.T) {
+	longDesc := "Intro line\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nConclusion"
+	item := model.Item{
+		ID:          "ts-test1",
+		Title:       "Test Item",
+		Type:        model.ItemTypeTask,
+		Status:      model.StatusOpen,
+		Description: longDesc,
+	}
+	items := []model.Item{item}
+
+	statuses := map[model.Status]bool{
+		model.StatusOpen: true,
+	}
+
+	m := Model{
+		items:          items,
+		filtered:       items,
+		cursor:         0,
+		height:         20,
+		width:          80,
+		viewMode:       ViewDetail,
+		detailID:       "ts-test1",
+		descScroll:     2,
+		filterStatuses: statuses,
+	}
+	m.applyFilters()
+
+	_ = m.View()
+
+	m2, _ := m.Update(detailMsg{itemID: "ts-test1"})
+	t2 := m2.(Model)
+
+	view2 := t2.View()
+
+	if t2.descScroll != 2 {
+		t.Errorf("BUG REPRODUCED: descScroll was reset to %d, want 2", t2.descScroll)
+	}
+	if !strings.Contains(view2, "Intro line") {
+		t.Errorf("BUG REPRODUCED: view2 does not contain 'Intro line' at all\nview2:\n%s", view2)
+	}
+	if !strings.Contains(view2, "Line 3") {
+		t.Errorf("BUG REPRODUCED: view2 does not show 'Line 3'\nview2:\n%s", view2)
+	}
+}
+
+func TestDetailViewScrollResetWhenSwitchingItems(t *testing.T) {
+	longDesc := "Intro line\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nConclusion"
+	item1 := model.Item{
+		ID:          "ts-test1",
+		Title:       "Test Item 1",
+		Type:        model.ItemTypeTask,
+		Status:      model.StatusOpen,
+		Description: longDesc,
+	}
+	item2 := model.Item{
+		ID:          "ts-test2",
+		Title:       "Test Item 2",
+		Type:        model.ItemTypeTask,
+		Status:      model.StatusOpen,
+		Description: "Different description content here",
+	}
+	items := []model.Item{item1, item2}
+
+	statuses := map[model.Status]bool{
+		model.StatusOpen: true,
+	}
+
+	m := Model{
+		items:          items,
+		filtered:       items,
+		cursor:         0,
+		height:         20,
+		width:          80,
+		viewMode:       ViewDetail,
+		detailID:       "ts-test1",
+		descScroll:     2,
+		filterStatuses: statuses,
+	}
+	m.applyFilters()
+
+	_ = m.View()
+
+	m.cursor = 1
+	m2, _ := m.Update(detailMsg{itemID: "ts-test2"})
+	t2 := m2.(Model)
+	view2 := t2.View()
+
+	if !strings.Contains(view2, "Test Item 2") {
+		t.Errorf("view2 should show item 2 title, got: %s", view2)
+	}
+	if !strings.Contains(view2, "Different description") {
+		t.Errorf("view2 should show item 2 description, got: %s", view2)
+	}
+	if t2.descScroll != 0 {
+		t.Errorf("descScroll = %d, want 0 (scroll should reset when switching to different item)", t2.descScroll)
 	}
 }

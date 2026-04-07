@@ -103,6 +103,7 @@ type Model struct {
 	message string // temporary status message
 
 	// Detail view state
+	detailID     string
 	detailLogs   []model.Log
 	detailDeps   []db.DepStatus // "depends on" (blockers)
 	detailBlocks []db.DepStatus // "blocks" (what this item blocks)
@@ -540,6 +541,7 @@ type itemsMsg struct {
 }
 
 type detailMsg struct {
+	itemID string
 	logs   []model.Log
 	deps   []db.DepStatus // "depends on" (what blocks this)
 	blocks []db.DepStatus // "blocks" (what this blocks)
@@ -666,17 +668,17 @@ func (m Model) loadDetail() tea.Cmd {
 	return func() tea.Msg {
 		logs, err := m.db.GetLogs(id)
 		if err != nil {
-			return detailMsg{err: err}
+			return detailMsg{itemID: id, err: err}
 		}
 		deps, err := m.db.GetDepStatuses(id)
 		if err != nil {
-			return detailMsg{err: err}
+			return detailMsg{itemID: id, err: err}
 		}
 		blocks, err := m.db.GetBlockedBy(id)
 		if err != nil {
-			return detailMsg{err: err}
+			return detailMsg{itemID: id, err: err}
 		}
-		return detailMsg{logs: logs, deps: deps, blocks: blocks}
+		return detailMsg{itemID: id, logs: logs, deps: deps, blocks: blocks}
 	}
 }
 
@@ -812,7 +814,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailLogs = msg.logs
 		m.detailDeps = msg.deps
 		m.detailBlocks = msg.blocks
-		m.descScroll = 0
+		if msg.itemID != m.detailID {
+			m.descScroll = 0
+			m.detailID = msg.itemID
+		}
 		m.depCursor = 0
 		m.depSection = 0
 		m.depNavActive = false
@@ -2546,6 +2551,17 @@ func (m Model) doDone() (Model, tea.Cmd) {
 		if err := m.db.UpdateStatus(item.ID, model.StatusDone, db.AgentContext{}, false); err != nil {
 			return actionMsg{err: err}
 		}
+		currentItemID := item.ID
+		for {
+			epicInfo, err := m.db.CheckParentEpicCompletion(currentItemID)
+			if err != nil || epicInfo == nil {
+				break
+			}
+			if err := m.db.AutoCompleteEpic(epicInfo.Epic.ID); err != nil {
+				return actionMsg{err: err}
+			}
+			currentItemID = epicInfo.Epic.ID
+		}
 		return actionMsg{message: fmt.Sprintf("Completed %s", item.ID)}
 	}
 }
@@ -2577,6 +2593,17 @@ func (m Model) doBatchDone() (Model, tea.Cmd) {
 		for _, id := range selectedIDs {
 			if err := m.db.UpdateStatus(id, model.StatusDone, db.AgentContext{}, false); err != nil {
 				return actionMsg{err: fmt.Errorf("failed to complete %s: %w", id, err)}
+			}
+			currentItemID := id
+			for {
+				epicInfo, err := m.db.CheckParentEpicCompletion(currentItemID)
+				if err != nil || epicInfo == nil {
+					break
+				}
+				if err := m.db.AutoCompleteEpic(epicInfo.Epic.ID); err != nil {
+					return actionMsg{err: err}
+				}
+				currentItemID = epicInfo.Epic.ID
 			}
 			count++
 		}
