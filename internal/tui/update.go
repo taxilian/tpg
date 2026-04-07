@@ -119,6 +119,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		configureViewport(&m.detailViewport, m.width, detailViewportHeight(m.height))
+		configureViewport(&m.templateDetailViewport, m.width, templateDetailViewportHeight(m.height))
+		configureViewport(&m.configViewport, m.width, configViewportHeight(m.height))
+		configureViewport(&m.varPickerViewport, m.width, varPickerViewportHeight(m.height))
+		switch m.viewMode {
+		case ViewDetail:
+			(&m).syncDetailViewport()
+		case ViewTemplateDetail:
+			(&m).syncTemplateDetailViewport()
+		case ViewConfig:
+			(&m).syncConfigViewport()
+		case ViewVariablePicker:
+			treeNodes := m.buildTree()
+			if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
+				item := treeNodes[m.cursor].Item
+				if item.TemplateID != "" && len(item.TemplateVars) > 0 {
+					(&m).syncVarPickerViewport(item, m.getSortedVarNames(item))
+				}
+			}
+		}
 		return m, nil
 
 	case tickMsg:
@@ -181,12 +201,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailDeps = msg.deps
 		m.detailBlocks = msg.blocks
 		if msg.itemID != m.detailID {
-			m.descScroll = 0
+			m.detailViewport.GotoTop()
 			m.detailID = msg.itemID
 		}
 		m.depCursor = 0
 		m.depSection = 0
 		m.depNavActive = false
+		(&m).syncDetailViewport()
 		return m, nil
 
 	case actionMsg:
@@ -245,6 +266,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.configFields = msg.fields
 		m.configCursor = 0
+		m.configViewport.GotoTop()
+		(&m).syncConfigViewport()
 		return m, nil
 
 	case editorFinishedMsg:

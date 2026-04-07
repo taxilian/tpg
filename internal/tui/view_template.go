@@ -64,6 +64,9 @@ func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter", "l":
 		if len(m.templates) > 0 && m.templateCursor < len(m.templates) {
+			if m.selectedTemplate == nil || m.selectedTemplate.ID != m.templates[m.templateCursor].ID {
+				m.templateDetailViewport.GotoTop()
+			}
 			m.selectedTemplate = m.templates[m.templateCursor]
 			m.viewMode = ViewTemplateDetail
 		}
@@ -81,10 +84,28 @@ func (m Model) handleTemplateListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleTemplateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.syncTemplateDetailViewport()
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
+	case "j", "down":
+		m.templateDetailViewport.LineDown(1)
+	case "k", "up":
+		m.templateDetailViewport.LineUp(1)
+	case "pgdown", "ctrl+f":
+		m.templateDetailViewport.PageDown()
+	case "pgup", "ctrl+b":
+		m.templateDetailViewport.PageUp()
+	case "ctrl+d":
+		m.templateDetailViewport.HalfPageDown()
+	case "ctrl+u":
+		m.templateDetailViewport.HalfPageUp()
+	case "home":
+		m.templateDetailViewport.GotoTop()
+	case "end":
+		m.templateDetailViewport.GotoBottom()
 	case "esc", "h", "backspace":
 		m.viewMode = ViewTemplateList
 		m.selectedTemplate = nil
@@ -151,7 +172,15 @@ func (m Model) templateListView() string {
 	return b.String()
 }
 
-func (m Model) templateDetailView() string {
+func (m *Model) syncTemplateDetailViewport() {
+	content := m.templateDetailContent()
+	if content == "" {
+		return
+	}
+	setViewportContent(&m.templateDetailViewport, m.width, templateDetailViewportHeight(m.height), content)
+}
+
+func (m Model) templateDetailContent() string {
 	if m.selectedTemplate == nil {
 		return "No template selected"
 	}
@@ -205,8 +234,15 @@ func (m Model) templateDetailView() string {
 		}
 	}
 
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("esc:back  q:quit"))
-
 	return b.String()
+}
+
+func (m Model) templateDetailView() string {
+	if m.selectedTemplate == nil {
+		return "No template selected"
+	}
+
+	vp := m.templateDetailViewport
+	setViewportContent(&vp, m.width, templateDetailViewportHeight(m.height), m.templateDetailContent())
+	return vp.View() + "\n" + helpStyle.Render("j/k:scroll  pgup/dn:page  home/end  esc:back  q:quit")
 }

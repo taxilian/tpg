@@ -13,45 +13,44 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			m.configEditing = false
-			m.inputText = ""
+			m.configInput.SetValue(m.inputOriginal)
+			m.configInput.Blur()
 			return m, nil
 		case "enter":
 			// Save the value
 			if m.configCursor < len(m.configFields) {
 				field := m.configFields[m.configCursor]
+				value := m.configInput.Value()
 				config, err := db.LoadConfig()
 				if err != nil {
 					m.err = err
 					m.configEditing = false
+					m.configInput.Blur()
 					return m, nil
 				}
-				if err := db.SetConfigField(config, field.Path, m.inputText); err != nil {
+				if err := db.SetConfigField(config, field.Path, value); err != nil {
 					m.err = err
 					m.configEditing = false
+					m.configInput.Blur()
 					return m, nil
 				}
 				if err := db.SaveConfig(config); err != nil {
 					m.err = err
 					m.configEditing = false
+					m.configInput.Blur()
 					return m, nil
 				}
-				m.message = fmt.Sprintf("Set %s = %s", field.Path, m.inputText)
+				m.message = fmt.Sprintf("Set %s = %s", field.Path, value)
 				m.configEditing = false
-				m.inputText = ""
+				m.configInput.Blur()
 				return m, m.loadConfig()
 			}
 			return m, nil
-		case "backspace":
-			if len(m.inputText) > 0 {
-				m.inputText = m.inputText[:len(m.inputText)-1]
-			}
-			return m, nil
-		default:
-			if len(msg.String()) == 1 {
-				m.inputText += msg.String()
-			}
-			return m, nil
 		}
+
+		var cmd tea.Cmd
+		m.configInput, cmd = m.configInput.Update(msg)
+		return m, cmd
 	}
 
 	switch msg.String() {
@@ -91,11 +90,15 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.configEditing = true
 			// Pre-fill with current value
+			value := ""
 			if field.Value != nil {
-				m.inputText = fmt.Sprintf("%v", field.Value)
-			} else {
-				m.inputText = ""
+				value = fmt.Sprintf("%v", field.Value)
 			}
+			m.inputOriginal = value
+			m.configInput.SetValue(value)
+			m.configInput.CursorEnd()
+			m.configInput.Width = rowValueWidth(m.width-(contentPadding*2), field.Path)
+			return m, m.configInput.Focus()
 		}
 
 	case "r":
@@ -103,33 +106,32 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.syncConfigScroll()
+	m.syncConfigViewport()
 	return m, nil
 }
 
-func (m Model) configView() string {
+func (m *Model) syncConfigViewport() {
+	setViewportContent(&m.configViewport, m.width, configViewportHeight(m.height), m.configViewContent())
+}
+
+func (m Model) configViewContent() string {
 	var b strings.Builder
 
 	// Header
 	b.WriteString(titleStyle.Render("Configuration"))
-	b.WriteString(fmt.Sprintf("  %d settings\n\n", len(m.configFields)))
+	_, _ = fmt.Fprintf(&b, "  %d settings\n\n", len(m.configFields))
 
 	// Config fields
 	if len(m.configFields) == 0 {
 		b.WriteString("No configuration found\n")
 		b.WriteString(dimStyle.Render("Run 'tpg init' to create a config file\n"))
 	} else {
-		visibleHeight := m.height - 8
-		if visibleHeight < 5 {
-			visibleHeight = 5
-		}
-		start, end := calculateScrollRange(m.configCursor, len(m.configFields), visibleHeight, &m.configScroll)
-
 		rowWidth := m.width - (contentPadding * 2)
 		if rowWidth < 40 {
 			rowWidth = 40
 		}
 
-		for i := start; i < end; i++ {
+		for i := range m.configFields {
 			field := m.configFields[i]
 			selected := i == m.configCursor
 
@@ -152,7 +154,9 @@ func (m Model) configView() string {
 					// Show edit mode
 					editLine := fmt.Sprintf("%-35s = ", field.Path)
 					b.WriteString(editLine)
-					b.WriteString(inputStyle.Render(m.inputText + "█"))
+					input := m.configInput
+					input.Width = rowValueWidth(rowWidth, field.Path)
+					b.WriteString(input.View())
 					b.WriteString("\n")
 				} else {
 					b.WriteString(selectedRowStyle.Width(rowWidth).Render(line))
@@ -165,7 +169,18 @@ func (m Model) configView() string {
 		}
 	}
 
+	return b.String()
+}
+
+func (m Model) configView() string {
+	vp := m.configViewport
+	configureViewport(&vp, m.width, configViewportHeight(m.height))
+	syncViewportToCursor(&vp, m.configCursor, len(m.configFields))
+	setViewportContent(&vp, m.width, configViewportHeight(m.height), m.configViewContent())
+
 	// Footer
+	var b strings.Builder
+	b.WriteString(vp.View())
 	b.WriteString("\n")
 	if m.configEditing {
 		b.WriteString(helpStyle.Render("enter:save  esc:cancel"))
@@ -174,4 +189,12 @@ func (m Model) configView() string {
 	}
 
 	return b.String()
+}
+
+func rowValueWidth(width int, _ string) int {
+	valueWidth := width - 38
+	if valueWidth < 20 {
+		valueWidth = 20
+	}
+	return valueWidth
 }

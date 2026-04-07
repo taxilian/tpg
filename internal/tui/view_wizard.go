@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/taxilian/tpg/internal/db"
@@ -50,22 +51,24 @@ func (m Model) handleCreateWizardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 2:
 		switch msg.String() {
 		case "esc":
+			m.wizardTitleInput.Blur()
 			m.createWizardStep = 1
 			return m, nil
 		case "enter":
+			m.createWizardState.Title = m.wizardTitleInput.Value()
 			return m.advanceWizardStep()
-		case "backspace":
-			return m.handleWizardBackspace()
 		}
-		if len(msg.String()) == 1 {
-			return m.handleWizardCharInput(msg.String())
-		}
+		return m.updateWizardTextInput(msg, &m.wizardTitleInput, func(value string) {
+			m.createWizardState.Title = value
+		})
 	case 3:
 		switch msg.String() {
 		case "esc":
+			m.blurWizardWorktreeInputs()
 			m.createWizardStep = 2
-			return m, nil
+			return m, m.focusWizardTitleInput()
 		case "enter":
+			m.syncWizardWorktreeState()
 			return m.advanceWizardStep()
 		case "tab":
 			return m.handleWizardTab()
@@ -73,11 +76,9 @@ func (m Model) handleCreateWizardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleWizardUp()
 		case "down", "j":
 			return m.handleWizardDown()
-		case "backspace":
-			return m.handleWizardBackspace()
 		}
-		if len(msg.String()) == 1 {
-			return m.handleWizardCharInput(msg.String())
+		if m.createWizardState.SelectedType == model.ItemTypeEpic && m.createWizardState.UseWorktree {
+			return m.updateActiveWizardWorktreeInput(msg)
 		}
 	}
 
@@ -93,7 +94,7 @@ func (m Model) handleWizardTab() (tea.Model, tea.Cmd) {
 	} else {
 		m.createWizardState.WorktreeField = 0
 	}
-	return m, nil
+	return m, m.focusActiveWizardWorktreeInput()
 }
 
 func (m Model) getAvailableTypes() []TypeOption {
@@ -174,6 +175,7 @@ func (m Model) handleWizardUp() (tea.Model, tea.Cmd) {
 		if m.createWizardState.SelectedType == model.ItemTypeEpic {
 			m.createWizardState.UseWorktree = true
 			m = m.ensureWizardWorktreeDefaults()
+			return m, m.focusActiveWizardWorktreeInput()
 		}
 	}
 	return m, nil
@@ -193,44 +195,7 @@ func (m Model) handleWizardDown() (tea.Model, tea.Cmd) {
 	case 3: // Worktree toggle (epics only)
 		if m.createWizardState.SelectedType == model.ItemTypeEpic {
 			m.createWizardState.UseWorktree = false
-		}
-	}
-	return m, nil
-}
-
-func (m Model) handleWizardCharInput(char string) (tea.Model, tea.Cmd) {
-	if m.createWizardStep == 2 {
-		m.createWizardState.Title += char
-		return m, nil
-	}
-	if m.createWizardStep == 3 && m.createWizardState.SelectedType == model.ItemTypeEpic && m.createWizardState.UseWorktree {
-		if m.createWizardState.WorktreeField == 0 {
-			if m.createWizardState.WorktreeBranchAuto {
-				m.createWizardState.WorktreeBranch = ""
-				m.createWizardState.WorktreeBranchAuto = false
-			}
-			m.createWizardState.WorktreeBranch += char
-		} else {
-			m.createWizardState.WorktreeBase += char
-		}
-	}
-	return m, nil
-}
-
-func (m Model) handleWizardBackspace() (tea.Model, tea.Cmd) {
-	switch m.createWizardStep {
-	case 2: // Title input
-		m.createWizardState.Title = trimLastRune(m.createWizardState.Title)
-	case 3: // Worktree toggle (epics only)
-		if m.createWizardState.SelectedType == model.ItemTypeEpic && m.createWizardState.UseWorktree {
-			if m.createWizardState.WorktreeField == 0 {
-				if m.createWizardState.WorktreeBranchAuto {
-					m.createWizardState.WorktreeBranchAuto = false
-				}
-				m.createWizardState.WorktreeBranch = trimLastRune(m.createWizardState.WorktreeBranch)
-			} else {
-				m.createWizardState.WorktreeBase = trimLastRune(m.createWizardState.WorktreeBase)
-			}
+			m.blurWizardWorktreeInputs()
 		}
 	}
 	return m, nil
@@ -250,12 +215,15 @@ func (m Model) advanceWizardStep() (tea.Model, tea.Cmd) {
 		}
 		state.SelectedType = types[state.TypeCursor].Type
 		m.createWizardStep = 2
+		return m, m.focusWizardTitleInput()
 
 	case 2: // Title
+		state.Title = m.wizardTitleInput.Value()
 		if strings.TrimSpace(state.Title) == "" {
 			m.err = fmt.Errorf("title is required")
 			return m, nil
 		}
+		m.wizardTitleInput.Blur()
 		m.createWizardStep = 3
 		if state.SelectedType != model.ItemTypeEpic {
 			return m.startWizardDescription()
@@ -263,6 +231,8 @@ func (m Model) advanceWizardStep() (tea.Model, tea.Cmd) {
 
 	case 3: // Worktree (epics only) or Description (non-epic)
 		if state.SelectedType == model.ItemTypeEpic {
+			m.syncWizardWorktreeState()
+			m.blurWizardWorktreeInputs()
 			m.createWizardStep = 4
 			return m.startWizardDescription()
 		}
@@ -347,9 +317,16 @@ func (m Model) ensureWizardWorktreeDefaults() Model {
 		m.createWizardState.WorktreeBranch = generateWorktreeBranchPreview(m.createWizardState.Title)
 		m.createWizardState.WorktreeBranchAuto = true
 	}
+	if m.createWizardState.WorktreeBase == "" {
+		m.createWizardState.WorktreeBase = "main"
+	}
 	if m.createWizardState.WorktreeField < 0 || m.createWizardState.WorktreeField > 1 {
 		m.createWizardState.WorktreeField = 0
 	}
+	m.wizardBranchInput.SetValue(m.createWizardState.WorktreeBranch)
+	m.wizardBranchInput.CursorEnd()
+	m.wizardBaseInput.SetValue(m.createWizardState.WorktreeBase)
+	m.wizardBaseInput.CursorEnd()
 	return m
 }
 
@@ -391,6 +368,8 @@ func (m Model) createItemFromWizard() (tea.Model, tea.Cmd) {
 
 	m.viewMode = ViewList
 	m.createWizardStep = 0
+	m.wizardTitleInput.Blur()
+	m.blurWizardWorktreeInputs()
 	m.message = fmt.Sprintf("Created %s: %s", selectedType, itemID)
 
 	return m, m.loadItems()
@@ -461,6 +440,64 @@ func (m Model) startWizardDescription() (Model, tea.Cmd) {
 	return m, textarea.Blink
 }
 
+func (m *Model) setWizardInputWidths() {
+	width := max(20, m.wizardPopupWidth()-8)
+	m.wizardTitleInput.Width = width
+	m.wizardBranchInput.Width = width
+	m.wizardBaseInput.Width = width
+}
+
+func (m *Model) focusWizardTitleInput() tea.Cmd {
+	m.setWizardInputWidths()
+	m.wizardTitleInput.SetValue(m.createWizardState.Title)
+	m.wizardTitleInput.CursorEnd()
+	m.blurWizardWorktreeInputs()
+	return m.wizardTitleInput.Focus()
+}
+
+func (m *Model) blurWizardWorktreeInputs() {
+	m.wizardBranchInput.Blur()
+	m.wizardBaseInput.Blur()
+}
+
+func (m *Model) activeWizardWorktreeInput() *textinput.Model {
+	if m.createWizardState.WorktreeField == 0 {
+		return &m.wizardBranchInput
+	}
+	return &m.wizardBaseInput
+}
+
+func (m *Model) focusActiveWizardWorktreeInput() tea.Cmd {
+	m.setWizardInputWidths()
+	m.blurWizardWorktreeInputs()
+	return m.activeWizardWorktreeInput().Focus()
+}
+
+func (m *Model) syncWizardWorktreeState() {
+	m.createWizardState.Title = m.wizardTitleInput.Value()
+	m.createWizardState.WorktreeBranch = m.wizardBranchInput.Value()
+	m.createWizardState.WorktreeBase = m.wizardBaseInput.Value()
+}
+
+func (m *Model) updateWizardTextInput(msg tea.KeyMsg, input *textinput.Model, sync func(string)) (tea.Model, tea.Cmd) {
+	m.setWizardInputWidths()
+	var cmd tea.Cmd
+	*input, cmd = input.Update(msg)
+	sync(input.Value())
+	return *m, cmd
+}
+
+func (m *Model) updateActiveWizardWorktreeInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	active := m.activeWizardWorktreeInput()
+	previous := active.Value()
+	_, cmd := m.updateWizardTextInput(msg, active, func(string) {})
+	if m.createWizardState.WorktreeField == 0 && m.wizardBranchInput.Value() != previous {
+		m.createWizardState.WorktreeBranchAuto = false
+	}
+	m.syncWizardWorktreeState()
+	return *m, cmd
+}
+
 func (m Model) wizardTypeView() string {
 	var b strings.Builder
 
@@ -510,21 +547,15 @@ func (m Model) wizardWorktreeView() string {
 	b.WriteString("\n")
 
 	if m.createWizardState.UseWorktree {
-		branch := m.createWizardState.WorktreeBranch
-		if branch == "" {
-			branch = generateWorktreeBranchPreview(m.createWizardState.Title)
-		}
-		base := m.createWizardState.WorktreeBase
-		if base == "" {
-			base = "main"
-		}
-		if m.createWizardState.WorktreeField == 0 {
-			branch += "█"
-		} else {
-			base += "█"
-		}
-		b.WriteString(fmt.Sprintf("  Branch: %s\n", branch))
-		b.WriteString(fmt.Sprintf("  Base:   %s\n", base))
+		m.setWizardInputWidths()
+		branchInput := m.wizardBranchInput
+		baseInput := m.wizardBaseInput
+		b.WriteString("  Branch: ")
+		b.WriteString(branchInput.View())
+		b.WriteString("\n")
+		b.WriteString("  Base:   ")
+		b.WriteString(baseInput.View())
+		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
@@ -536,19 +567,14 @@ func (m Model) wizardWorktreeView() string {
 func (m Model) wizardTitleView() string {
 	var b strings.Builder
 
+	m.setWizardInputWidths()
 	inputWidth := max(20, m.wizardPopupWidth()-6)
-	value := m.createWizardState.Title
-	var inputText string
-	if value == "" {
-		inputText = dimStyle.Render("Enter title") + "█"
-	} else {
-		inputText = value + "█"
-	}
+	input := m.wizardTitleInput
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 1).
 		Width(inputWidth).
-		Render(inputText)
+		Render(input.View())
 
 	b.WriteString("Title:\n")
 	b.WriteString(inputBox)

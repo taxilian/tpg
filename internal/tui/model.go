@@ -3,6 +3,8 @@ package tui
 
 import (
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
 	"github.com/taxilian/tpg/internal/templates"
@@ -63,13 +65,17 @@ const (
 
 // Model is the main Bubble Tea model for the TUI.
 type Model struct {
-	db         *db.DB
-	project    string       // current project (for default filtering)
-	items      []model.Item // all items from db
-	filtered   []model.Item // items after filtering
-	cursor     int
-	listScroll int // scroll position for list view
-	viewMode   ViewMode
+	db                     *db.DB
+	project                string       // current project (for default filtering)
+	items                  []model.Item // all items from db
+	filtered               []model.Item // items after filtering
+	cursor                 int
+	detailViewport         viewport.Model
+	templateDetailViewport viewport.Model
+	configViewport         viewport.Model
+	varPickerViewport      viewport.Model
+	listScroll             int // scroll position for list view
+	viewMode               ViewMode
 
 	// Auto-refresh tracking: skip scroll sync to preserve manual scroll position
 	skipScrollSync bool
@@ -83,7 +89,6 @@ type Model struct {
 
 	// Input state
 	inputMode    InputMode
-	inputText    string
 	inputLabel   string
 	inputContext string // For multi-step inputs (e.g., storing title before asking for type)
 
@@ -99,7 +104,6 @@ type Model struct {
 	detailDeps   []db.DepStatus // "depends on" (blockers)
 	detailBlocks []db.DepStatus // "blocks" (what this item blocks)
 	logsVisible  bool
-	descScroll   int // scroll offset for the entire detail view
 	depCursor    int // cursor within deps for navigation
 	depSection   int // 0 = "blocked by", 1 = "blocks"
 	depNavActive bool
@@ -156,6 +160,16 @@ type Model struct {
 	// Create wizard state
 	createWizardStep  int
 	createWizardState CreateWizardState
+
+	promptInput       textinput.Model
+	searchInput       textinput.Model
+	projectInput      textinput.Model
+	labelInput        textinput.Model
+	configInput       textinput.Model
+	wizardTitleInput  textinput.Model
+	wizardBranchInput textinput.Model
+	wizardBaseInput   textinput.Model
+	inputOriginal     string
 }
 
 // CreateWizardState holds all data during item creation
@@ -220,21 +234,42 @@ func New(database *db.DB, project string) Model {
 	ta.SetWidth(80)
 	ta.SetHeight(10)
 
+	promptInput := newTextInput("")
+	searchInput := newTextInput("Search")
+	projectInput := newTextInput("Project")
+	labelInput := newTextInput("Label")
+	configInput := newTextInput("")
+	wizardTitleInput := newTextInput("Enter title")
+	wizardBranchInput := newTextInput("feature/ep-xxx-title")
+	wizardBaseInput := newTextInput("main")
+
 	return Model{
-		db:               database,
-		project:          project,
-		viewMode:         ViewList,
-		filterStatuses:   statuses,
-		staleItems:       make(map[string]bool),
-		selectedItems:    make(map[string]bool),
-		varExpanded:      make(map[string]bool),
-		textarea:         ta,
-		treeExpanded:     make(map[string]bool),
-		createWizardStep: 0, // 0 = not in wizard
+		db:                     database,
+		project:                project,
+		viewMode:               ViewList,
+		filterStatuses:         statuses,
+		staleItems:             make(map[string]bool),
+		selectedItems:          make(map[string]bool),
+		varExpanded:            make(map[string]bool),
+		detailViewport:         newViewportModel(),
+		templateDetailViewport: newViewportModel(),
+		configViewport:         newViewportModel(),
+		varPickerViewport:      newViewportModel(),
+		textarea:               ta,
+		treeExpanded:           make(map[string]bool),
+		createWizardStep:       0, // 0 = not in wizard
 		createWizardState: CreateWizardState{
 			SelectedType: model.ItemTypeTask,
 			TypeCursor:   0,
 		},
+		promptInput:       promptInput,
+		searchInput:       searchInput,
+		projectInput:      projectInput,
+		labelInput:        labelInput,
+		configInput:       configInput,
+		wizardTitleInput:  wizardTitleInput,
+		wizardBranchInput: wizardBranchInput,
+		wizardBaseInput:   wizardBaseInput,
 	}
 }
 

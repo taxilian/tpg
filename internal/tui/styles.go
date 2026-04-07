@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/taxilian/tpg/internal/model"
 )
@@ -67,3 +68,15 @@ var (
 	templateReservedRows = 8
 	detailReservedRows   = 3 // help line + scroll indicator + padding
 )
+
+func newTextInput(placeholder string) textinput.Model {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.Placeholder = placeholder
+	ti.PromptStyle = inputStyle
+	ti.TextStyle = inputStyle
+	ti.PlaceholderStyle = inputStyle.Foreground(lipgloss.Color("241"))
+	ti.CompletionStyle = dimStyle
+	ti.Cursor.Style = inputStyle.Reverse(true)
+	return ti
+}

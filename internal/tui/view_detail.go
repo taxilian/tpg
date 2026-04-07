@@ -5,10 +5,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/taxilian/tpg/internal/db"
+	"github.com/taxilian/tpg/internal/model"
 	"strings"
 )
 
 func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.syncDetailViewport()
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -25,6 +28,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Log toggle and scroll
 	case "v":
 		m.logsVisible = !m.logsVisible
+		m.syncDetailViewport()
 	case "j", "down":
 		if m.depNavActive {
 			m.depCursor++
@@ -35,27 +39,42 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.depCursor < 0 {
 				m.depCursor = 0
 			}
+			m.syncDetailViewport()
 		} else {
-			m.descScroll++
+			m.detailViewport.LineDown(1)
 		}
 	case "k", "up":
 		if m.depNavActive {
 			if m.depCursor > 0 {
 				m.depCursor--
 			}
-		} else if m.descScroll > 0 {
-			m.descScroll--
+			m.syncDetailViewport()
+		} else {
+			m.detailViewport.LineUp(1)
 		}
 	case "pgdown":
 		if !m.depNavActive {
-			m.descScroll += 10
+			m.detailViewport.PageDown()
 		}
 	case "pgup":
-		if !m.depNavActive && m.descScroll > 0 {
-			m.descScroll -= 10
-			if m.descScroll < 0 {
-				m.descScroll = 0
-			}
+		if !m.depNavActive {
+			m.detailViewport.PageUp()
+		}
+	case "ctrl+d":
+		if !m.depNavActive {
+			m.detailViewport.HalfPageDown()
+		}
+	case "ctrl+u":
+		if !m.depNavActive {
+			m.detailViewport.HalfPageUp()
+		}
+	case "home":
+		if !m.depNavActive {
+			m.detailViewport.GotoTop()
+		}
+	case "end":
+		if !m.depNavActive {
+			m.detailViewport.GotoBottom()
 		}
 
 	// Dependency navigation
@@ -68,6 +87,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.currentDepSection()) == 0 {
 				m.depSection = (m.depSection + 1) % 2
 			}
+			m.syncDetailViewport()
 		}
 	case "enter":
 		if m.depNavActive {
@@ -124,7 +144,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
 				m.viewMode = ViewVariablePicker
 				m.varCursor = 0
-				m.varPickerScroll = 0
+				m.varPickerViewport.GotoTop()
 				return m, nil
 			}
 		}
@@ -166,10 +186,18 @@ func (m Model) currentDepSection() []db.DepStatus {
 	return m.detailBlocks
 }
 
-func (m Model) detailView() string {
+func (m *Model) syncDetailViewport() {
+	content, _, ok := m.detailViewportContent()
+	if !ok {
+		return
+	}
+	setViewportContent(&m.detailViewport, m.width, detailViewportHeight(m.height), content)
+}
+
+func (m Model) detailViewportContent() (string, model.Item, bool) {
 	treeNodes := m.buildTree()
 	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
-		return "No item selected"
+		return "", model.Item{}, false
 	}
 
 	item := treeNodes[m.cursor].Item
@@ -340,26 +368,24 @@ func (m Model) detailView() string {
 		}
 	}
 
-	content := b.String()
+	return b.String(), item, true
+}
 
-	maxVisible := m.height - detailReservedRows
-	if maxVisible < 10 {
-		maxVisible = 10
+func (m Model) detailView() string {
+	content, item, ok := m.detailViewportContent()
+	if !ok {
+		return "No item selected"
 	}
-	visibleContent, totalLines := scrollText(content, m.descScroll, maxVisible)
+
+	vp := m.detailViewport
+	setViewportContent(&vp, m.width, detailViewportHeight(m.height), content)
 
 	// Build final output
 	var result strings.Builder
-	result.WriteString(visibleContent)
-
-	// Scroll indicator if needed
-	if m.descScroll+maxVisible < totalLines {
-		remaining := totalLines - (m.descScroll + maxVisible)
-		result.WriteString(dimStyle.Render(fmt.Sprintf("\n... %d more lines (j/k to scroll)", remaining)) + "\n")
-	}
+	result.WriteString(vp.View())
 
 	// Help line
-	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep e:edit v:logs  j/k:scroll q:quit"
+	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep e:edit v:logs  j/k:scroll pgup/dn:page home/end q:quit"
 	if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
 		help += "  tab:deps"
 	}

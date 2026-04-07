@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/taxilian/tpg/internal/model"
 	"strings"
 )
 
@@ -45,36 +46,20 @@ func (m Model) handleVariablePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.syncVarPickerScroll(len(varNames))
+	m.syncVarPickerViewport(item, varNames)
 	return m, nil
 }
 
-func (m Model) variablePickerView() string {
-	treeNodes := m.buildTree()
-	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
-		return "No item selected"
-	}
+func (m *Model) syncVarPickerViewport(item model.Item, varNames []string) {
+	setViewportContent(&m.varPickerViewport, m.width, varPickerViewportHeight(m.height), m.variablePickerContent(item, varNames))
+}
 
-	item := treeNodes[m.cursor].Item
-	if item.TemplateID == "" || len(item.TemplateVars) == 0 {
-		return "No template variables to edit"
-	}
-
+func (m Model) variablePickerContent(item model.Item, varNames []string) string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Edit Template Variable") + "\n\n")
 	b.WriteString(dimStyle.Render("Select a variable to edit:") + "\n\n")
 
-	varNames := m.getSortedVarNames(item)
-
-	// Calculate visible area (header: 4 lines, footer: 2 lines)
-	visibleHeight := m.height - 6
-	if visibleHeight < 3 {
-		visibleHeight = 3
-	}
-
-	start, end := calculateScrollRange(m.varCursor, len(varNames), visibleHeight, &m.varPickerScroll)
-
-	for i := start; i < end; i++ {
-		name := varNames[i]
+	for i, name := range varNames {
 		value := item.TemplateVars[name]
 		displayValue := value
 		if len(value) > 60 {
@@ -92,6 +77,24 @@ func (m Model) variablePickerView() string {
 		}
 	}
 
-	b.WriteString("\n" + helpStyle.Render("j/k:nav  enter:edit  esc:back"))
 	return b.String()
+}
+
+func (m Model) variablePickerView() string {
+	treeNodes := m.buildTree()
+	if len(treeNodes) == 0 || m.cursor >= len(treeNodes) {
+		return "No item selected"
+	}
+
+	item := treeNodes[m.cursor].Item
+	if item.TemplateID == "" || len(item.TemplateVars) == 0 {
+		return "No template variables to edit"
+	}
+
+	varNames := m.getSortedVarNames(item)
+	vp := m.varPickerViewport
+	configureViewport(&vp, m.width, varPickerViewportHeight(m.height))
+	syncViewportToCursor(&vp, m.varCursor, len(varNames))
+	setViewportContent(&vp, m.width, varPickerViewportHeight(m.height), m.variablePickerContent(item, varNames))
+	return vp.View() + "\n" + helpStyle.Render("j/k:nav  enter:edit  esc:back")
 }

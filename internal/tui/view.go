@@ -12,13 +12,12 @@ import (
 func (m Model) View() string {
 	var b strings.Builder
 
-	// Show textarea view when in textarea editing mode
-	if m.inputMode == InputTextarea {
+	switch m.inputMode {
+	case InputTextarea:
 		b.WriteString(m.textareaView())
-	} else if m.inputMode == InputStatusMenu {
-		// Show status menu as a centered overlay
+	case InputStatusMenu:
 		b.WriteString(m.statusMenuView())
-	} else {
+	default:
 		switch m.viewMode {
 		case ViewList:
 			b.WriteString(m.listView())
@@ -41,7 +40,7 @@ func (m Model) View() string {
 		// Input line (for non-textarea input modes)
 		if m.inputMode != InputNone {
 			b.WriteString("\n")
-			b.WriteString(inputStyle.Render(m.inputLabel + m.inputText + "█"))
+			b.WriteString(m.promptOverlayView())
 		}
 	}
 
@@ -99,8 +98,7 @@ func (m Model) textareaView() string {
 		} else {
 			title = "Editing description"
 		}
-	} else if strings.HasPrefix(m.textareaTarget, "var:") {
-		varName := strings.TrimPrefix(m.textareaTarget, "var:")
+	} else if varName, ok := strings.CutPrefix(m.textareaTarget, "var:"); ok {
 		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
 			item := treeNodes[m.cursor].Item
 			title = fmt.Sprintf("Editing variable '%s' for %s", varName, item.ID)

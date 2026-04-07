@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/taxilian/tpg/internal/db"
 	"github.com/taxilian/tpg/internal/model"
@@ -52,52 +53,36 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	active := m.activePromptInput()
+	if active == nil {
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc":
+		m.restorePromptInput()
+		m.blurPromptInputs()
 		m.inputMode = InputNone
-		m.inputText = ""
 		m.inputContext = ""
 		return m, nil
 
 	case "enter":
 		return m.submitInput()
 
-	case "backspace":
-		if len(m.inputText) > 0 {
-			m.inputText = m.inputText[:len(m.inputText)-1]
-			// Live filter for search, project, and label
-			switch m.inputMode {
-			case InputSearch:
-				m.filterSearch = m.inputText
-				m.applyFilters()
-			case InputProject:
-				m.filterProject = m.inputText
-				m.applyFilters()
-			case InputLabel:
-				m.filterLabel = m.inputText
-				m.applyFilters()
-			}
+	case "tab":
+		if m.inputMode == InputSearch || m.inputMode == InputProject || m.inputMode == InputLabel {
+			return m.cycleFilterInput()
 		}
 
-	default:
-		// Add character if printable
-		if len(msg.String()) == 1 {
-			m.inputText += msg.String()
-			// Live filter for search, project, and label
-			switch m.inputMode {
-			case InputSearch:
-				m.filterSearch = m.inputText
-				m.applyFilters()
-			case InputProject:
-				m.filterProject = m.inputText
-				m.applyFilters()
-			case InputLabel:
-				m.filterLabel = m.inputText
-				m.applyFilters()
-			}
-		}
 	}
-	return m, nil
+
+	prev := active.Value()
+	var cmd tea.Cmd
+	*active, cmd = active.Update(msg)
+	if active.Value() != prev {
+		m.syncPromptValue()
+	}
+	return m, cmd
 }
 
 // handleStatusMenuKey handles key events when the status menu is active.
@@ -160,10 +145,10 @@ func (m Model) handleStatusMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) submitInput() (tea.Model, tea.Cmd) {
-	text := m.inputText
+	text := m.activePromptValue()
 	mode := m.inputMode
+	m.blurPromptInputs()
 	m.inputMode = InputNone
-	m.inputText = ""
 
 	// Handle inputs that don't require an existing item
 	switch mode {
@@ -190,8 +175,9 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.inputContext = text
 		m.inputMode = InputCreateType
 		m.inputLabel = "Type (default: task): "
-		m.inputText = ""
-		return m, nil
+		m.promptInput.Reset()
+		m.inputOriginal = ""
+		return m, m.focusPromptInput(InputCreateType)
 
 	case InputCreateType:
 		// Use the selected item's project if available
@@ -309,8 +295,160 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 func (m Model) startInput(mode InputMode, label string) (Model, tea.Cmd) {
 	m.inputMode = mode
 	m.inputLabel = label
-	m.inputText = ""
-	return m, nil
+	m.inputOriginal = m.promptInitialValue(mode)
+	m.setPromptValue(mode, m.inputOriginal)
+	return m, m.focusPromptInput(mode)
+}
+
+func (m *Model) activePromptInput() *textinput.Model {
+	switch m.inputMode {
+	case InputSearch:
+		return &m.searchInput
+	case InputProject:
+		return &m.projectInput
+	case InputLabel:
+		return &m.labelInput
+	case InputBlock, InputLog, InputCancel, InputAddDep, InputCreate, InputCreateType, InputBatchStatus, InputBatchPriority:
+		return &m.promptInput
+	default:
+		return nil
+	}
+}
+
+func (m Model) activePromptValue() string {
+	if active := m.activePromptInput(); active != nil {
+		return active.Value()
+	}
+	return ""
+}
+
+func (m *Model) setPromptValue(mode InputMode, value string) {
+	var input *textinput.Model
+	switch mode {
+	case InputSearch:
+		input = &m.searchInput
+	case InputProject:
+		input = &m.projectInput
+	case InputLabel:
+		input = &m.labelInput
+	default:
+		input = &m.promptInput
+	}
+	input.SetValue(value)
+	input.CursorEnd()
+	m.syncPromptValue()
+}
+
+func (m *Model) focusPromptInput(_ InputMode) tea.Cmd {
+	m.blurPromptInputs()
+	if active := m.activePromptInput(); active != nil {
+		active.Width = max(20, m.width-(contentPadding*2)-len(m.inputLabel)-4)
+		return active.Focus()
+	}
+	return nil
+}
+
+func (m *Model) blurPromptInputs() {
+	m.promptInput.Blur()
+	m.searchInput.Blur()
+	m.projectInput.Blur()
+	m.labelInput.Blur()
+}
+
+func (m *Model) syncPromptValue() {
+	switch m.inputMode {
+	case InputSearch:
+		m.filterSearch = m.searchInput.Value()
+		m.applyFilters()
+	case InputProject:
+		m.filterProject = m.projectInput.Value()
+		m.applyFilters()
+	case InputLabel:
+		m.filterLabel = m.labelInput.Value()
+		m.applyFilters()
+	}
+}
+
+func (m *Model) restorePromptInput() {
+	switch m.inputMode {
+	case InputSearch:
+		m.searchInput.SetValue(m.inputOriginal)
+		m.filterSearch = m.inputOriginal
+		m.applyFilters()
+	case InputProject:
+		m.projectInput.SetValue(m.inputOriginal)
+		m.filterProject = m.inputOriginal
+		m.applyFilters()
+	case InputLabel:
+		m.labelInput.SetValue(m.inputOriginal)
+		m.filterLabel = m.inputOriginal
+		m.applyFilters()
+	default:
+		m.promptInput.SetValue(m.inputOriginal)
+	}
+	if active := m.activePromptInput(); active != nil {
+		active.CursorEnd()
+	}
+}
+
+func (m Model) promptInitialValue(mode InputMode) string {
+	switch mode {
+	case InputSearch:
+		return m.filterSearch
+	case InputProject:
+		return m.filterProject
+	case InputLabel:
+		return m.filterLabel
+	default:
+		return ""
+	}
+}
+
+func (m Model) cycleFilterInput() (tea.Model, tea.Cmd) {
+	if m.inputMode != InputSearch && m.inputMode != InputProject && m.inputMode != InputLabel {
+		return m, nil
+	}
+	current := m.activePromptValue()
+	original := m.inputOriginal
+	mode := InputSearch
+	switch m.inputMode {
+	case InputSearch:
+		mode = InputProject
+		m.searchInput.SetValue(current)
+	case InputProject:
+		mode = InputLabel
+		m.projectInput.SetValue(current)
+	case InputLabel:
+		mode = InputSearch
+		m.labelInput.SetValue(current)
+	}
+	m.inputMode = mode
+	m.inputLabel = filterInputLabel(mode)
+	m.inputOriginal = original
+	return m, m.focusPromptInput(mode)
+}
+
+func filterInputLabel(mode InputMode) string {
+	switch mode {
+	case InputSearch:
+		return "Search: "
+	case InputProject:
+		return "Project: "
+	case InputLabel:
+		return "Label: "
+	default:
+		return ""
+	}
+}
+
+func (m Model) promptOverlayView() string {
+	active := m.activePromptInput()
+	if active == nil {
+		return inputStyle.Render(m.inputLabel)
+	}
+	input := *active
+	input.Width = max(20, m.width-(contentPadding*2)-len(m.inputLabel)-4)
+	return inputStyle.Render(m.inputLabel) + input.View()
 }
 
 // showStatusMenu opens the status change confirmation menu with the given option pre-selected.
@@ -396,8 +534,7 @@ func (m Model) saveTextareaEdit() (Model, tea.Cmd) {
 	}
 
 	// Handle template variable editing (var:<name>)
-	if strings.HasPrefix(target, "var:") {
-		varName := strings.TrimPrefix(target, "var:")
+	if varName, ok := strings.CutPrefix(target, "var:"); ok {
 		return m, func() tea.Msg {
 			if err := m.db.SetTemplateVar(item.ID, varName, content); err != nil {
 				return actionMsg{err: fmt.Errorf("failed to save variable %s: %w", varName, err)}
