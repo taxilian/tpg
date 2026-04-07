@@ -4,37 +4,67 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/taxilian/tpg/internal/model"
 )
 
-func TestDetailViewScrollPreservedOnRefreshForSameItem(t *testing.T) {
-	longDesc := "Intro line\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nConclusion"
-	item := model.Item{
+func newDetailViewFixture() Model {
+	longDescLines := []string{
+		"Intro line",
+		"Line 2",
+		"Line 3",
+		"Line 4",
+		"Line 5",
+		"Line 6",
+		"Line 7",
+		"Line 8",
+		"Line 9",
+		"Line 10",
+		"Line 11",
+		"Line 12",
+		"Line 13",
+		"Line 14",
+		"Line 15",
+		"Line 16",
+		"Conclusion",
+	}
+	item1 := model.Item{
 		ID:          "ts-test1",
-		Title:       "Test Item",
+		Title:       "Test Item 1",
 		Type:        model.ItemTypeTask,
 		Status:      model.StatusOpen,
-		Description: longDesc,
+		Description: strings.Join(longDescLines, "\n"),
 	}
-	items := []model.Item{item}
-
-	statuses := map[model.Status]bool{
-		model.StatusOpen: true,
+	item2 := model.Item{
+		ID:          "ts-test2",
+		Title:       "Test Item 2",
+		Type:        model.ItemTypeTask,
+		Status:      model.StatusOpen,
+		Description: "Different description content here",
 	}
+	items := []model.Item{item1, item2}
 
 	m := Model{
-		items:          items,
-		filtered:       items,
-		cursor:         0,
-		height:         20,
-		width:          80,
-		viewMode:       ViewDetail,
-		detailID:       "ts-test1",
-		filterStatuses: statuses,
+		items:    items,
+		filtered: items,
+		cursor:   0,
+		width:    80,
+		height:   16,
+		viewMode: ViewDetail,
+		detailID: "ts-test1",
+		filterStatuses: map[model.Status]bool{
+			model.StatusOpen: true,
+		},
+		help:           newHelpModel(),
 		detailViewport: newViewportModel(),
 	}
 	m.applyFilters()
 	m.syncDetailViewport()
+	return m
+}
+
+func TestDetailViewScrollPreservedOnRefreshForSameItem(t *testing.T) {
+	m := newDetailViewFixture()
 	m.detailViewport.SetYOffset(2)
 
 	_ = m.View()
@@ -56,40 +86,7 @@ func TestDetailViewScrollPreservedOnRefreshForSameItem(t *testing.T) {
 }
 
 func TestDetailViewScrollResetWhenSwitchingItems(t *testing.T) {
-	longDesc := "Intro line\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nConclusion"
-	item1 := model.Item{
-		ID:          "ts-test1",
-		Title:       "Test Item 1",
-		Type:        model.ItemTypeTask,
-		Status:      model.StatusOpen,
-		Description: longDesc,
-	}
-	item2 := model.Item{
-		ID:          "ts-test2",
-		Title:       "Test Item 2",
-		Type:        model.ItemTypeTask,
-		Status:      model.StatusOpen,
-		Description: "Different description content here",
-	}
-	items := []model.Item{item1, item2}
-
-	statuses := map[model.Status]bool{
-		model.StatusOpen: true,
-	}
-
-	m := Model{
-		items:          items,
-		filtered:       items,
-		cursor:         0,
-		height:         20,
-		width:          80,
-		viewMode:       ViewDetail,
-		detailID:       "ts-test1",
-		filterStatuses: statuses,
-		detailViewport: newViewportModel(),
-	}
-	m.applyFilters()
-	m.syncDetailViewport()
+	m := newDetailViewFixture()
 	m.detailViewport.SetYOffset(2)
 
 	_ = m.View()
@@ -107,5 +104,64 @@ func TestDetailViewScrollResetWhenSwitchingItems(t *testing.T) {
 	}
 	if t2.detailViewport.YOffset != 0 {
 		t.Errorf("detail viewport offset = %d, want 0 when switching to different item", t2.detailViewport.YOffset)
+	}
+}
+
+func TestDetailViewportMovementAndBounds(t *testing.T) {
+	m := newDetailViewFixture()
+	maxOffset := m.detailViewport.TotalLineCount() - m.detailViewport.VisibleLineCount()
+	if maxOffset <= 0 {
+		t.Fatalf("fixture should produce scrollable content, got maxOffset=%d", maxOffset)
+	}
+
+	updated, _ := m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.detailViewport.YOffset != 1 {
+		t.Fatalf("YOffset after down = %d, want 1", m.detailViewport.YOffset)
+	}
+
+	updated, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(Model)
+	if m.detailViewport.YOffset != 0 {
+		t.Fatalf("YOffset after up = %d, want 0", m.detailViewport.YOffset)
+	}
+
+	updated, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	if m.detailViewport.YOffset <= 0 {
+		t.Fatalf("YOffset after page down = %d, want > 0", m.detailViewport.YOffset)
+	}
+	if m.detailViewport.YOffset > maxOffset {
+		t.Fatalf("YOffset after page down = %d, want <= %d", m.detailViewport.YOffset, maxOffset)
+	}
+
+	updated, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	if m.detailViewport.YOffset != maxOffset {
+		t.Fatalf("YOffset after end = %d, want %d", m.detailViewport.YOffset, maxOffset)
+	}
+
+	updated, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.detailViewport.YOffset != maxOffset {
+		t.Fatalf("YOffset after extra down at bottom = %d, want %d", m.detailViewport.YOffset, maxOffset)
+	}
+
+	updated, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(Model)
+	if m.detailViewport.YOffset >= maxOffset {
+		t.Fatalf("YOffset after page up = %d, want < %d", m.detailViewport.YOffset, maxOffset)
+	}
+
+	updated, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyHome})
+	m = updated.(Model)
+	if m.detailViewport.YOffset != 0 {
+		t.Fatalf("YOffset after home = %d, want 0", m.detailViewport.YOffset)
+	}
+
+	updated, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(Model)
+	if m.detailViewport.YOffset != 0 {
+		t.Fatalf("YOffset after extra up at top = %d, want 0", m.detailViewport.YOffset)
 	}
 }
