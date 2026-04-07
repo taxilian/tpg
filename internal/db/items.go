@@ -1222,10 +1222,15 @@ func (db *DB) FindTasksWithNonEpicParents() ([]InvalidParent, error) {
 	return invalid, rows.Err()
 }
 
-// FindStuckEpics returns open epics that have no open children.
 func (db *DB) FindStuckEpics() ([]model.Item, error) {
 	query := `
-		SELECT * FROM items
+		SELECT id, project, type, title, description, status, priority,
+		       parent_id, agent_id, agent_last_active,
+		       template_id, step_index, variables, template_hash, results,
+		       worktree_branch, worktree_base, worktree_fork_point, merge_status,
+		       shared_context, closing_instructions,
+		       closed_at, created_at, updated_at
+		FROM items
 		WHERE type = 'epic'
 		  AND status NOT IN ('done', 'canceled')
 		  AND (worktree_branch IS NULL OR worktree_branch = '')
