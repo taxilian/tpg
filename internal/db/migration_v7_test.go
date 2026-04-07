@@ -83,8 +83,8 @@ func TestMigrationV7_AddsClosedAtColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Assert: Verify closed_at column exists and is queryable
@@ -402,8 +402,8 @@ func TestMigrationV7_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Assert: Data is preserved
@@ -461,8 +461,8 @@ func TestMigrationV7_FreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Assert: closed_at column exists
@@ -736,8 +736,8 @@ func TestMigrationV7_FromV6(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Assert: closed_at column added

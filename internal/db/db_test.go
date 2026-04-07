@@ -676,8 +676,8 @@ func TestMigrationV4_ExistingDataPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Verify existing data is preserved
@@ -774,8 +774,8 @@ func TestMigrationV5_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Verify existing data is preserved
@@ -865,8 +865,8 @@ func TestMigrationV5_ColumnAlreadyExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Verify closing_instructions was added
@@ -959,8 +959,8 @@ func TestMigrationV6_ConvertsLegacyTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 
 	// Verify legacy types converted to task
@@ -1102,8 +1102,8 @@ func TestMigrationV6_EmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get schema version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema version = %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema version = %d, want 9", version)
 	}
 }
 

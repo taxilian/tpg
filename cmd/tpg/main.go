@@ -945,6 +945,7 @@ Examples:
 
 		if item.ClosingInstructions == "" && item.WorktreeBranch == "" {
 			fmt.Println("\nNo closing instructions or worktree configured for this epic.")
+			fmt.Println("This command is read-only — epics auto-complete when all children are done.")
 		}
 
 		return nil
@@ -1022,6 +1023,9 @@ Examples:
 		}
 
 		if err := database.MarkEpicMerged(epicID); err != nil {
+			if strings.Contains(err.Error(), "no such column") {
+				return fmt.Errorf("database schema is out of date: %w\n\nRun 'tpg doctor' to repair", err)
+			}
 			return fmt.Errorf("failed to update database: %w", err)
 		}
 
@@ -5476,9 +5480,11 @@ var doctorCmd = &cobra.Command{
 	Short: "Check and fix data integrity issues",
 	Long: `Scans for common data integrity issues like circular dependencies and offers to fix them.
 
-Checks performed:
-  1. Parent-child circular dependencies (epic depends on its child task)
-  2. General circular dependencies (A depends on B depends on C depends on A)
+	Checks performed:
+	  1. Parent-child circular dependencies (epic depends on its child task)
+	  2. General circular dependencies (A depends on B depends on C depends on A)
+	  3. Tasks with non-epic parents
+	  4. Open epics with all children done (stuck epics)
 
 Examples:
   tpg doctor              # Check and optionally fix issues
@@ -5580,7 +5586,50 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if err := runDoctorStuckEpics(database, flagDoctorDryRun); err != nil {
+		return err
+	}
+
 	fmt.Println("\n✅ Doctor check complete!")
+	return nil
+}
+
+func runDoctorStuckEpics(database *db.DB, dryRun bool) error {
+	fmt.Println("\n4. Checking for open epics with all children done...")
+	stuck, err := database.FindStuckEpics()
+	if err != nil {
+		return fmt.Errorf("failed to check stuck epics: %w", err)
+	}
+
+	if len(stuck) == 0 {
+		fmt.Println("   ✓ No stuck epics found")
+		return nil
+	}
+
+	fmt.Printf("   ⚠️  Found %d stuck epics (open but all children are done):\n", len(stuck))
+	for _, e := range stuck {
+		fmt.Printf("      - %s: %s\n", e.ID, e.Title)
+	}
+
+	if !dryRun {
+		fmt.Print("\n   Auto-complete these epics? [y/N]: ")
+		var response string
+		fmt.Scanln(&response)
+		if strings.ToLower(response) == "y" {
+			fixed := 0
+			for _, e := range stuck {
+				if err := database.AutoCompleteEpic(e.ID); err != nil {
+					fmt.Printf("      ✗ Failed to complete %s: %v\n", e.ID, err)
+					continue
+				}
+				fixed++
+				fmt.Printf("      ✓ Completed %s\n", e.ID)
+			}
+			fmt.Printf("   ✓ Auto-completed %d stuck epics\n", fixed)
+		}
+	} else {
+		fmt.Println("\n   (dry-run mode - no changes made)")
+	}
 	return nil
 }
 

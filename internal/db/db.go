@@ -192,6 +192,9 @@ ALTER TABLE items ADD COLUMN worktree_base TEXT;
 	// Version 8: Add merge_status and worktree_fork_point columns for worktree merge tracking
 	// This migration is handled specially in runMigrationV8 to be idempotent
 	"", // Empty placeholder - actual logic in runMigrationV8
+	// Version 9: Add merged_at column for tracking when epics were merged
+	// This migration is handled specially in runMigrationV9 to be idempotent
+	"", // Empty placeholder - actual logic in runMigrationV9
 }
 
 // DB wraps a SQL database connection with task-specific operations.

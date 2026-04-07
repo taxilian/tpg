@@ -414,6 +414,8 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 }
 
 // AutoCompleteEpic marks an epic as done with an auto-generated results message.
+// It bypasses CompleteItem's guard against direct epic completion since this is the
+// sanctioned auto-completion path triggered when all child tasks complete.
 func (db *DB) AutoCompleteEpic(epicID string) error {
 	// Get children stats for the results message
 	total, _, _, done, err := db.GetChildrenStats(epicID)
@@ -422,7 +424,21 @@ func (db *DB) AutoCompleteEpic(epicID string) error {
 	}
 
 	results := fmt.Sprintf("All %d child tasks completed (%d done)", total, done)
-	return db.CompleteItem(epicID, results, AgentContext{})
+	now := sqlTime(time.Now())
+	_, err = db.Exec(`
+		UPDATE items SET status = ?, results = ?, closed_at = ?, updated_at = ?
+		WHERE id = ? AND type = 'epic'`,
+		model.StatusDone, results, now, now, epicID)
+	if err != nil {
+		return fmt.Errorf("failed to auto-complete epic: %w", err)
+	}
+
+	// Record history
+	_ = db.RecordHistory(epicID, EventTypeCompleted, map[string]any{
+		"results": results,
+	})
+
+	return nil
 }
 
 // TouchItem updates the updated_at timestamp without changing any other fields.
@@ -1204,4 +1220,19 @@ func (db *DB) FindTasksWithNonEpicParents() ([]InvalidParent, error) {
 	}
 
 	return invalid, rows.Err()
+}
+
+// FindStuckEpics returns open epics that have no open children.
+func (db *DB) FindStuckEpics() ([]model.Item, error) {
+	query := `
+		SELECT * FROM items
+		WHERE type = 'epic'
+		  AND status NOT IN ('done', 'canceled')
+		  AND (worktree_branch IS NULL OR worktree_branch = '')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM items c
+		      WHERE c.parent_id = items.id AND c.status NOT IN ('done', 'canceled')
+		  )
+		ORDER BY updated_at ASC`
+	return db.queryItems(query)
 }
