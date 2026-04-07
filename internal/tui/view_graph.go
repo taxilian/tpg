@@ -101,7 +101,7 @@ func (m Model) graphView() string {
 	if len(m.graphNodes) == 0 {
 		b.WriteString("No dependencies to display\n")
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("esc:back  q:quit"))
+		b.WriteString(m.helpView())
 		return b.String()
 	}
 
@@ -275,7 +275,7 @@ func (m Model) graphView() string {
 
 	// Help
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k:nav  enter:jump to task  esc:back  q:quit"))
+	b.WriteString(m.helpView())
 
 	return b.String()
 }

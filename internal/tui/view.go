@@ -115,7 +115,7 @@ func (m Model) textareaView() string {
 	b.WriteString("\n\n")
 
 	// Help text
-	b.WriteString(helpStyle.Render("ctrl+s:save  esc:cancel  ctrl+e:external editor"))
+	b.WriteString(m.helpView())
 
 	return b.String()
 }
@@ -168,7 +168,7 @@ func (m Model) statusMenuView() string {
 	}
 
 	menuContent.WriteString("\n")
-	menuContent.WriteString(helpStyle.Render("↑/↓:select  enter:confirm  esc:cancel"))
+	menuContent.WriteString(m.helpViewWidth(46))
 
 	return m.renderPopup("Change Status", menuContent.String(), 50)
 }

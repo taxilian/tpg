@@ -167,7 +167,7 @@ func (m Model) templateListView() string {
 
 	// Footer
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  r:refresh  esc:back  q:quit"))
+	b.WriteString(m.helpView())
 
 	return b.String()
 }
@@ -244,5 +244,5 @@ func (m Model) templateDetailView() string {
 
 	vp := m.templateDetailViewport
 	setViewportContent(&vp, m.width, templateDetailViewportHeight(m.height), m.templateDetailContent())
-	return vp.View() + "\n" + helpStyle.Render("j/k:scroll  pgup/dn:page  home/end  esc:back  q:quit")
+	return vp.View() + "\n" + m.helpView()
 }

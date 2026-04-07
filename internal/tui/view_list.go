@@ -377,15 +377,7 @@ func (m Model) listView() string {
 
 	// Footer
 	b.WriteString("\n")
-	if m.selectMode {
-		b.WriteString(helpStyle.Render("j/k:nav  space:toggle  s:batch-status  p:batch-priority  d:batch-done"))
-		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("ctrl+v:exit-select  esc:clear-filters  q:quit"))
-	} else {
-		b.WriteString(helpStyle.Render("j/k:nav  ctrl+u/d:halfpg  pgup/dn:pg  g/G:top/end  enter:detail  s:start d:done n:new"))
-		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("/:search p:project t:label R:ready 1-5:status 0:all  b:block L:log c:cancel D:delete  T:templates C:config  r:refresh q:quit"))
-	}
+	b.WriteString(m.helpView())
 
 	return b.String()
 }

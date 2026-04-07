@@ -525,7 +525,7 @@ func (m Model) wizardTypeView() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render(" [↑↓] Navigate  [Enter] Select  [Esc] Cancel"))
+	b.WriteString(m.helpViewWidth(m.wizardPopupWidth() - 6))
 
 	return m.renderPopup("Create New Item", b.String(), m.wizardPopupWidth())
 }
@@ -559,7 +559,7 @@ func (m Model) wizardWorktreeView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render(" [Up/Down] Toggle  [Tab] Switch Field  [Enter] Continue  [Esc] Back"))
+	b.WriteString(m.helpViewWidth(m.wizardPopupWidth() - 6))
 
 	return m.renderPopupOver(m.wizardPopupBase(), m.wizardPopupTitle(), b.String(), m.wizardPopupWidth())
 }
@@ -579,7 +579,7 @@ func (m Model) wizardTitleView() string {
 	b.WriteString("Title:\n")
 	b.WriteString(inputBox)
 	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render(" [Enter] Continue  [Esc] Cancel"))
+	b.WriteString(m.helpViewWidth(m.wizardPopupWidth() - 6))
 
 	return m.renderPopupOver(m.wizardPopupBase(), m.wizardPopupTitle(), b.String(), m.wizardPopupWidth())
 }
@@ -590,7 +590,7 @@ func (m Model) wizardDescriptionView() string {
 	b.WriteString("Description (required):\n")
 	b.WriteString(m.textarea.View())
 	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render(" [Ctrl+S] Save  [Esc] Cancel"))
+	b.WriteString(m.helpViewWidth(m.wizardPopupWidth() - 6))
 
 	return m.renderPopupOver(m.wizardPopupBase(), m.wizardPopupTitle(), b.String(), m.wizardPopupWidth())
 }

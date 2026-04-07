@@ -96,5 +96,5 @@ func (m Model) variablePickerView() string {
 	configureViewport(&vp, m.width, varPickerViewportHeight(m.height))
 	syncViewportToCursor(&vp, m.varCursor, len(varNames))
 	setViewportContent(&vp, m.width, varPickerViewportHeight(m.height), m.variablePickerContent(item, varNames))
-	return vp.View() + "\n" + helpStyle.Render("j/k:nav  enter:edit  esc:back")
+	return vp.View() + "\n" + m.helpView()
 }

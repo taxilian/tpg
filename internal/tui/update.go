@@ -119,6 +119,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.help.Width = max(0, msg.Width-(contentPadding*2))
 		configureViewport(&m.detailViewport, m.width, detailViewportHeight(m.height))
 		configureViewport(&m.templateDetailViewport, m.width, templateDetailViewportHeight(m.height))
 		configureViewport(&m.configViewport, m.width, configViewportHeight(m.height))

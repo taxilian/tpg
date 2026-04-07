@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/taxilian/tpg/internal/model"
@@ -79,4 +80,18 @@ func newTextInput(placeholder string) textinput.Model {
 	ti.CompletionStyle = dimStyle
 	ti.Cursor.Style = inputStyle.Reverse(true)
 	return ti
+}
+
+func newHelpModel() help.Model {
+	h := help.New()
+	h.ShortSeparator = "  "
+	h.FullSeparator = "    "
+	h.Styles.ShortKey = helpStyle
+	h.Styles.ShortDesc = helpStyle
+	h.Styles.ShortSeparator = helpStyle
+	h.Styles.FullKey = helpStyle
+	h.Styles.FullDesc = helpStyle
+	h.Styles.FullSeparator = helpStyle
+	h.Styles.Ellipsis = helpStyle
+	return h
 }

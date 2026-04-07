@@ -182,11 +182,7 @@ func (m Model) configView() string {
 	var b strings.Builder
 	b.WriteString(vp.View())
 	b.WriteString("\n")
-	if m.configEditing {
-		b.WriteString(helpStyle.Render("enter:save  esc:cancel"))
-	} else {
-		b.WriteString(helpStyle.Render("j/k:nav  enter/e:edit  r:refresh  esc:back  q:quit"))
-	}
+	b.WriteString(m.helpView())
 
 	return b.String()
 }

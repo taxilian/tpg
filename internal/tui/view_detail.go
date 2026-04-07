@@ -372,7 +372,7 @@ func (m Model) detailViewportContent() (string, model.Item, bool) {
 }
 
 func (m Model) detailView() string {
-	content, item, ok := m.detailViewportContent()
+	content, _, ok := m.detailViewportContent()
 	if !ok {
 		return "No item selected"
 	}
@@ -384,15 +384,7 @@ func (m Model) detailView() string {
 	var result strings.Builder
 	result.WriteString(vp.View())
 
-	// Help line
-	help := "esc:back  s:start d:done b:block L:log c:cancel a:add-dep e:edit v:logs  j/k:scroll pgup/dn:page home/end q:quit"
-	if len(m.detailDeps) > 0 || len(m.detailBlocks) > 0 {
-		help += "  tab:deps"
-	}
-	if item.TemplateID != "" {
-		help += "  V:variables"
-	}
-	result.WriteString(helpStyle.Render(help))
+	result.WriteString(m.helpView())
 
 	return result.String()
 }

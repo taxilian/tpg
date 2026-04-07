@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -97,6 +98,7 @@ type Model struct {
 	height  int
 	err     error
 	message string // temporary status message
+	help    help.Model
 
 	// Detail view state
 	detailID     string
@@ -270,6 +272,7 @@ func New(database *db.DB, project string) Model {
 		wizardTitleInput:  wizardTitleInput,
 		wizardBranchInput: wizardBranchInput,
 		wizardBaseInput:   wizardBaseInput,
+		help:              newHelpModel(),
 	}
 }
 
