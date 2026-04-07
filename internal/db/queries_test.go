@@ -1344,3 +1344,50 @@ func TestFindEpicsNeedingWorktreeSetup(t *testing.T) {
 		t.Errorf("epic needing setup = %q, want %q", needingSetup[0].ID, epic2.ID)
 	}
 }
+
+func TestFindStuckEpics(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create an epic
+	epic := createTestEpic(t, db, "Stuck Epic", "test")
+
+	// Create a done child task
+	child := &model.Item{
+		ID:       model.GenerateID(model.ItemTypeTask),
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Done Child",
+		Status:   model.StatusDone,
+		ParentID: &epic.ID,
+	}
+	if err := db.CreateItem(child); err != nil {
+		t.Fatalf("failed to create child: %v", err)
+	}
+
+	// FindStuckEpics should return the epic (open but all children done)
+	stuck, err := db.FindStuckEpics()
+	if err != nil {
+		t.Fatalf("FindStuckEpics failed: %v", err)
+	}
+
+	if len(stuck) != 1 {
+		t.Errorf("expected 1 stuck epic, got %d", len(stuck))
+	}
+	if len(stuck) > 0 && stuck[0].ID != epic.ID {
+		t.Errorf("stuck epic = %q, want %q", stuck[0].ID, epic.ID)
+	}
+
+	// Now complete the epic via AutoCompleteEpic
+	if err := db.AutoCompleteEpic(epic.ID); err != nil {
+		t.Fatalf("AutoCompleteEpic failed: %v", err)
+	}
+
+	// FindStuckEpics should now return empty
+	stuck, err = db.FindStuckEpics()
+	if err != nil {
+		t.Fatalf("FindStuckEpics failed after completion: %v", err)
+	}
+	if len(stuck) != 0 {
+		t.Errorf("expected 0 stuck epics after completion, got %d", len(stuck))
+	}
+}
