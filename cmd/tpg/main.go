@@ -3903,6 +3903,7 @@ Examples:
 
 		// Check if --parent was explicitly set (to distinguish "" from unset)
 		flagEditParentSet = cmd.Flags().Changed("parent")
+		flagEditDescSet := cmd.Flags().Changed("desc")
 
 		// Determine if any select flags are set
 		hasFilters := flagStatus != "" || flagListParent != "" || flagListType != "" ||
@@ -3971,7 +3972,7 @@ Examples:
 			if flagEditTitle != "" {
 				return fmt.Errorf("--title can only be used with a single item (got %d)", len(items))
 			}
-			if flagEditDesc != "" {
+			if flagEditDescSet {
 				return fmt.Errorf("--desc can only be used with a single item (got %d)", len(items))
 			}
 		}
@@ -3983,7 +3984,7 @@ Examples:
 
 		// Check if any field flags are set
 		hasFieldFlags := flagEditTitle != "" || flagEditPriority != 0 || flagEditParentSet ||
-			len(flagEditAddLabels) > 0 || len(flagEditRmLabels) > 0 || flagEditDesc != "" ||
+			len(flagEditAddLabels) > 0 || len(flagEditRmLabels) > 0 || flagEditDescSet ||
 			flagEditStatus != "" || len(flagEditVars) > 0
 
 		// If no field flags and single item, open editor for description
@@ -3998,14 +3999,18 @@ Examples:
 
 		// Read description from stdin if needed
 		descValue := flagEditDesc
-		if descValue == "-" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				return fmt.Errorf("failed to read from stdin: %w", err)
-			}
-			descValue = strings.TrimSpace(string(data))
-			if descValue == "" {
-				return fmt.Errorf("--desc - specified but stdin provided no content; description cannot be empty")
+		if flagEditDescSet {
+			if descValue == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("failed to read from stdin: %w", err)
+				}
+				descValue = strings.TrimSpace(string(data))
+				if descValue == "" {
+					return fmt.Errorf("--desc - specified but stdin provided no content; description cannot be empty")
+				}
+			} else if descValue == "" {
+				return fmt.Errorf("description cannot be empty")
 			}
 		}
 
