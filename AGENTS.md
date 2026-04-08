@@ -85,6 +85,8 @@ If you made an error, **stop and inform the user.** Let them decide how to recov
 
 There are no exceptions. DO NOT FORCE PUSH.
 
+Also, NEVER change the origin. If you can't push then there is a reason that the user needs to fix, it's not something you can fix - changing the origin to https will just break things. we always use git.
+
 ## Agents
 
 Agent definitions are in `.opencode/agent/`:
@@ -182,3 +184,5 @@ tpg show <task-id>  # Shows worktree context for tasks
 - **tpg-orchestrator (primary):** Runs `tpg epic merge` after all children complete
 
 **CRITICAL:** Subagents do NOT merge. Only the orchestrator handles merges via `tpg epic merge`.
+
+
