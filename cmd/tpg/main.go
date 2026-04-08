@@ -2777,12 +2777,6 @@ Triggers that should always produce a log entry:
 
 		fmt.Printf("Completed %s\n", id)
 
-		// Check if parent epic should be auto-completed
-		if err := autoCompleteParentEpics(database, id); err != nil {
-			// Log but don't fail - the main task was completed successfully
-			fmt.Fprintf(os.Stderr, "Warning: failed to check parent epic completion: %v\n", err)
-		}
-
 		// Prompt reflection
 		fmt.Println(`
 Reflect: What would help the next agent? (See instructions for guidance)
@@ -5618,7 +5612,7 @@ func runDoctorStuckEpics(database *db.DB, dryRun bool) error {
 		if strings.ToLower(response) == "y" {
 			fixed := 0
 			for _, e := range stuck {
-				if err := database.AutoCompleteEpic(e.ID); err != nil {
+				if _, err := database.AutoCompleteEpic(e.ID); err != nil {
 					fmt.Printf("      ✗ Failed to complete %s: %v\n", e.ID, err)
 					continue
 				}
@@ -7147,58 +7141,6 @@ func isProgressMessage(message string) bool {
 	trimmed := strings.TrimSpace(message)
 	trimmed = strings.ToLower(trimmed)
 	return strings.HasPrefix(trimmed, "progress:")
-}
-
-// autoCompleteParentEpics recursively checks and completes parent epics when all children are done.
-func autoCompleteParentEpics(database *db.DB, itemID string) error {
-	for {
-		info, err := database.CheckParentEpicCompletion(itemID)
-		if err != nil {
-			return err
-		}
-		if info == nil {
-			return nil
-		}
-
-		epic := info.Epic
-
-		if info.ReadyToMerge {
-			base := info.WorktreeBase
-			if base == "" {
-				base = "main"
-			}
-			fmt.Printf(`
-─── Epic %s: %s ───
-⚠️ WORKTREE EPIC READY TO MERGE
-All child tasks completed. This epic's worktree must be merged before the epic can be closed.
-
-Worktree: %s
-Branch: %s
-Run: tpg epic set-merged %s
-`, epic.ID, epic.Title, info.WorktreeBranch, base, epic.ID)
-			return nil
-		}
-
-		hasInstructions := info.ClosingInstructions != ""
-
-		if hasInstructions {
-			fmt.Printf("\n─── Epic %s: %s ───\n", epic.ID, epic.Title)
-			fmt.Println("All child tasks completed. Before closing this epic:")
-		}
-
-		if info.ClosingInstructions != "" {
-			fmt.Printf("\n%s\n", info.ClosingInstructions)
-		}
-
-		if err := database.AutoCompleteEpic(epic.ID); err != nil {
-			return fmt.Errorf("failed to auto-complete epic %s: %w", epic.ID, err)
-		}
-		_ = database.AddLog(epic.ID, "Auto-completed (all children done)")
-
-		fmt.Printf("\nAuto-completed epic %s: %s\n", epic.ID, epic.Title)
-
-		itemID = epic.ID
-	}
 }
 
 func latestProgressLog(logs []model.Log) *model.Log {

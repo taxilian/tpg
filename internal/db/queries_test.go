@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -1378,7 +1379,7 @@ func TestFindStuckEpics(t *testing.T) {
 	}
 
 	// Now complete the epic via AutoCompleteEpic
-	if err := db.AutoCompleteEpic(epic.ID); err != nil {
+	if _, err := db.AutoCompleteEpic(epic.ID); err != nil {
 		t.Fatalf("AutoCompleteEpic failed: %v", err)
 	}
 
@@ -1389,5 +1390,192 @@ func TestFindStuckEpics(t *testing.T) {
 	}
 	if len(stuck) != 0 {
 		t.Errorf("expected 0 stuck epics after completion, got %d", len(stuck))
+	}
+}
+
+func TestCloseAndCascade_CascadesToParentEpic(t *testing.T) {
+	db := setupTestDB(t)
+
+	parentEpic := createTestEpic(t, db, "Parent Epic", "test")
+
+	childTask := &model.Item{
+		ID:       model.GenerateID(model.ItemTypeTask),
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Child Task",
+		Status:   model.StatusOpen,
+		ParentID: &parentEpic.ID,
+	}
+	if err := db.CreateItem(childTask); err != nil {
+		t.Fatalf("failed to create child task: %v", err)
+	}
+
+	result, err := db.CloseAndCascade(childTask.ID, model.StatusDone, "Done", AgentContext{}, false)
+	if err != nil {
+		t.Fatalf("CloseAndCascade failed: %v", err)
+	}
+
+	if len(result.CompletedEpics) != 1 {
+		t.Errorf("expected 1 completed epic, got %d", len(result.CompletedEpics))
+	}
+
+	child, _ := db.GetItem(childTask.ID)
+	if child.Status != model.StatusDone {
+		t.Errorf("child task status = %q, want %q", child.Status, model.StatusDone)
+	}
+
+	parent, _ := db.GetItem(parentEpic.ID)
+	if parent.Status != model.StatusDone {
+		t.Errorf("parent epic status = %q, want %q", parent.Status, model.StatusDone)
+	}
+}
+
+func TestCloseAndCascade_CascadesThroughNestedEpics(t *testing.T) {
+	db := setupTestDB(t)
+
+	grandparent := createTestEpic(t, db, "Grandparent Epic", "test")
+	parent := createTestEpic(t, db, "Parent Epic", "test")
+	child := createTestEpic(t, db, "Child Epic", "test")
+
+	if err := db.SetParent(child.ID, parent.ID); err != nil {
+		t.Fatalf("SetParent(child, parent) failed: %v", err)
+	}
+	if err := db.SetParent(parent.ID, grandparent.ID); err != nil {
+		t.Fatalf("SetParent(parent, grandparent) failed: %v", err)
+	}
+
+	doneTask := &model.Item{
+		ID:       model.GenerateID(model.ItemTypeTask),
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Done Task",
+		Status:   model.StatusDone,
+		ParentID: &child.ID,
+	}
+	if err := db.CreateItem(doneTask); err != nil {
+		t.Fatalf("failed to create done task: %v", err)
+	}
+
+	result, err := db.CloseAndCascade(doneTask.ID, model.StatusDone, "Done", AgentContext{}, false)
+	if err != nil {
+		t.Fatalf("CloseAndCascade failed: %v", err)
+	}
+
+	if len(result.CompletedEpics) != 3 {
+		t.Errorf("expected 3 completed epics, got %d", len(result.CompletedEpics))
+	}
+
+	childItem, _ := db.GetItem(child.ID)
+	if childItem.Status != model.StatusDone {
+		t.Errorf("child epic status = %q, want %q", childItem.Status, model.StatusDone)
+	}
+	parentItem, _ := db.GetItem(parent.ID)
+	if parentItem.Status != model.StatusDone {
+		t.Errorf("parent epic status = %q, want %q", parentItem.Status, model.StatusDone)
+	}
+	grandparentItem, _ := db.GetItem(grandparent.ID)
+	if grandparentItem.Status != model.StatusDone {
+		t.Errorf("grandparent epic status = %q, want %q", grandparentItem.Status, model.StatusDone)
+	}
+}
+
+func TestCloseAndCascade_CancelAlsoCascades(t *testing.T) {
+	db := setupTestDB(t)
+
+	parentEpic := createTestEpic(t, db, "Parent Epic", "test")
+
+	childTask := &model.Item{
+		ID:       model.GenerateID(model.ItemTypeTask),
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Child Task",
+		Status:   model.StatusOpen,
+		ParentID: &parentEpic.ID,
+	}
+	if err := db.CreateItem(childTask); err != nil {
+		t.Fatalf("failed to create child task: %v", err)
+	}
+
+	result, err := db.CloseAndCascade(childTask.ID, model.StatusCanceled, "Canceled", AgentContext{}, false)
+	if err != nil {
+		t.Fatalf("CloseAndCascade(Canceled) failed: %v", err)
+	}
+
+	if len(result.CompletedEpics) != 1 {
+		t.Errorf("expected 1 completed epic on cancel, got %d", len(result.CompletedEpics))
+	}
+
+	child, _ := db.GetItem(childTask.ID)
+	if child.Status != model.StatusCanceled {
+		t.Errorf("child task status = %q, want %q", child.Status, model.StatusCanceled)
+	}
+
+	parent, _ := db.GetItem(parentEpic.ID)
+	if parent.Status != model.StatusDone {
+		t.Errorf("parent epic status = %q, want %q (should auto-complete on cancel)", parent.Status, model.StatusDone)
+	}
+}
+
+func TestCloseAndCascade_RejectsEpics(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := createTestEpic(t, db, "Test Epic", "test")
+
+	_, err := db.CloseAndCascade(epic.ID, model.StatusDone, "Done", AgentContext{}, false)
+	if err == nil {
+		t.Fatal("expected error when calling CloseAndCascade on epic")
+	}
+	if !strings.Contains(err.Error(), "AutoCompleteEpic") {
+		t.Errorf("error = %q, want it to mention AutoCompleteEpic", err.Error())
+	}
+}
+
+func TestCloseAndCascade_RespectsForceFlag(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItemWithProject(t, db, "Blocker", "test", model.StatusOpen, 2)
+	dependent := createTestItemWithProject(t, db, "Dependent", "test", model.StatusDone, 2)
+
+	if err := db.AddDep(dependent.ID, blocker.ID); err != nil {
+		t.Fatalf("AddDep failed: %v", err)
+	}
+
+	_, err := db.CloseAndCascade(blocker.ID, model.StatusDone, "Done", AgentContext{}, false)
+	if err == nil {
+		t.Fatal("expected error when item has dependents")
+	}
+	if !strings.Contains(err.Error(), "depend") {
+		t.Errorf("error = %q, want it to mention dependents", err.Error())
+	}
+
+	_, err = db.CloseAndCascade(blocker.ID, model.StatusDone, "Done", AgentContext{}, true)
+	if err != nil {
+		t.Errorf("expected no error with force=true, got: %v", err)
+	}
+}
+
+func TestCloseAndCascade_BlockedByOpenChildren(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := createTestEpic(t, db, "Parent Epic", "test")
+
+	task := &model.Item{
+		ID:       model.GenerateID(model.ItemTypeTask),
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Task under epic",
+		Status:   model.StatusOpen,
+		ParentID: &epic.ID,
+	}
+	if err := db.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	_, err := db.CloseAndCascade(epic.ID, model.StatusDone, "Done", AgentContext{}, false)
+	if err == nil {
+		t.Fatal("expected error when calling CloseAndCascade on epic")
+	}
+	if !strings.Contains(err.Error(), "AutoCompleteEpic") {
+		t.Errorf("error = %q, want it to mention 'AutoCompleteEpic'", err.Error())
 	}
 }

@@ -1144,17 +1144,6 @@ func (m Model) doDone() (Model, tea.Cmd) {
 		if err := m.db.UpdateStatus(item.ID, model.StatusDone, db.AgentContext{}, false); err != nil {
 			return actionMsg{err: err}
 		}
-		currentItemID := item.ID
-		for {
-			epicInfo, err := m.db.CheckParentEpicCompletion(currentItemID)
-			if err != nil || epicInfo == nil {
-				break
-			}
-			if err := m.db.AutoCompleteEpic(epicInfo.Epic.ID); err != nil {
-				return actionMsg{err: err}
-			}
-			currentItemID = epicInfo.Epic.ID
-		}
 		return actionMsg{message: fmt.Sprintf("Completed %s", item.ID)}
 	}
 }
@@ -1186,17 +1175,6 @@ func (m Model) doBatchDone() (Model, tea.Cmd) {
 		for _, id := range selectedIDs {
 			if err := m.db.UpdateStatus(id, model.StatusDone, db.AgentContext{}, false); err != nil {
 				return actionMsg{err: fmt.Errorf("failed to complete %s: %w", id, err)}
-			}
-			currentItemID := id
-			for {
-				epicInfo, err := m.db.CheckParentEpicCompletion(currentItemID)
-				if err != nil || epicInfo == nil {
-					break
-				}
-				if err := m.db.AutoCompleteEpic(epicInfo.Epic.ID); err != nil {
-					return actionMsg{err: err}
-				}
-				currentItemID = epicInfo.Epic.ID
 			}
 			count++
 		}

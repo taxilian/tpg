@@ -187,30 +187,32 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 		return fmt.Errorf("failed to get item status: %w", err)
 	}
 
-	// Cannot close parent with open children
+	// Handle status-specific logic
 	if status == model.StatusDone || status == model.StatusCanceled {
-		var openChildren int
-		err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
+		// Delegate to CloseAndCascade for proper cascade behavior
+		var itemType string
+		err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, id).Scan(&itemType)
 		if err != nil {
-			return fmt.Errorf("failed to check children: %w", err)
+			return err
 		}
-		if openChildren > 0 {
-			return fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
-		}
-
-		if !force {
-			var blockedCount int
-			err = db.QueryRow(`SELECT COUNT(*) FROM deps WHERE depends_on = ?`, id).Scan(&blockedCount)
+		if itemType == string(model.ItemTypeEpic) {
+			// Epic done/canceled - check open children then use AutoCompleteEpic
+			var openChildren int
+			err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
 			if err != nil {
-				return fmt.Errorf("failed to check dependencies: %w", err)
+				return err
 			}
-			if blockedCount > 0 {
-				return fmt.Errorf("cannot close %s: %d tasks depend on it (use --force to override)", id, blockedCount)
+			if openChildren > 0 {
+				return fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
 			}
+			_, err = db.AutoCompleteEpic(id)
+			return err
 		}
+		_, err = db.CloseAndCascade(id, status, "", agentCtx, force)
+		return err
 	}
 
-	// Update status and timestamp
+	// Non-closing statuses: update normally
 	result, err := db.Exec(`
 		UPDATE items SET status = ?, updated_at = ? WHERE id = ?`,
 		status, sqlTime(time.Now()), id)
@@ -228,13 +230,11 @@ func (db *DB) UpdateStatus(id string, status model.Status, agentCtx AgentContext
 	wasClosedBefore := (oldStatus == model.StatusDone || oldStatus == model.StatusCanceled)
 
 	if isClosing && !wasClosedBefore {
-		// Set closed_at when closing
 		_, err = db.Exec(`UPDATE items SET closed_at = ? WHERE id = ?`, sqlTime(time.Now()), id)
 		if err != nil {
 			return fmt.Errorf("failed to set closed_at: %w", err)
 		}
 	} else if !isClosing && wasClosedBefore {
-		// Clear closed_at when reopening
 		_, err = db.Exec(`UPDATE items SET closed_at = NULL WHERE id = ?`, id)
 		if err != nil {
 			return fmt.Errorf("failed to clear closed_at: %w", err)
@@ -292,42 +292,8 @@ func (db *DB) CompleteItem(id, results string, agentCtx AgentContext) error {
 		return fmt.Errorf("cannot complete epic %s directly: epics auto-complete when all children are done", id)
 	}
 
-	var openChildren int
-	err = db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
-	if err != nil {
-		return fmt.Errorf("failed to check children: %w", err)
-	}
-	if openChildren > 0 {
-		return fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
-	}
-
-	now := sqlTime(time.Now())
-	result, err := db.Exec(`
-		UPDATE items SET status = ?, results = ?, closed_at = ?, updated_at = ? WHERE id = ?`,
-		model.StatusDone, results, now, now, id)
-	if err != nil {
-		return fmt.Errorf("failed to complete item: %w", err)
-	}
-
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
-	}
-
-	// Release agent assignment when done
-	_, err = db.Exec(`UPDATE items 
-		SET agent_id = NULL, agent_last_active = NULL
-		WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("failed to clear agent: %w", err)
-	}
-
-	// Record history
-	_ = db.RecordHistory(id, EventTypeCompleted, map[string]any{
-		"results": results,
-	})
-
-	return nil
+	_, err = db.CloseAndCascade(id, model.StatusDone, results, agentCtx, false)
+	return err
 }
 
 // MarkEpicMerged marks an epic as merged and closes it.
@@ -372,30 +338,47 @@ type EpicCompletionInfo struct {
 	ReadyToMerge        bool
 }
 
+type CascadeStopReason int
+
+const CascadeStopNone CascadeStopReason = iota
+
+type CascadeResult struct {
+	CompletedEpics []string
+	StopReason     CascadeStopReason
+}
+
 // CheckParentEpicCompletion checks if the parent epic of the given item should be auto-completed.
 // Returns nil if there is no parent, the parent still has open children, or the parent is already done.
 // For worktree epics with all children done, returns EpicCompletionInfo with ReadyToMerge=true.
+// Uses lightweight queries to avoid issues with NULL description fields.
 func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, error) {
-	item, err := db.GetItem(itemID)
+	var parentID sql.NullString
+	err := db.QueryRow(`SELECT parent_id FROM items WHERE id = ?`, itemID).Scan(&parentID)
 	if err != nil {
 		return nil, err
 	}
-
-	if item.ParentID == nil {
+	if !parentID.Valid {
 		return nil, nil
 	}
 
-	parent, err := db.GetItem(*item.ParentID)
+	var parentStatus model.Status
+	var closingInstructions, worktreeBranch, worktreeBase sql.NullString
+	err = db.QueryRow(`
+		SELECT status, closing_instructions, worktree_branch, worktree_base
+		FROM items WHERE id = ? AND type = 'epic'`, parentID.String).Scan(&parentStatus, &closingInstructions, &worktreeBranch, &worktreeBase)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	if parent.Status == model.StatusDone || parent.Status == model.StatusCanceled {
+	if parentStatus == model.StatusDone || parentStatus == model.StatusCanceled {
 		return nil, nil
 	}
 
 	var openChildren int
-	err = db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, parent.ID).Scan(&openChildren)
+	err = db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, parentID.String).Scan(&openChildren)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check children: %w", err)
 	}
@@ -405,22 +388,106 @@ func (db *DB) CheckParentEpicCompletion(itemID string) (*EpicCompletionInfo, err
 	}
 
 	return &EpicCompletionInfo{
-		Epic:                parent,
-		ClosingInstructions: parent.ClosingInstructions,
-		WorktreeBranch:      parent.WorktreeBranch,
-		WorktreeBase:        parent.WorktreeBase,
-		ReadyToMerge:        parent.WorktreeBranch != "",
+		Epic: &model.Item{
+			ID:                  parentID.String,
+			Status:              parentStatus,
+			ClosingInstructions: closingInstructions.String,
+			WorktreeBranch:      worktreeBranch.String,
+			WorktreeBase:        worktreeBase.String,
+		},
+		ClosingInstructions: closingInstructions.String,
+		WorktreeBranch:      worktreeBranch.String,
+		WorktreeBase:        worktreeBase.String,
+		ReadyToMerge:        worktreeBranch.Valid && worktreeBranch.String != "",
 	}, nil
+}
+
+func (db *DB) CloseAndCascade(id string, status model.Status, results string, agentCtx AgentContext, force bool) (*CascadeResult, error) {
+	if status != model.StatusDone && status != model.StatusCanceled {
+		return nil, fmt.Errorf("CloseAndCascade only supports StatusDone or StatusCanceled, got %s", status)
+	}
+
+	var itemType string
+	err := db.QueryRow(`SELECT type FROM items WHERE id = ?`, id).Scan(&itemType)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("item not found: %s", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if itemType == string(model.ItemTypeEpic) {
+		return nil, fmt.Errorf("use AutoCompleteEpic to close epics, not CloseAndCascade")
+	}
+
+	var openChildren int
+	err = db.QueryRow(`SELECT COUNT(*) FROM items WHERE parent_id = ? AND status NOT IN ('done', 'canceled')`, id).Scan(&openChildren)
+	if err != nil {
+		return nil, err
+	}
+	if openChildren > 0 {
+		return nil, fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
+	}
+
+	if !force {
+		var blockedCount int
+		err := db.QueryRow(`SELECT COUNT(*) FROM deps WHERE depends_on = ?`, id).Scan(&blockedCount)
+		if err != nil {
+			return nil, err
+		}
+		if blockedCount > 0 {
+			return nil, fmt.Errorf("cannot close %s: %d tasks depend on it", id, blockedCount)
+		}
+	}
+
+	now := sqlTime(time.Now())
+	result := &CascadeResult{}
+
+	_, err = db.Exec(`
+		UPDATE items SET status = ?, results = ?, updated_at = ?, closed_at = ?
+		WHERE id = ?`,
+		status, results, now, now, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update status: %w", err)
+	}
+
+	_, _ = db.Exec(`UPDATE items SET agent_id = NULL, agent_last_active = NULL WHERE id = ?`, id)
+
+	eventType := EventTypeCompleted
+	if status == model.StatusCanceled {
+		eventType = EventTypeCanceled
+	}
+	_ = db.RecordHistory(id, eventType, map[string]any{"results": results})
+
+	currentID := id
+	for {
+		info, err := db.CheckParentEpicCompletion(currentID)
+		if err != nil {
+			return result, err
+		}
+		if info == nil {
+			break
+		}
+
+		completed, err := db.AutoCompleteEpic(info.Epic.ID)
+		if err != nil {
+			return result, fmt.Errorf("failed to auto-complete epic %s: %w", info.Epic.ID, err)
+		}
+		result.CompletedEpics = append(result.CompletedEpics, completed...)
+		currentID = info.Epic.ID
+	}
+
+	result.StopReason = CascadeStopNone
+	return result, nil
 }
 
 // AutoCompleteEpic marks an epic as done with an auto-generated results message.
 // It bypasses CompleteItem's guard against direct epic completion since this is the
 // sanctioned auto-completion path triggered when all child tasks complete.
-func (db *DB) AutoCompleteEpic(epicID string) error {
-	// Get children stats for the results message
+// Returns the list of all epic IDs that were completed (including cascaded parent epics).
+func (db *DB) AutoCompleteEpic(epicID string) ([]string, error) {
 	total, _, _, done, err := db.GetChildrenStats(epicID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	results := fmt.Sprintf("All %d child tasks completed (%d done)", total, done)
@@ -430,15 +497,30 @@ func (db *DB) AutoCompleteEpic(epicID string) error {
 		WHERE id = ? AND type = 'epic'`,
 		model.StatusDone, results, now, now, epicID)
 	if err != nil {
-		return fmt.Errorf("failed to auto-complete epic: %w", err)
+		return nil, fmt.Errorf("failed to auto-complete epic: %w", err)
 	}
 
-	// Record history
-	_ = db.RecordHistory(epicID, EventTypeCompleted, map[string]any{
-		"results": results,
-	})
+	_ = db.RecordHistory(epicID, EventTypeCompleted, map[string]any{"results": results})
 
-	return nil
+	completed := []string{epicID}
+	currentID := epicID
+	for {
+		info, err := db.CheckParentEpicCompletion(currentID)
+		if err != nil {
+			return completed, err
+		}
+		if info == nil {
+			break
+		}
+		cascaded, err := db.AutoCompleteEpic(info.Epic.ID)
+		if err != nil {
+			return completed, err
+		}
+		completed = append(completed, cascaded...)
+		currentID = info.Epic.ID
+	}
+
+	return completed, nil
 }
 
 // TouchItem updates the updated_at timestamp without changing any other fields.
