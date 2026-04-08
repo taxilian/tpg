@@ -1534,23 +1534,42 @@ func TestCloseAndCascade_RespectsForceFlag(t *testing.T) {
 	db := setupTestDB(t)
 
 	blocker := createTestItemWithProject(t, db, "Blocker", "test", model.StatusOpen, 2)
+	dependent := createTestItemWithProject(t, db, "Dependent", "test", model.StatusOpen, 2)
+
+	if err := db.AddDep(dependent.ID, blocker.ID); err != nil {
+		t.Fatalf("AddDep failed: %v", err)
+	}
+
+	// Should fail because dependent is still open (waiting on blocker)
+	_, err := db.CloseAndCascade(blocker.ID, model.StatusDone, "Done", AgentContext{}, false)
+	if err == nil {
+		t.Fatal("expected error when item has open dependents")
+	}
+	if !strings.Contains(err.Error(), "depend") {
+		t.Errorf("error = %q, want it to mention dependents", err.Error())
+	}
+
+	// With force=true, should succeed
+	_, err = db.CloseAndCascade(blocker.ID, model.StatusDone, "Done", AgentContext{}, true)
+	if err != nil {
+		t.Errorf("expected no error with force=true, got: %v", err)
+	}
+}
+
+func TestCloseAndCascade_AllowsClosingWhenDependentDone(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItemWithProject(t, db, "Blocker", "test", model.StatusOpen, 2)
 	dependent := createTestItemWithProject(t, db, "Dependent", "test", model.StatusDone, 2)
 
 	if err := db.AddDep(dependent.ID, blocker.ID); err != nil {
 		t.Fatalf("AddDep failed: %v", err)
 	}
 
+	// Should succeed because dependent is already done (not waiting)
 	_, err := db.CloseAndCascade(blocker.ID, model.StatusDone, "Done", AgentContext{}, false)
-	if err == nil {
-		t.Fatal("expected error when item has dependents")
-	}
-	if !strings.Contains(err.Error(), "depend") {
-		t.Errorf("error = %q, want it to mention dependents", err.Error())
-	}
-
-	_, err = db.CloseAndCascade(blocker.ID, model.StatusDone, "Done", AgentContext{}, true)
 	if err != nil {
-		t.Errorf("expected no error with force=true, got: %v", err)
+		t.Errorf("expected success closing item whose dependent is done, got: %v", err)
 	}
 }
 

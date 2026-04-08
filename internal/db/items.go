@@ -430,7 +430,10 @@ func (db *DB) CloseAndCascade(id string, status model.Status, results string, ag
 
 	if !force {
 		var blockedCount int
-		err := db.QueryRow(`SELECT COUNT(*) FROM deps WHERE depends_on = ?`, id).Scan(&blockedCount)
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM deps d 
+			JOIN items i ON d.item_id = i.id 
+			WHERE d.depends_on = ? AND i.status NOT IN ('done', 'canceled')`, id).Scan(&blockedCount)
 		if err != nil {
 			return nil, err
 		}
