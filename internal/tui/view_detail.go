@@ -24,6 +24,7 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewMode = ViewList
 		m.logsVisible = false
 		m.varCursor = -1
+		m.descViewMode = DescViewRendered
 
 	// Log toggle and scroll
 	case "v":
@@ -142,10 +143,12 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(treeNodes) > 0 && m.cursor < len(treeNodes) {
 			item := treeNodes[m.cursor].Item
 			if item.TemplateID != "" && len(item.TemplateVars) > 0 {
-				m.viewMode = ViewVariablePicker
-				m.varCursor = 0
-				m.varPickerViewport.GotoTop()
-				return m, nil
+				if m.descViewMode == DescViewVars {
+					m.descViewMode = DescViewRendered
+				} else {
+					m.descViewMode = DescViewVars
+				}
+				m.syncDetailViewport()
 			}
 		}
 
@@ -322,28 +325,44 @@ func (m Model) detailViewportContent() (string, model.Item, bool) {
 
 	// Description section
 	if item.TemplateID != "" {
-		descLabel := "\nDescription"
-		if tmplInfo.notFound || tmplInfo.invalidStep {
-			descLabel += " " + dimStyle.Render("[stored - template error]")
-		}
-		descLabel += ":"
-		b.WriteString(detailLabelStyle.Render(descLabel) + "\n")
-		b.WriteString(renderTemplateForItem(item) + "\n")
-
-		// Template Variables
-		if len(item.TemplateVars) > 0 {
-			b.WriteString("\n" + detailLabelStyle.Render("Template Variables:") + " " + dimStyle.Render("(V to edit)") + "\n")
+		if m.descViewMode == DescViewVars && len(item.TemplateVars) > 0 {
+			// Show word-wrapped template variables
+			b.WriteString("\n" + detailLabelStyle.Render("Template Variables") + " " + dimStyle.Render("(V: rendered)") + ":\n")
 			varNames := m.getSortedVarNames(item)
+			availWidth := viewportWidth(m.width)
 			for _, name := range varNames {
 				value := item.TemplateVars[name]
-				displayValue := value
-				if len(value) > 60 {
-					displayValue = value[:57] + "..."
+				// Calculate indent: 2 spaces + label + ": "
+				labelLen := lipgloss.Width(labelStyle.Render(name + ": "))
+				valueWidth := availWidth - labelLen - 2 // -2 for leading spaces
+				if valueWidth < 20 {
+					valueWidth = 20
 				}
-				if strings.Contains(value, "\n") {
-					displayValue = strings.Split(value, "\n")[0] + "..."
+				wrapped := wrapText(value, valueWidth, "  "+labelStyle.Render(name)+": ")
+				// First line already has label, following lines need indent
+				lines := strings.Split(wrapped, "\n")
+				b.WriteString(lines[0] + "\n")
+				for i := 1; i < len(lines); i++ {
+					b.WriteString(strings.Repeat(" ", labelLen+4) + lines[i] + "\n")
 				}
-				b.WriteString(fmt.Sprintf("  %s: %s\n", labelStyle.Render(name), displayValue))
+			}
+		} else {
+			// Show rendered description
+			descLabel := "\nDescription"
+			if tmplInfo.notFound || tmplInfo.invalidStep {
+				descLabel += " " + dimStyle.Render("[stored - template error]")
+			}
+			descLabel += " " + dimStyle.Render("(V: vars)")
+			if len(item.TemplateVars) > 0 {
+				descLabel += " - (E: edit)"
+			}
+			descLabel += ":"
+			b.WriteString(detailLabelStyle.Render(descLabel) + "\n")
+			b.WriteString(renderTemplateForItem(item) + "\n")
+
+			// Show template vars hint
+			if len(item.TemplateVars) > 0 {
+				b.WriteString(dimStyle.Render("  (V to see all variables)\n"))
 			}
 		}
 	} else {

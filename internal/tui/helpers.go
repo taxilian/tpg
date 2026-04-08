@@ -23,6 +23,76 @@ func max(a, b int) int {
 	return b
 }
 
+// wrapText wraps text to fit within maxWidth display columns, preserving word boundaries.
+// Uses lipgloss.Width() for accurate column width calculation (handles ANSI codes).
+func wrapText(text string, maxWidth int, indent string) string {
+	if maxWidth <= 0 {
+		return text
+	}
+	indentWidth := lipgloss.Width(indent)
+	if indentWidth >= maxWidth {
+		return text
+	}
+	contentWidth := maxWidth - indentWidth
+
+	var result strings.Builder
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if i > 0 {
+			result.WriteString("\n")
+		}
+		if lipgloss.Width(line) <= contentWidth {
+			result.WriteString(indent)
+			result.WriteString(line)
+			continue
+		}
+		// Wrap the line
+		words := strings.Fields(line)
+		if len(words) == 0 {
+			continue
+		}
+		currentLine := ""
+		for _, word := range words {
+			testLine := currentLine
+			if testLine != "" {
+				testLine += " "
+			}
+			testLine += word
+			if lipgloss.Width(testLine) <= contentWidth {
+				currentLine = testLine
+			} else {
+				if currentLine != "" {
+					result.WriteString(indent)
+					result.WriteString(currentLine)
+					result.WriteString("\n")
+				}
+				// If single word is too long, truncate it
+				if lipgloss.Width(word) > contentWidth {
+					truncated := word
+					runes := []rune(word)
+					for j := len(runes); j > 0; j-- {
+						if lipgloss.Width(string(runes[:j])) <= contentWidth-3 {
+							truncated = string(runes[:j]) + "..."
+							break
+						}
+					}
+					result.WriteString(indent)
+					result.WriteString(truncated)
+					result.WriteString("\n")
+					currentLine = ""
+				} else {
+					currentLine = word
+				}
+			}
+		}
+		if currentLine != "" {
+			result.WriteString(indent)
+			result.WriteString(currentLine)
+		}
+	}
+	return result.String()
+}
+
 // truncateWidth truncates s to fit within maxWidth display columns, adding "..." if needed.
 func truncateWidth(s string, maxWidth int) string {
 	if lipgloss.Width(s) <= maxWidth {

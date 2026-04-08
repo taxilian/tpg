@@ -166,7 +166,7 @@ var detailBindings = struct {
 	Cancel:       key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel")),
 	AddDep:       key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add blocker")),
 	Edit:         key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
-	Variables:    key.NewBinding(key.WithKeys("V"), key.WithHelp("V", "variables")),
+	Variables:    key.NewBinding(key.WithKeys("V"), key.WithHelp("V", "toggle")),
 	Refresh:      key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 	Graph:        key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "graph")),
 	Rerender:     key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rerender")),
