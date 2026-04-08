@@ -428,20 +428,6 @@ func (db *DB) CloseAndCascade(id string, status model.Status, results string, ag
 		return nil, fmt.Errorf("cannot close %s: has %d open children", id, openChildren)
 	}
 
-	if !force {
-		var blockedCount int
-		err := db.QueryRow(`
-			SELECT COUNT(*) FROM deps d 
-			JOIN items i ON d.item_id = i.id 
-			WHERE d.depends_on = ? AND i.status NOT IN ('done', 'canceled')`, id).Scan(&blockedCount)
-		if err != nil {
-			return nil, err
-		}
-		if blockedCount > 0 {
-			return nil, fmt.Errorf("cannot close %s: %d tasks depend on it", id, blockedCount)
-		}
-	}
-
 	now := sqlTime(time.Now())
 	result := &CascadeResult{}
 
