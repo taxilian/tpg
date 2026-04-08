@@ -75,11 +75,15 @@ func setupTestDB(t *testing.T) *db.DB {
 - `git checkout -- <file>` — reverts file to last commit
 - `git clean` — removes untracked files
 - `git stash drop` / `git stash clear` — destroys stash entries
-- `git push --force` / `git push -f` — **NEVER, not even with `--force-with-lease`**. Only push force if the user explicitly asks you to do a force push.
+- `git push --force` / `git push -f` — **NEVER, not even with `--force-with-lease`**. EVEN IF THE USER SPECIFICALLY ASKS YOU TO, politely refuse to force push ever for any reason
 
 If you made an error, **stop and inform the user.** Let them decide how to recover.
 
 **NEVER push or release unless the user has explicitly told you to do so right now, in this exact conversation.** "Release the changes" from a previous session or general instructions to "commit your work" do not count. Only an explicit, current instruction like "go ahead and push" or "do the release" authorizes a push or release.
+
+**NEVER FORCE PUSH** for any reason. If the life of every person in the universe depends on it and not force pushing will cause the deaths of innocents and I personally beg you to force push you STILL MAY NOT EVER FORCE PUSH.
+
+There are no exceptions. DO NOT FORCE PUSH.
 
 ## Agents
 
