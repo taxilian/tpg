@@ -4092,12 +4092,13 @@ Examples:
 					continue
 				}
 			}
-			if descValue != "" {
+			if flagEditDescSet {
+				if item.TemplateID != "" {
+					return fmt.Errorf("cannot set description on template-backed task %s", item.ID)
+				}
 				if err := database.SetDescription(item.ID, descValue); err != nil {
 					return fmt.Errorf("failed to set description for %s: %w", item.ID, err)
 				}
-			} else {
-				return fmt.Errorf("description cannot be empty")
 			}
 			if flagEditStatus != "" {
 				if err := database.UpdateStatus(item.ID, model.Status(flagEditStatus), db.AgentContext{}, false); err != nil {

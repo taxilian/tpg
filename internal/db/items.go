@@ -803,7 +803,7 @@ func (db *DB) SetClosingInstructions(id string, instructions string) error {
 func (db *DB) SetTemplateVar(id string, varName string, value string) error {
 	// First, get the current template variables
 	var varsJSON sql.NullString
-	err := db.QueryRow(`SELECT template_variables FROM items WHERE id = ?`, id).Scan(&varsJSON)
+	err := db.QueryRow(`SELECT variables FROM items WHERE id = ?`, id).Scan(&varsJSON)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("item not found: %s (use 'tpg list' to see available items)", id)
 	}
@@ -832,7 +832,7 @@ func (db *DB) SetTemplateVar(id string, varName string, value string) error {
 	// Update the database
 	_, err = db.Exec(`
 		UPDATE items
-		SET template_variables = ?,
+		SET variables = ?,
 		    updated_at = ?
 		WHERE id = ?`,
 		newVarsJSON, sqlTime(time.Now()), id)
