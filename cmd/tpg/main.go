@@ -3983,7 +3983,7 @@ Examples:
 		// Check if any field flags are set
 		hasFieldFlags := flagEditTitle != "" || flagEditPriority != 0 || flagEditParentSet ||
 			len(flagEditAddLabels) > 0 || len(flagEditRmLabels) > 0 || flagEditDescSet ||
-			flagEditStatus != "" || len(flagEditVars) > 0
+			flagEditStatus != "" || len(flagEditVars) > 0 || flagEditVarsYAML
 
 		// If no field flags and single item, open editor for description
 		if !hasFieldFlags && len(items) == 1 {
